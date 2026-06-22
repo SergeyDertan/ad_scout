@@ -1,0 +1,11 @@
+# pnpm workspace. The root project is the AdScout server (package "adscout");
+# the front-end lives in web/ (package "adscout-web"). `pnpm install` at the
+# root installs both. Run web scripts with `pnpm --filter adscout-web <script>`.
+packages:
+  - 'web'
+
+# Native/binary deps whose install scripts we allow to run (pnpm v10 blocks
+# build scripts by default).
+onlyBuiltDependencies:
+  - esbuild
+  - fsevents

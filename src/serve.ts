@@ -1,0 +1,84 @@
+// Real boot: lock → reconcile → HTTP/SSE server → drip scheduler.
+//   pnpm serve                  (defaults: dummy providers, memory store)
+// Switch providers/store via .env (see .env.example).
+
+import { loadConfig } from './config';
+import { buildAgent } from './lib/factory';
+import { acquireLock, LockHeldError } from './lib/lock';
+import { systemClock } from './lib/clock';
+import { logger } from './lib/logger';
+import { runReconcile } from './pipeline/reconcile';
+import { runSendPass } from './pipeline/send-pass';
+import { runPollPass } from './pipeline/poll-pass';
+import { totalRemainingToday } from './pipeline/quota';
+import { createApiServer } from './server/app';
+import { DripScheduler } from './scheduler/scheduler';
+
+async function main(): Promise<void> {
+  const config = loadConfig();
+  const clock = systemClock;
+  const port = Number(process.env.PORT ?? 8787);
+
+  let lock;
+  try {
+    lock = acquireLock(config.lockPath);
+  } catch (err) {
+    if (err instanceof LockHeldError) {
+      logger.error(err.message);
+      process.exit(1);
+    }
+    throw err;
+  }
+
+  const agent = buildAgent(config);
+  const { store, email, extractor } = agent;
+
+  const sendDeps = { store, email, clock, config };
+  const pollDeps = { store, email, extractor, clock };
+
+  const rec = await runReconcile({ store, email, clock, config });
+  logger.info('reconcile', rec as unknown as Record<string, unknown>);
+
+  const server = createApiServer({
+    store,
+    config,
+    clock,
+    runSend: () => runSendPass(sendDeps),
+    runPoll: () => runPollPass(pollDeps),
+    // Built front-end (web/ is a separate Vite + React + Chakra module).
+    // Run `pnpm web:build` first; in dev use `pnpm web:dev` (proxies /api).
+    webDir: process.env.WEB_DIR ?? './web/dist',
+    providers: { llm: agent.llm.name, email: email.name, store: config.store },
+  });
+
+  const scheduler = new DripScheduler({
+    clock,
+    window: config.sendWindow,
+    runSend: () => runSendPass(sendDeps, { maxPerAccount: 1 }),
+    runPoll: () => runPollPass(pollDeps),
+    quotaRemaining: () => totalRemainingToday(store, config, clock.now()),
+  });
+
+  server.listen(port, () => {
+    logger.info(`AdScout server on http://localhost:${port}`, {
+      providers: { llm: agent.llm.name, email: email.name, store: config.store },
+    });
+    scheduler.start();
+  });
+
+  const shutdown = () => {
+    logger.info('shutting down');
+    scheduler.stop();
+    server.close();
+    void store.close?.();
+    lock.release();
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}
+
+main().catch((err) => {
+  logger.error('fatal', { error: err instanceof Error ? err.stack : String(err) });
+  process.exit(1);
+});

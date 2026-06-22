@@ -1,0 +1,44 @@
+// Reply extractor: the LLM does NLP (can-post, opt-out, verbatim answers); the
+// pure domain code (assembleResult) types each answer. Driven by inquiryFields
+// — the same source of truth the drafter uses.
+
+import {
+  assembleResult,
+  buildExtractionSchema,
+  type RawExtraction,
+} from '../domain/extraction';
+import type { Campaign, OutreachResult } from '../domain/types';
+import type { LlmProvider } from '../ports/llm-provider';
+
+const SYSTEM = [
+  'You extract structured information from a website owner\'s email reply to an',
+  'advertising/publishing outreach. Output ONLY JSON matching the provided schema.',
+  '- canPost: "yes" if they will publish, "no" if they decline, "maybe" if unclear/conditional.',
+  '- optOut: true ONLY if they ask to stop being contacted / unsubscribe.',
+  '- For each field, put the owner\'s VERBATIM answer in "raw" (empty string if not addressed).',
+  '- conditions: any conditions/caveats they mention. notes: anything else useful.',
+].join('\n');
+
+export class Extractor {
+  constructor(private readonly llm: LlmProvider) {}
+
+  async extract(campaign: Campaign, replyText: string): Promise<OutreachResult> {
+    const schema = buildExtractionSchema(campaign.inquiryFields);
+    const fieldList = campaign.inquiryFields
+      .map((f) => `- ${f.key}: ${f.question}`)
+      .join('\n');
+    const prompt = [
+      `Campaign: publishing ${campaign.format} about ${campaign.topic} (${campaign.advertised.url}).`,
+      'Questions we asked:',
+      fieldList,
+      '',
+      'The reply to analyze (between the markers):',
+      '--- REPLY START ---',
+      replyText,
+      '--- REPLY END ---',
+    ].join('\n');
+
+    const json = await this.llm.generateJson({ system: SYSTEM, prompt, schema, temperature: 0.1 });
+    return assembleResult(campaign.inquiryFields, json as RawExtraction);
+  }
+}

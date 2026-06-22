@@ -1,0 +1,27 @@
+{
+  "name": "adscout",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.34.3",
+  "engines": {
+    "node": ">=26",
+    "pnpm": ">=10"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test $(find src -name '*.test.ts')",
+    "demo": "tsx src/index.ts",
+    "serve": "tsx src/serve.ts",
+    "dev": "tsx watch src/serve.ts",
+    "web:build": "pnpm --filter adscout-web build",
+    "web:dev": "pnpm --filter adscout-web dev",
+    "web:typecheck": "pnpm --filter adscout-web typecheck",
+    "build": "pnpm --filter adscout-web build"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^6.0.3"
+  }
+}

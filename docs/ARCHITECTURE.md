@@ -304,16 +304,21 @@ dir.
 A **separate module** (own `package.json`, dependency tree, and build) so the UI
 and server evolve independently.
 
-- **Stack:** Vite + React 19 + **Chakra UI v3** (dark theme via `createSystem`
-  in `src/theme.ts`).
+- **Stack:** Vite + React 19 + **Chakra UI v3** (light theme via `createSystem`
+  in `src/theme.ts` — an indigo `brand` palette on a gray canvas with white
+  panels).
 - **`src/api.ts`** — typed client over the JSON API (relative `/api`).
 - **`src/hooks/useStream.ts`** — subscribes to `/api/stream`; debounced
   `onChange` drives a `tick` counter that re-fetches the active view; reports
   `connecting`/`live`/`reconnecting`.
-- **`src/App.tsx`** — header (status summary + live dot) and the five tabs.
+- **`src/App.tsx`** — header (brand mark + provider chips + live pill), a
+  `StatCards` overview strip, and the five tabs (with count badges).
 - **`src/components/`** — one component per view (`AccountsView`, `TargetsView`,
   `ResponsesView`, `SuppressionsView`, `RunView`), the add-forms
-  (`AddAccountForm`, `AddTargetForm`), and a `StatusBadge` palette map.
+  (`AddAccountForm`, `AddTargetForm`), and shared UX primitives: `Toaster`
+  (action feedback), `Confirm` (`useConfirm` styled dialog replacing
+  `window.confirm`), `Panel`/`Empty`/`StatCards`, a local `icons` set (inline
+  SVG, no dependency), and a `StatusBadge` palette map.
 - **`src/types.ts`** — a deliberately small client mirror of the server domain
   types (only the fields the UI reads/writes).
 

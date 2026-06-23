@@ -1,5 +1,4 @@
 import {
-  Box,
   Button,
   Field,
   Heading,
@@ -13,6 +12,8 @@ import {
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import type { Campaign, NewTarget } from '../types';
+import { Panel } from './Panel';
+import { toaster, toastError } from './Toaster';
 
 const EMPTY: NewTarget = {
   websiteUrl: '',
@@ -25,7 +26,6 @@ const EMPTY: NewTarget = {
 export function AddTargetForm({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [form, setForm] = useState<NewTarget>(EMPTY);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -35,7 +35,7 @@ export function AddTargetForm({ onClose, onCreated }: { onClose: () => void; onC
         setCampaigns(cs);
         setForm((f) => ({ ...f, campaignId: cs[0]?.id ?? '' }));
       })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => toastError('Could not load campaigns', e));
   }, []);
 
   const set = <K extends keyof NewTarget>(k: K, v: NewTarget[K]) =>
@@ -43,7 +43,6 @@ export function AddTargetForm({ onClose, onCreated }: { onClose: () => void; onC
 
   const createDefaultCampaign = async () => {
     setBusy(true);
-    setError(null);
     try {
       const c = await api.createCampaign({
         name: 'Default campaign',
@@ -51,16 +50,20 @@ export function AddTargetForm({ onClose, onCreated }: { onClose: () => void; onC
       });
       setCampaigns((cs) => [...cs, c]);
       setForm((f) => ({ ...f, campaignId: c.id }));
+      toaster.create({ type: 'success', title: 'Default campaign created' });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      toastError('Could not create campaign', e);
     } finally {
       setBusy(false);
     }
   };
 
+  const valid =
+    form.websiteUrl.trim() !== '' && form.contactEmail.trim() !== '' && campaigns.length > 0;
+
   const submit = async () => {
+    if (!valid) return;
     setBusy(true);
-    setError(null);
     try {
       await api.createTarget({
         websiteUrl: form.websiteUrl.trim(),
@@ -69,20 +72,26 @@ export function AddTargetForm({ onClose, onCreated }: { onClose: () => void; onC
         contactName: form.contactName?.trim() || undefined,
         notes: form.notes?.trim() || undefined,
       });
+      toaster.create({ type: 'success', title: `Queued ${form.websiteUrl.trim()}` });
       onCreated();
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      toastError('Could not add target', e);
     } finally {
       setBusy(false);
     }
   };
 
-  const valid = form.websiteUrl.trim() !== '' && form.contactEmail.trim() !== '' && campaigns.length > 0;
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey && (e.target as HTMLElement).tagName !== 'TEXTAREA') {
+      e.preventDefault();
+      void submit();
+    }
+  };
 
   return (
-    <Box borderWidth="1px" borderColor="border" rounded="lg" bg="bg.subtle" p={5} mb={4}>
-      <Heading size="sm" mb={3}>
+    <Panel p={5} mb={4} onKeyDown={onKeyDown}>
+      <Heading size="sm" mb={4}>
         Add target to queue
       </Heading>
 
@@ -91,7 +100,7 @@ export function AddTargetForm({ onClose, onCreated }: { onClose: () => void; onC
           <Text color="fg.muted" fontSize="sm">
             No campaign exists yet — a target must belong to one.
           </Text>
-          <Button size="sm" onClick={createDefaultCampaign} loading={busy}>
+          <Button size="sm" colorPalette="brand" onClick={createDefaultCampaign} loading={busy}>
             Create default campaign
           </Button>
         </HStack>
@@ -105,6 +114,7 @@ export function AddTargetForm({ onClose, onCreated }: { onClose: () => void; onC
               placeholder="egamersworld.com"
               value={form.websiteUrl}
               onChange={(e) => set('websiteUrl', e.target.value)}
+              autoFocus
             />
           </Field.Root>
           <Field.Root required>
@@ -146,6 +156,7 @@ export function AddTargetForm({ onClose, onCreated }: { onClose: () => void; onC
             <Field.Label>Notes</Field.Label>
             <Textarea
               rows={2}
+              placeholder="Anything worth remembering about this target…"
               value={form.notes}
               onChange={(e) => set('notes', e.target.value)}
             />
@@ -153,20 +164,14 @@ export function AddTargetForm({ onClose, onCreated }: { onClose: () => void; onC
         </SimpleGrid>
       )}
 
-      {error && (
-        <Text color="red.400" fontSize="sm" mt={3}>
-          {error}
-        </Text>
-      )}
-
-      <HStack mt={4} justify="flex-end">
+      <HStack mt={5} justify="flex-end">
         <Button variant="ghost" onClick={onClose} disabled={busy}>
           Cancel
         </Button>
-        <Button colorPalette="blue" onClick={submit} loading={busy} disabled={!valid}>
+        <Button colorPalette="brand" onClick={submit} loading={busy} disabled={!valid}>
           Add target
         </Button>
       </HStack>
-    </Box>
+    </Panel>
   );
 }

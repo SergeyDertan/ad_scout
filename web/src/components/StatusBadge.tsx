@@ -1,4 +1,4 @@
-import { Badge } from '@chakra-ui/react';
+import { Badge, Circle } from '@chakra-ui/react';
 
 // Maps a domain status string to a Chakra colorPalette.
 const PALETTE: Record<string, string> = {
@@ -14,7 +14,7 @@ const PALETTE: Record<string, string> = {
   failed: 'red',
   unmatched: 'red',
   // warn / in-flight
-  contacted: 'orange',
+  contacted: 'blue',
   reserved: 'orange',
   warming: 'orange',
   cooldown: 'orange',
@@ -28,9 +28,11 @@ const PALETTE: Record<string, string> = {
 
 export function StatusBadge({ value }: { value?: string | null }) {
   if (!value) return null;
+  const palette = PALETTE[value] ?? 'gray';
   return (
-    <Badge colorPalette={PALETTE[value] ?? 'gray'} variant="subtle" textTransform="none">
-      {value}
+    <Badge colorPalette={palette} variant="subtle" textTransform="none" gap={1.5} rounded="md">
+      <Circle size="1.5" bg={`${palette}.solid`} />
+      {value.replace(/_/g, ' ')}
     </Badge>
   );
 }

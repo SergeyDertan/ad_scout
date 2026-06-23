@@ -1,79 +1,98 @@
-import { Box, Code, Spinner, Table, Text } from '@chakra-ui/react';
-import { useCallback, useEffect, useState } from 'react';
+import { Box, Code, HStack, Table, Text, Wrap } from '@chakra-ui/react';
+import { useCallback } from 'react';
 import { api } from '../api';
-import type { ResponseRow } from '../types';
 import { StatusBadge } from './StatusBadge';
+import { DataPanel } from './DataPanel';
+import { Empty } from './Empty';
+import { useResource } from '../hooks/useResource';
+import { InboxIcon } from './icons';
+
+function Fields({ fields }: { fields: Record<string, unknown> }) {
+  const entries = Object.entries(fields ?? {});
+  if (entries.length === 0) return <Text color="fg.subtle">—</Text>;
+  return (
+    <Wrap gap={1.5}>
+      {entries.map(([k, v]) => (
+        <HStack
+          key={k}
+          gap={1}
+          bg="bg.muted"
+          rounded="md"
+          px={2}
+          py={0.5}
+          fontSize="xs"
+          maxW="100%"
+        >
+          <Text color="fg.muted">{k}</Text>
+          <Code bg="transparent" px={0} fontWeight="medium" truncate maxW="40ch">
+            {typeof v === 'string' ? v : JSON.stringify(v)}
+          </Code>
+        </HStack>
+      ))}
+    </Wrap>
+  );
+}
 
 export function ResponsesView({ tick }: { tick: number }) {
-  const [rows, setRows] = useState<ResponseRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(() => {
-    setLoading(true);
-    api
-      .listResponses()
-      .then((r) => {
-        setRows(r);
-        setError(null);
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load, tick]);
+  const { rows, loading, error } = useResource(
+    useCallback(() => api.listResponses(), []),
+    tick,
+  );
 
   if (error)
     return (
-      <Text color="red.400" fontSize="sm" pt={4}>
+      <Text color="red.fg" fontSize="sm" pt={4}>
         {error}
       </Text>
     );
-  if (loading && rows.length === 0) return <Spinner mt={4} />;
 
   return (
     <Box pt={4}>
-      <Table.Root size="sm" variant="outline">
-        <Table.Header>
-          <Table.Row>
-            <Table.ColumnHeader>From</Table.ColumnHeader>
-            <Table.ColumnHeader>Site</Table.ColumnHeader>
-            <Table.ColumnHeader>Match</Table.ColumnHeader>
-            <Table.ColumnHeader>Can post</Table.ColumnHeader>
-            <Table.ColumnHeader>Fields</Table.ColumnHeader>
-          </Table.Row>
-        </Table.Header>
-        <Table.Body>
-          {rows.map((r) => (
-            <Table.Row key={r.id}>
-              <Table.Cell>{r.fromAddress}</Table.Cell>
-              <Table.Cell color="fg.muted">{r.website ?? ''}</Table.Cell>
-              <Table.Cell>
-                <StatusBadge value={r.matchMethod} />
-              </Table.Cell>
-              <Table.Cell>
-                {r.parsed ? <StatusBadge value={r.parsed.canPost} /> : <StatusBadge value={r.extractionStatus} />}
-              </Table.Cell>
-              <Table.Cell>
-                {r.parsed && (
-                  <Code fontSize="xs" whiteSpace="pre-wrap">
-                    {JSON.stringify(r.parsed.fields)}
-                  </Code>
-                )}
-              </Table.Cell>
+      <Text color="fg.muted" fontSize="sm" mb={4}>
+        Inbound replies matched back to a target, with the AI-extracted posting terms.
+      </Text>
+      <DataPanel
+        loading={loading}
+        isEmpty={rows.length === 0}
+        empty={
+          <Empty
+            icon={InboxIcon}
+            title="No responses yet"
+            description="Replies from contacted targets will show up here as they arrive."
+          />
+        }
+      >
+        <Table.Root size="md" variant="line">
+          <Table.Header>
+            <Table.Row bg="bg.subtle">
+              <Table.ColumnHeader>From</Table.ColumnHeader>
+              <Table.ColumnHeader>Site</Table.ColumnHeader>
+              <Table.ColumnHeader>Match</Table.ColumnHeader>
+              <Table.ColumnHeader>Can post</Table.ColumnHeader>
+              <Table.ColumnHeader>Fields</Table.ColumnHeader>
             </Table.Row>
-          ))}
-          {rows.length === 0 && !loading && (
-            <Table.Row>
-              <Table.Cell colSpan={5}>
-                <Text color="fg.muted">No responses yet.</Text>
-              </Table.Cell>
-            </Table.Row>
-          )}
-        </Table.Body>
-      </Table.Root>
+          </Table.Header>
+          <Table.Body>
+            {rows.map((r) => (
+              <Table.Row key={r.id}>
+                <Table.Cell fontWeight="medium">{r.fromAddress}</Table.Cell>
+                <Table.Cell color="fg.muted">{r.website ?? '—'}</Table.Cell>
+                <Table.Cell>
+                  <StatusBadge value={r.matchMethod} />
+                </Table.Cell>
+                <Table.Cell>
+                  {r.parsed ? (
+                    <StatusBadge value={r.parsed.canPost} />
+                  ) : (
+                    <StatusBadge value={r.extractionStatus} />
+                  )}
+                </Table.Cell>
+                <Table.Cell>{r.parsed && <Fields fields={r.parsed.fields} />}</Table.Cell>
+              </Table.Row>
+            ))}
+          </Table.Body>
+        </Table.Root>
+      </DataPanel>
     </Box>
   );
 }

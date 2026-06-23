@@ -1,79 +1,129 @@
-import { Box, Button, Flex, HStack, Input, Spinner, Table, Text } from '@chakra-ui/react';
-import { useCallback, useEffect, useState } from 'react';
+import { Box, Button, Flex, HStack, Input, Table, Text } from '@chakra-ui/react';
+import { useCallback, useState } from 'react';
 import { api } from '../api';
 import type { Account } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { AddAccountForm } from './AddAccountForm';
+import { DataPanel } from './DataPanel';
+import { Empty } from './Empty';
+import { useConfirm } from './Confirm';
+import { toaster, toastError } from './Toaster';
+import { useResource } from '../hooks/useResource';
+import { PauseIcon, PlayIcon, PlusIcon, TrashIcon, UsersIcon } from './icons';
 
 export function AccountsView({ tick }: { tick: number }) {
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
-
-  const load = useCallback(() => {
-    setLoading(true);
-    api
-      .listAccounts()
-      .then((a) => {
-        setAccounts(a);
-        setError(null);
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load, tick]);
+  const confirm = useConfirm();
+  const {
+    rows: accounts,
+    loading,
+    error,
+    reload: load,
+  } = useResource(useCallback(() => api.listAccounts(), []), tick);
 
   // Only `active` accounts send. Anything else (warming / paused / cooldown)
   // gets a one-click "Activate"; an active account gets "Pause".
   const setActive = async (a: Account, active: boolean) => {
-    if (active) await api.resumeAccount(a.id);
-    else await api.pauseAccount(a.id);
-    load();
+    try {
+      if (active) await api.resumeAccount(a.id);
+      else await api.pauseAccount(a.id);
+      toaster.create({
+        type: 'success',
+        title: active ? `${a.senderName} activated` : `${a.senderName} paused`,
+      });
+      load();
+    } catch (e) {
+      toastError('Could not update account', e);
+    }
   };
 
   const remove = async (a: Account) => {
-    if (!confirm(`Delete account ${a.email}? Queued/sent history is kept.`)) return;
-    await api.deleteAccount(a.id);
-    load();
+    const ok = await confirm({
+      title: 'Delete account?',
+      description: (
+        <>
+          Delete <b>{a.email}</b>? Queued and sent history is kept.
+        </>
+      ),
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      await api.deleteAccount(a.id);
+      toaster.create({ type: 'success', title: `Deleted ${a.email}` });
+      load();
+    } catch (e) {
+      toastError('Could not delete account', e);
+    }
   };
 
   const saveLimit = async (a: Account, raw: string) => {
     const v = raw.trim() === '' ? undefined : Number(raw);
     if (v !== undefined && !Number.isFinite(v)) return;
-    await api.patchAccount(a.id, { dailyLimitOverride: v });
+    if (v === (a.dailyLimitOverride ?? undefined)) return; // no change
+    try {
+      await api.patchAccount(a.id, { dailyLimitOverride: v });
+      toaster.create({
+        type: 'success',
+        title: 'Daily limit saved',
+        description: v === undefined ? `${a.senderName}: back to warmup ramp` : `${a.senderName}: ${v}/day`,
+      });
+    } catch (e) {
+      toastError('Could not save limit', e);
+    }
   };
 
   return (
     <Box pt={4}>
-      <Flex mb={3} align="center">
-        <Text color="fg.muted" fontSize="sm">
-          Sending identities. Daily limit override is per account; blank uses the warmup ramp toward
-          max.
+      <Flex mb={4} align="center" gap={3}>
+        <Text color="fg.muted" fontSize="sm" maxW="60ch">
+          Sending identities. The daily-limit override is per account; leave it blank to follow the
+          warmup ramp toward max.
         </Text>
         <Box flex="1" />
-        <Button size="sm" colorPalette="blue" onClick={() => setAdding((v) => !v)}>
-          {adding ? 'Close' : '+ Add Gmail account'}
+        <Button
+          size="sm"
+          colorPalette="brand"
+          variant={adding ? 'outline' : 'solid'}
+          onClick={() => setAdding((v) => !v)}
+        >
+          {adding ? 'Close' : (
+            <>
+              <PlusIcon />
+              Add account
+            </>
+          )}
         </Button>
       </Flex>
 
       {adding && <AddAccountForm onClose={() => setAdding(false)} onCreated={load} />}
 
       {error && (
-        <Text color="red.400" fontSize="sm" mb={3}>
+        <Text color="red.fg" fontSize="sm" mb={3}>
           {error}
         </Text>
       )}
 
-      {loading && accounts.length === 0 ? (
-        <Spinner />
-      ) : (
-        <Table.Root size="sm" variant="outline" interactive>
+      <DataPanel
+        loading={loading}
+        isEmpty={accounts.length === 0}
+        empty={
+          <Empty
+            icon={UsersIcon}
+            title="No sending accounts yet"
+            description="Add a Gmail account to start warming up and sending outreach."
+          >
+            <Button size="sm" colorPalette="brand" mt={2} onClick={() => setAdding(true)}>
+              <PlusIcon />
+              Add account
+            </Button>
+          </Empty>
+        }
+      >
+        <Table.Root size="md" variant="line" interactive>
           <Table.Header>
-            <Table.Row>
+            <Table.Row bg="bg.subtle">
               <Table.ColumnHeader>Account</Table.ColumnHeader>
               <Table.ColumnHeader>Status</Table.ColumnHeader>
               <Table.ColumnHeader>Provider</Table.ColumnHeader>
@@ -85,7 +135,7 @@ export function AccountsView({ tick }: { tick: number }) {
             {accounts.map((a) => (
               <Table.Row key={a.id}>
                 <Table.Cell>
-                  <Text fontWeight="medium">{a.senderName}</Text>
+                  <Text fontWeight="semibold">{a.senderName}</Text>
                   <Text color="fg.muted" fontSize="xs">
                     {a.email}
                   </Text>
@@ -93,7 +143,7 @@ export function AccountsView({ tick }: { tick: number }) {
                 <Table.Cell>
                   <StatusBadge value={a.status} />
                   {a.lastError && (
-                    <Text color="red.400" fontSize="xs" mt={1}>
+                    <Text color="red.fg" fontSize="xs" mt={1}>
                       {a.lastError}
                     </Text>
                   )}
@@ -103,9 +153,9 @@ export function AccountsView({ tick }: { tick: number }) {
                   <Input
                     size="sm"
                     type="number"
-                    width="20"
+                    width="32"
                     defaultValue={a.dailyLimitOverride ?? ''}
-                    placeholder={String(a.maxDailyLimit)}
+                    placeholder={`ramp → ${a.maxDailyLimit}`}
                     onBlur={(e) => saveLimit(a, e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
@@ -116,6 +166,7 @@ export function AccountsView({ tick }: { tick: number }) {
                   <HStack justify="flex-end" gap={2}>
                     {a.status === 'active' ? (
                       <Button size="xs" variant="outline" onClick={() => setActive(a, false)}>
+                        <PauseIcon />
                         Pause
                       </Button>
                     ) : (
@@ -125,31 +176,25 @@ export function AccountsView({ tick }: { tick: number }) {
                         colorPalette="green"
                         onClick={() => setActive(a, true)}
                       >
+                        <PlayIcon />
                         Activate
                       </Button>
                     )}
                     <Button
                       size="xs"
-                      variant="outline"
+                      variant="ghost"
                       colorPalette="red"
                       onClick={() => remove(a)}
                     >
-                      Delete
+                      <TrashIcon />
                     </Button>
                   </HStack>
                 </Table.Cell>
               </Table.Row>
             ))}
-            {accounts.length === 0 && !loading && (
-              <Table.Row>
-                <Table.Cell colSpan={5}>
-                  <Text color="fg.muted">No accounts — add a Gmail account to start sending.</Text>
-                </Table.Cell>
-              </Table.Row>
-            )}
           </Table.Body>
         </Table.Root>
-      )}
+      </DataPanel>
     </Box>
   );
 }

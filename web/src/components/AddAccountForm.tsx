@@ -1,16 +1,9 @@
-import {
-  Box,
-  Button,
-  Field,
-  Heading,
-  HStack,
-  Input,
-  SimpleGrid,
-  Text,
-} from '@chakra-ui/react';
+import { Button, Field, Heading, HStack, Input, SimpleGrid } from '@chakra-ui/react';
 import { useState } from 'react';
 import { api } from '../api';
 import type { NewAccount } from '../types';
+import { Panel } from './Panel';
+import { toaster, toastError } from './Toaster';
 
 const EMPTY: NewAccount = {
   email: '',
@@ -23,15 +16,16 @@ const EMPTY: NewAccount = {
 
 export function AddAccountForm({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [form, setForm] = useState<NewAccount>(EMPTY);
-  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const set = <K extends keyof NewAccount>(k: K, v: NewAccount[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
 
+  const valid = form.email.trim() !== '' && form.senderName.trim() !== '';
+
   const submit = async () => {
+    if (!valid) return;
     setBusy(true);
-    setError(null);
     try {
       await api.createAccount({
         email: form.email.trim(),
@@ -41,20 +35,27 @@ export function AddAccountForm({ onClose, onCreated }: { onClose: () => void; on
         maxDailyLimit: Number(form.maxDailyLimit) || 40,
         signature: form.signature?.trim() || undefined,
       });
+      toaster.create({ type: 'success', title: `Added ${form.email.trim()}` });
       onCreated();
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      toastError('Could not add account', e);
     } finally {
       setBusy(false);
     }
   };
 
-  const valid = form.email.trim() !== '' && form.senderName.trim() !== '';
+  // Enter submits from any single-line field.
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      void submit();
+    }
+  };
 
   return (
-    <Box borderWidth="1px" borderColor="border" rounded="lg" bg="bg.subtle" p={5} mb={4}>
-      <Heading size="sm" mb={3}>
+    <Panel p={5} mb={4} onKeyDown={onKeyDown}>
+      <Heading size="sm" mb={4}>
         Add Gmail account
       </Heading>
       <SimpleGrid columns={{ base: 1, md: 2 }} gap={4}>
@@ -67,6 +68,7 @@ export function AddAccountForm({ onClose, onCreated }: { onClose: () => void; on
             placeholder="outreach@gmail.com"
             value={form.email}
             onChange={(e) => set('email', e.target.value)}
+            autoFocus
           />
         </Field.Root>
         <Field.Root required>
@@ -86,7 +88,9 @@ export function AddAccountForm({ onClose, onCreated }: { onClose: () => void; on
             value={form.credentialRef}
             onChange={(e) => set('credentialRef', e.target.value)}
           />
-          <Field.HelperText>Name of the .env var holding the secret — never the secret itself.</Field.HelperText>
+          <Field.HelperText>
+            Name of the .env var holding the secret — never the secret itself.
+          </Field.HelperText>
         </Field.Root>
         <Field.Root>
           <Field.Label>Max daily limit</Field.Label>
@@ -106,20 +110,14 @@ export function AddAccountForm({ onClose, onCreated }: { onClose: () => void; on
         </Field.Root>
       </SimpleGrid>
 
-      {error && (
-        <Text color="red.400" fontSize="sm" mt={3}>
-          {error}
-        </Text>
-      )}
-
-      <HStack mt={4} justify="flex-end">
+      <HStack mt={5} justify="flex-end">
         <Button variant="ghost" onClick={onClose} disabled={busy}>
           Cancel
         </Button>
-        <Button colorPalette="blue" onClick={submit} loading={busy} disabled={!valid}>
+        <Button colorPalette="brand" onClick={submit} loading={busy} disabled={!valid}>
           Add account
         </Button>
       </HStack>
-    </Box>
+    </Panel>
   );
 }

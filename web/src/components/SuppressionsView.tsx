@@ -1,67 +1,74 @@
-import { Box, Spinner, Table, Text } from '@chakra-ui/react';
-import { useCallback, useEffect, useState } from 'react';
+import { Box, Table, Text } from '@chakra-ui/react';
+import { useCallback } from 'react';
 import { api } from '../api';
-import type { Suppression } from '../types';
 import { StatusBadge } from './StatusBadge';
+import { DataPanel } from './DataPanel';
+import { Empty } from './Empty';
+import { useResource } from '../hooks/useResource';
+import { ShieldIcon } from './icons';
+
+function fmtDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
 
 export function SuppressionsView({ tick }: { tick: number }) {
-  const [rows, setRows] = useState<Suppression[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(() => {
-    setLoading(true);
-    api
-      .listSuppressions()
-      .then((r) => {
-        setRows(r);
-        setError(null);
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load, tick]);
+  const { rows, loading, error } = useResource(
+    useCallback(() => api.listSuppressions(), []),
+    tick,
+  );
 
   if (error)
     return (
-      <Text color="red.400" fontSize="sm" pt={4}>
+      <Text color="red.fg" fontSize="sm" pt={4}>
         {error}
       </Text>
     );
-  if (loading && rows.length === 0) return <Spinner mt={4} />;
 
   return (
     <Box pt={4}>
-      <Table.Root size="sm" variant="outline">
-        <Table.Header>
-          <Table.Row>
-            <Table.ColumnHeader>Email</Table.ColumnHeader>
-            <Table.ColumnHeader>Reason</Table.ColumnHeader>
-            <Table.ColumnHeader>At</Table.ColumnHeader>
-          </Table.Row>
-        </Table.Header>
-        <Table.Body>
-          {rows.map((s) => (
-            <Table.Row key={s.id}>
-              <Table.Cell>{s.email}</Table.Cell>
-              <Table.Cell>
-                <StatusBadge value={s.reason} />
-              </Table.Cell>
-              <Table.Cell color="fg.muted">{s.at}</Table.Cell>
+      <Text color="fg.muted" fontSize="sm" mb={4}>
+        Addresses that will never be contacted — opt-outs, hard bounces, and manual blocks.
+      </Text>
+      <DataPanel
+        loading={loading}
+        isEmpty={rows.length === 0}
+        empty={
+          <Empty
+            icon={ShieldIcon}
+            title="Nothing suppressed"
+            description="Opt-outs and bounced addresses are added here automatically."
+          />
+        }
+      >
+        <Table.Root size="md" variant="line">
+          <Table.Header>
+            <Table.Row bg="bg.subtle">
+              <Table.ColumnHeader>Email</Table.ColumnHeader>
+              <Table.ColumnHeader>Reason</Table.ColumnHeader>
+              <Table.ColumnHeader>Added</Table.ColumnHeader>
             </Table.Row>
-          ))}
-          {rows.length === 0 && !loading && (
-            <Table.Row>
-              <Table.Cell colSpan={3}>
-                <Text color="fg.muted">Nothing suppressed.</Text>
-              </Table.Cell>
-            </Table.Row>
-          )}
-        </Table.Body>
-      </Table.Root>
+          </Table.Header>
+          <Table.Body>
+            {rows.map((s) => (
+              <Table.Row key={s.id}>
+                <Table.Cell fontWeight="medium">{s.email}</Table.Cell>
+                <Table.Cell>
+                  <StatusBadge value={s.reason} />
+                </Table.Cell>
+                <Table.Cell color="fg.muted">{fmtDate(s.at)}</Table.Cell>
+              </Table.Row>
+            ))}
+          </Table.Body>
+        </Table.Root>
+      </DataPanel>
     </Box>
   );
 }

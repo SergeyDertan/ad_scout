@@ -43,6 +43,7 @@ export interface Store {
   getCampaign(id: string): Promise<Campaign | undefined>;
   putCampaign(c: Campaign): Promise<Campaign>;
   listCampaigns(): Promise<Campaign[]>;
+  deleteCampaign(id: string): Promise<void>;
 
   // accounts
   getAccount(id: string): Promise<Account | undefined>;
@@ -65,6 +66,7 @@ export interface Store {
   getReplyByEmailId(emailId: string): Promise<Reply | undefined>;
   putReply(r: Reply): Promise<Reply>;
   listReplies(): Promise<Reply[]>;
+  deleteReply(id: string): Promise<void>;
 
   // suppression (persistent do-not-contact)
   isSuppressed(email: string): Promise<boolean>;

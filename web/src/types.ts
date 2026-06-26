@@ -40,13 +40,49 @@ export interface Target {
   createdAt: string;
 }
 
+export type InquiryFieldType = 'price' | 'text' | 'list' | 'enum' | 'boolean';
+
+export interface InquiryField {
+  key: string;
+  question: string;
+  type: InquiryFieldType;
+  enumValues?: string[];
+  required?: boolean;
+}
+
 export interface Campaign {
   id: string;
   name: string;
   advertised: { url: string; description: string };
   topic: string;
   format: string;
+  inquiryFields: InquiryField[];
   createdAt: string;
+}
+
+export type SendStatus = 'reserved' | 'sent' | 'failed' | 'needs_review';
+export type OutreachKind = 'initial' | 'followup';
+
+export interface Outreach {
+  id: string;
+  targetId: string;
+  accountId: string;
+  kind: OutreachKind;
+  sequenceNo: number;
+  status: SendStatus;
+  subject: string;
+  body: string;
+  reservedAt: string;
+  sentAt?: string;
+  error?: string;
+}
+
+export interface ThreadReply {
+  id: string;
+  fromAddress: string;
+  receivedAt: string;
+  text: string;
+  matchMethod: 'threadId' | 'fromAddress' | 'unmatched';
 }
 
 export interface ResponseRow {
@@ -71,6 +107,8 @@ export interface Status {
   accounts: number;
   targets: { total: number; byStatus: Record<string, number> };
   providers: { llm: string; email: string; store: string } | null;
+  sendWindow: { startHour: number; endHour: number };
+  windowActive: boolean;
 }
 
 export interface NewAccount {
@@ -88,4 +126,11 @@ export interface NewTarget {
   campaignId?: string;
   contactName?: string;
   notes?: string;
+}
+
+export interface NewCampaign {
+  name: string;
+  advertised: { url: string; description?: string };
+  topic?: string;
+  format?: string;
 }

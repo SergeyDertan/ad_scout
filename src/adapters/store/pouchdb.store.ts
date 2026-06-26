@@ -117,6 +117,9 @@ export class PouchDbStore implements Store {
   listCampaigns() {
     return this.listByType<Campaign>('campaign');
   }
+  deleteCampaign(id: string) {
+    return this.delete('campaign', id);
+  }
 
   // accounts
   getAccount(id: string) {
@@ -173,6 +176,9 @@ export class PouchDbStore implements Store {
   }
   listReplies() {
     return this.listByType<Reply>('reply');
+  }
+  deleteReply(id: string) {
+    return this.delete('reply', id);
   }
 
   // suppression

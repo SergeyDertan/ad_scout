@@ -1,6 +1,6 @@
-// Poll-pass (overview.md §8). Dedupe inbound by emailId → detect bounce →
-// match (threadId → fromAddress → unmatched) → store reply → extract → roll up
-// onto the target. Opt-outs and bounces add to the persistent suppression list.
+// Fetch-only pass: pull inbound email, dedupe, detect bounces, match to
+// targets, and store replies with extractionStatus='pending'. No AI extraction.
+// Run poll-pass afterward (or separately) to extract posting terms.
 
 import {
   detectBounce,
@@ -15,38 +15,31 @@ import { newId } from '../lib/ids';
 import { logger } from '../lib/logger';
 import type { EmailProvider, IncomingEmail } from '../ports/email-provider';
 import type { Store } from '../ports/store';
-import type { Extractor } from '../services/extractor';
 
-export interface PollDeps {
+export interface FetchDeps {
   store: Store;
   email: EmailProvider;
-  extractor: Extractor;
   clock: Clock;
 }
 
-export interface PollReport {
+export interface FetchReport {
   fetched: number;
   deduped: number;
   bounced: number;
   matched: number;
   unmatched: number;
-  extracted: number;
-  extractionFailed: number;
 }
 
-export async function runPollPass(deps: PollDeps): Promise<PollReport> {
-  const { store, email, extractor, clock } = deps;
-  const report: PollReport = {
+export async function runFetchPass(deps: FetchDeps): Promise<FetchReport> {
+  const { store, email, clock } = deps;
+  const report: FetchReport = {
     fetched: 0,
     deduped: 0,
     bounced: 0,
     matched: 0,
     unmatched: 0,
-    extracted: 0,
-    extractionFailed: 0,
   };
 
-  // Matching refs computed once for the pass.
   const sentRefs: SentOutreachRef[] = (await store.listOutreaches())
     .filter((o) => o.threadId)
     .map((o) => ({ targetId: o.targetId, threadId: o.threadId }));
@@ -76,72 +69,39 @@ export async function runPollPass(deps: PollDeps): Promise<PollReport> {
       await handleMessage(deps, msg, sentRefs, awaiting, report);
     }
 
-    // Advance the cursor.
     await store.putAccount({
       ...account,
       pollCursor: { mailbox: 'INBOX', lastPolledAt: clock.now().toISOString() },
     });
   }
 
-  await retryFailedExtractions(deps, report);
-
   return report;
-}
-
-async function retryFailedExtractions(deps: PollDeps, report: PollReport): Promise<void> {
-  const { store, extractor, clock } = deps;
-  const failed = (await store.listReplies()).filter(
-    (r) => (r.extractionStatus === 'failed' || r.extractionStatus === 'pending') && r.targetId,
-  );
-  for (const reply of failed) {
-    const target = await store.getTarget(reply.targetId!);
-    const campaign = target ? await store.getCampaign(target.campaignId) : undefined;
-    if (!target || !campaign) continue;
-    try {
-      const parsed = await extractor.extract(campaign, reply.text);
-      reply.parsed = parsed;
-      reply.extractionStatus = 'done';
-      report.extracted++;
-      await store.putReply(reply);
-      if (parsed.optOut) {
-        await store.putTarget({ ...target, status: 'excluded', result: parsed });
-        await suppress(store, target.contactEmail, 'opt_out', clock);
-      } else {
-        await store.putTarget({ ...target, status: 'replied', result: parsed });
-      }
-    } catch {
-      reply.extractionStatus = 'failed';
-      await store.putReply(reply);
-    }
-  }
 }
 
 async function suppress(
   store: Store,
-  email: string,
+  emailAddr: string,
   reason: Suppression['reason'],
   clock: Clock,
 ): Promise<void> {
-  const norm = normalizeEmail(email);
+  const norm = normalizeEmail(emailAddr);
   await store.addSuppression({ id: norm, email: norm, reason, at: clock.now().toISOString() });
 }
 
 async function handleMessage(
-  deps: PollDeps,
+  deps: FetchDeps,
   msg: IncomingEmail,
   sentRefs: SentOutreachRef[],
   awaiting: AwaitingTargetRef[],
-  report: PollReport,
+  report: FetchReport,
 ): Promise<void> {
-  const { store, extractor, clock } = deps;
+  const { store, clock } = deps;
 
-  // Dedupe on the stable emailId.
   if (await store.getReplyByEmailId(msg.emailId)) {
     report.deduped++;
     return;
   }
 
-  // Bounce?
   const bounce = detectBounce(msg.fromAddress, msg.text);
   if (bounce.isBounce) {
     const failed = bounce.failedRecipient;
@@ -156,7 +116,6 @@ async function handleMessage(
     return;
   }
 
-  // Match.
   const match = matchReply(
     { ...(msg.threadId ? { threadId: msg.threadId } : {}), fromAddress: msg.fromAddress },
     sentRefs,
@@ -176,40 +135,15 @@ async function handleMessage(
     extractionStatus: 'pending',
   };
 
-  if (!match.targetId) {
-    report.unmatched++;
-    await store.putReply(reply);
-    return;
-  }
-  report.matched++;
-
-  // Extract + roll up onto the target.
-  const target = await store.getTarget(match.targetId);
-  const campaign = target ? await store.getCampaign(target.campaignId) : undefined;
-  if (target && campaign) {
-    try {
-      const parsed = await extractor.extract(campaign, msg.text);
-      reply.parsed = parsed;
-      reply.extractionStatus = 'done';
-      report.extracted++;
-
-      if (parsed.optOut) {
-        await store.putTarget({ ...target, status: 'excluded', result: parsed });
-        await suppress(store, target.contactEmail, 'opt_out', clock);
-      } else {
-        await store.putTarget({ ...target, status: 'replied', result: parsed });
-      }
-    } catch (err) {
-      reply.extractionStatus = 'failed';
-      report.extractionFailed++;
-      const cause = err instanceof Error ? (err as NodeJS.ErrnoException & { cause?: unknown }).cause : undefined;
-      logger.warn('extraction failed', {
-        reply: reply.id,
-        error: err instanceof Error ? err.message : String(err),
-        ...(cause ? { cause: cause instanceof Error ? cause.message : String(cause) } : {}),
-      });
-    }
-  }
-
   await store.putReply(reply);
+
+  if (match.targetId) {
+    report.matched++;
+    const target = await store.getTarget(match.targetId);
+    if (target && target.status !== 'bounced' && target.status !== 'excluded') {
+      await store.putTarget({ ...target, status: 'replied' });
+    }
+  } else {
+    report.unmatched++;
+  }
 }

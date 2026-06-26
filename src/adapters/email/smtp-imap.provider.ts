@@ -134,7 +134,7 @@ export class SmtpImapProvider implements EmailProvider {
             receivedAt: (env.date ?? new Date()).toISOString
               ? (env.date as Date).toISOString()
               : new Date().toISOString(),
-            text: extractText(msg.source),
+            text: await extractText(msg.source),
           });
         }
         return out;
@@ -145,10 +145,16 @@ export class SmtpImapProvider implements EmailProvider {
   }
 }
 
-/** Minimal body extraction: drop the header block. Use mailparser for real MIME. */
-function extractText(source: unknown): string {
+/** Parse the raw MIME source, decode quoted-printable, and return clean text.
+ *  Prefers the HTML part (converted to markdown) over plain text. */
+async function extractText(source: unknown): Promise<string> {
   if (!source) return '';
-  const raw = Buffer.isBuffer(source) ? source.toString('utf8') : String(source);
-  const idx = raw.indexOf('\r\n\r\n');
-  return idx >= 0 ? raw.slice(idx + 4) : raw;
+  const raw = Buffer.isBuffer(source) ? source : Buffer.from(String(source), 'utf8');
+  const { simpleParser } = await import('mailparser' as string);
+  const parsed = await simpleParser(raw);
+  if (parsed.html) {
+    const { NodeHtmlMarkdown } = await import('node-html-markdown' as string);
+    return NodeHtmlMarkdown.translate(parsed.html);
+  }
+  return parsed.text ?? '';
 }

@@ -15,8 +15,8 @@ const SYSTEM = [
   'advertising/publishing outreach. Output ONLY JSON matching the provided schema.',
   '- canPost: "yes" if they will publish, "no" if they decline, "maybe" if unclear/conditional.',
   '- optOut: true ONLY if they ask to stop being contacted / unsubscribe.',
-  '- For each field, put the owner\'s VERBATIM answer in "raw" (empty string if not addressed).',
-  '- conditions: any conditions/caveats they mention. notes: anything else useful.',
+  '- For each field, put the owner\'s answer in "raw" as PLAIN TEXT — no markdown, no backslash escapes, no bullet formatting. Preserve numbers and punctuation.',
+  '- conditions: any conditions/caveats they mention (plain text). notes: anything else useful (plain text).',
 ].join('\n');
 
 export class Extractor {
@@ -27,6 +27,11 @@ export class Extractor {
     const fieldList = campaign.inquiryFields
       .map((f) => `- ${f.key}: ${f.question}`)
       .join('\n');
+    // Strip markdown formatting so the LLM never sees (and copies) escape sequences
+    // like \- into JSON string values, which produces invalid JSON.
+    const plainText = replyText
+      .replace(/\*\*?([^*]+)\*\*?/g, '$1')   // **bold** / *italic*
+      .replace(/\\([^\n])/g, '$1');            // \- \* \[ etc → bare character
     const prompt = [
       `Campaign: publishing ${campaign.format} about ${campaign.topic} (${campaign.advertised.url}).`,
       'Questions we asked:',
@@ -34,7 +39,7 @@ export class Extractor {
       '',
       'The reply to analyze (between the markers):',
       '--- REPLY START ---',
-      replyText,
+      plainText,
       '--- REPLY END ---',
     ].join('\n');
 

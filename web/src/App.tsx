@@ -16,6 +16,7 @@ import { api } from './api';
 import type { Status } from './types';
 import { useStream, type LiveState } from './hooks/useStream';
 import { AccountsView } from './components/AccountsView';
+import { CampaignsView } from './components/CampaignsView';
 import { TargetsView } from './components/TargetsView';
 import { ResponsesView } from './components/ResponsesView';
 import { SuppressionsView } from './components/SuppressionsView';
@@ -23,6 +24,7 @@ import { RunView } from './components/RunView';
 import { StatCards } from './components/StatCards';
 import {
   InboxIcon,
+  MegaphoneIcon,
   PlayIcon,
   ShieldIcon,
   TargetIcon,
@@ -37,6 +39,7 @@ const TABS: {
   icon: ComponentType<IconProps>;
   count?: (s: Status | null) => number | undefined;
 }[] = [
+  { id: 'campaigns', label: 'Campaigns', icon: MegaphoneIcon },
   { id: 'accounts', label: 'Accounts', icon: UsersIcon, count: (s) => s?.accounts },
   { id: 'targets', label: 'Targets', icon: TargetIcon, count: (s) => s?.targets.total },
   { id: 'responses', label: 'Responses', icon: InboxIcon },
@@ -82,12 +85,15 @@ function ConnectionPill({ live }: { live: LiveState }) {
   );
 }
 
+// Per-type tick counters — each view only refetches when its data type changes.
+type Ticks = { campaign: number; account: number; target: number; reply: number; suppression: number };
+const ZERO_TICKS: Ticks = { campaign: 0, account: 0, target: 0, reply: 0, suppression: 0 };
+
 export function App() {
-  const [tab, setTab] = useState<string>('accounts');
+  const [tab, setTab] = useState<string>('campaigns');
   const [status, setStatus] = useState<Status | null>(null);
   const [statusErr, setStatusErr] = useState(false);
-  // Bumped on every SSE change → views re-fetch.
-  const [tick, setTick] = useState(0);
+  const [ticks, setTicks] = useState<Ticks>(ZERO_TICKS);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -98,9 +104,15 @@ export function App() {
     }
   }, []);
 
-  const onChange = useCallback(() => {
-    setTick((t) => t + 1);
+  const onChange = useCallback((type?: string) => {
     void refreshStatus();
+    const key = type as keyof Ticks | undefined;
+    if (key && key in ZERO_TICKS) {
+      setTicks((t) => ({ ...t, [key]: t[key] + 1 }));
+    } else {
+      // Unknown type — bump everything.
+      setTicks((t) => ({ campaign: t.campaign+1, account: t.account+1, target: t.target+1, reply: t.reply+1, suppression: t.suppression+1 }));
+    }
   }, [refreshStatus]);
 
   const live = useStream(onChange);
@@ -191,6 +203,7 @@ export function App() {
           variant="enclosed"
           colorPalette="brand"
           size="md"
+          lazyMount
         >
           <Tabs.List bg="bg.muted" rounded="lg" p={1} mb={1} flexWrap="wrap">
             {TABS.map((t) => {
@@ -214,20 +227,23 @@ export function App() {
             })}
           </Tabs.List>
 
+          <Tabs.Content value="campaigns">
+            <CampaignsView tick={ticks.campaign} />
+          </Tabs.Content>
           <Tabs.Content value="accounts">
-            <AccountsView tick={tick} />
+            <AccountsView tick={ticks.account} />
           </Tabs.Content>
           <Tabs.Content value="targets">
-            <TargetsView tick={tick} />
+            <TargetsView tick={ticks.target} />
           </Tabs.Content>
           <Tabs.Content value="responses">
-            <ResponsesView tick={tick} />
+            <ResponsesView tick={ticks.reply} />
           </Tabs.Content>
           <Tabs.Content value="suppressions">
-            <SuppressionsView tick={tick} />
+            <SuppressionsView tick={ticks.suppression} />
           </Tabs.Content>
           <Tabs.Content value="run">
-            <RunView />
+            <RunView status={status} />
           </Tabs.Content>
         </Tabs.Root>
       </Box>

@@ -9,7 +9,7 @@ import { Empty } from './Empty';
 import { useConfirm } from './Confirm';
 import { toaster, toastError } from './Toaster';
 import { useResource } from '../hooks/useResource';
-import { PauseIcon, PlayIcon, PlusIcon, TrashIcon, UsersIcon } from './icons';
+import { ClockIcon, PauseIcon, PlayIcon, PlusIcon, TrashIcon, UsersIcon } from './icons';
 
 export function AccountsView({ tick }: { tick: number }) {
   const [adding, setAdding] = useState(false);
@@ -55,6 +55,16 @@ export function AccountsView({ tick }: { tick: number }) {
       load();
     } catch (e) {
       toastError('Could not delete account', e);
+    }
+  };
+
+  const rollbackCursor = async (a: Account) => {
+    try {
+      await api.rollbackCursor(a.id);
+      toaster.create({ type: 'success', title: `Cursor rolled back 24 h`, description: `${a.senderName} will re-poll the last day of mail` });
+      load();
+    } catch (e) {
+      toastError('Could not roll back cursor', e);
     }
   };
 
@@ -180,6 +190,15 @@ export function AccountsView({ tick }: { tick: number }) {
                         Activate
                       </Button>
                     )}
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      colorPalette="orange"
+                      title="Roll poll cursor back 24 h"
+                      onClick={() => rollbackCursor(a)}
+                    >
+                      <ClockIcon />
+                    </Button>
                     <Button
                       size="xs"
                       variant="ghost"

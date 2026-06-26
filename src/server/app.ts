@@ -14,7 +14,7 @@
 //   DELETE /api/targets/:id
 //   GET    /api/responses
 //   GET    /api/suppressions
-//   POST   /api/run/send | /api/run/poll
+//   POST   /api/run/send | /api/run/poll | /api/run/fetch
 //   GET    /api/stream                  (Server-Sent Events: store change feed)
 //   GET    /*                           (static web UI)
 
@@ -32,8 +32,10 @@ import type {
 } from '../domain/types';
 import type { Clock } from '../lib/clock';
 import { newId } from '../lib/ids';
+import { draftEmail } from '../services/drafter';
 import { logger } from '../lib/logger';
 import type { Store } from '../ports/store';
+import { isWithinSendWindow } from '../scheduler/window';
 
 export interface ServerDeps {
   store: Store;
@@ -43,6 +45,8 @@ export interface ServerDeps {
   runSend: () => Promise<unknown>;
   /** Manual "Run now" — a poll pass. */
   runPoll: () => Promise<unknown>;
+  /** Manual "Run now" — fetch only (no AI extraction). */
+  runFetch: () => Promise<unknown>;
   /** Directory of static UI assets. Default ./web */
   webDir?: string;
   /** Names of the wired providers, for /api/status. */
@@ -130,18 +134,80 @@ async function handle(
       const targets = await store.listTargets();
       const byStatus: Record<string, number> = {};
       for (const t of targets) byStatus[t.status] = (byStatus[t.status] ?? 0) + 1;
+      const now = deps.clock.now();
       return sendJson(res, 200, {
         ok: true,
-        time: deps.clock.now().toISOString(),
+        time: now.toISOString(),
         accounts: (await store.listAccounts()).length,
         targets: { total: targets.length, byStatus },
         providers: deps.providers ?? null,
+        sendWindow: deps.config.sendWindow,
+        windowActive: isWithinSendWindow(now, deps.config.sendWindow),
       });
     }
 
     // GET /api/campaigns
     if (method === 'GET' && seg[1] === 'campaigns' && seg.length === 2) {
       return sendJson(res, 200, await store.listCampaigns());
+    }
+
+    // PATCH /api/campaigns/:id — update name, advertised, topic, format, inquiryFields
+    if (method === 'PATCH' && seg[1] === 'campaigns' && seg[2] && seg.length === 3) {
+      const campaign = await store.getCampaign(seg[2]);
+      if (!campaign) return sendJson(res, 404, { error: 'campaign not found' });
+      const body = (await readJsonBody(req)) as Record<string, unknown>;
+      const updated = { ...campaign };
+      if (str(body.name)) updated.name = str(body.name)!;
+      if (str(body.topic) !== undefined) updated.topic = str(body.topic) ?? '';
+      if (str(body.format) !== undefined) updated.format = str(body.format) ?? '';
+      if (body.advertised && typeof body.advertised === 'object') {
+        const adv = body.advertised as Record<string, unknown>;
+        updated.advertised = {
+          url: str(adv.url) ?? updated.advertised.url,
+          description: str(adv.description) ?? updated.advertised.description,
+        };
+      }
+      if (Array.isArray(body.inquiryFields)) {
+        updated.inquiryFields = body.inquiryFields as never;
+      }
+      return sendJson(res, 200, await store.putCampaign(updated));
+    }
+
+    // DELETE /api/campaigns/:id
+    if (method === 'DELETE' && seg[1] === 'campaigns' && seg[2] && seg.length === 3) {
+      const campaign = await store.getCampaign(seg[2]);
+      if (!campaign) return sendJson(res, 404, { error: 'campaign not found' });
+      await store.deleteCampaign(campaign.id);
+      return sendJson(res, 200, { ok: true, id: campaign.id });
+    }
+
+    // POST /api/campaigns/:id/preview — render email for a hypothetical target
+    if (method === 'POST' && seg[1] === 'campaigns' && seg[2] && seg[3] === 'preview') {
+      const campaign = await store.getCampaign(seg[2]);
+      if (!campaign) return sendJson(res, 404, { error: 'campaign not found' });
+      const body = (await readJsonBody(req)) as Record<string, unknown>;
+      const websiteUrl = str(body.websiteUrl) ?? 'example.com';
+      const accounts = await store.listAccounts();
+      const account = accounts.find((a) => a.status === 'active') ?? accounts[0];
+      if (!account) return sendJson(res, 400, { error: 'no accounts configured' });
+      const fakeTarget: Target = {
+        id: 'preview',
+        campaignId: campaign.id,
+        websiteUrl,
+        contactEmail: str(body.contactEmail) ?? `contact@${websiteUrl}`,
+        contactName: str(body.contactName),
+        notes: str(body.notes),
+        status: 'pending',
+        followUpCount: 0,
+        createdAt: deps.clock.now().toISOString(),
+      };
+      const draft = draftEmail(campaign, account, fakeTarget);
+      return sendJson(res, 200, {
+        subject: draft.subject,
+        body: draft.body,
+        senderName: account.senderName,
+        senderEmail: account.email,
+      });
     }
 
     // POST /api/campaigns — create a campaign (targets attach to one)
@@ -216,16 +282,40 @@ async function handle(
       if (method === 'POST' && seg[3] === 'resume') {
         return sendJson(res, 200, await store.putAccount({ ...account, status: 'active' }));
       }
+      if (method === 'POST' && seg[3] === 'rollback-cursor') {
+        // Roll the poll cursor back by 24 h so the next poll re-fetches recent mail.
+        const current = account.pollCursor?.lastPolledAt
+          ? new Date(account.pollCursor.lastPolledAt).getTime()
+          : Date.now();
+        const rolled = new Date(current - 24 * 60 * 60 * 1000).toISOString();
+        return sendJson(res, 200, await store.putAccount({
+          ...account,
+          pollCursor: { mailbox: account.pollCursor?.mailbox ?? 'INBOX', lastPolledAt: rolled },
+        }));
+      }
       if (method === 'DELETE' && seg.length === 3) {
         await store.deleteAccount(account.id);
         return sendJson(res, 200, { ok: true, id: account.id });
       }
     }
 
-    // GET /api/targets?status=
+    // GET /api/targets?status=&campaignId=
     if (method === 'GET' && seg[1] === 'targets' && seg.length === 2) {
       const status = url.searchParams.get('status') as TargetStatus | null;
-      return sendJson(res, 200, await store.listTargets(status ? { status } : undefined));
+      const campaignId = url.searchParams.get('campaignId') ?? undefined;
+      return sendJson(res, 200, await store.listTargets(
+        (status || campaignId) ? { ...(status ? { status } : {}), ...(campaignId ? { campaignId } : {}) } : undefined
+      ));
+    }
+
+    // GET /api/targets/:id/thread — full send+reply history for a target
+    if (method === 'GET' && seg[1] === 'targets' && seg[2] && seg[3] === 'thread') {
+      const target = await store.getTarget(seg[2]);
+      if (!target) return sendJson(res, 404, { error: 'target not found' });
+      const outreaches = await store.listOutreaches({ targetId: target.id });
+      const allReplies = await store.listReplies();
+      const replies = allReplies.filter((r) => r.targetId === target.id);
+      return sendJson(res, 200, { target, outreaches, replies });
     }
 
     // POST /api/targets — queue a new outreach target
@@ -263,12 +353,29 @@ async function handle(
       return sendJson(res, 201, await store.putTarget(target));
     }
 
+    // PATCH /api/targets/:id — update mutable fields (status, result)
+    if (method === 'PATCH' && seg[1] === 'targets' && seg[2] && seg.length === 3) {
+      const target = await store.getTarget(seg[2]);
+      if (!target) return sendJson(res, 404, { error: 'target not found' });
+      const body = (await readJsonBody(req)) as Partial<Target>;
+      const updated: Target = { ...target };
+      if (typeof body.status === 'string') updated.status = body.status as Target['status'];
+      if ('result' in body) updated.result = body.result as Target['result'];
+      return sendJson(res, 200, await store.putTarget(updated));
+    }
+
     // DELETE /api/targets/:id
     if (method === 'DELETE' && seg[1] === 'targets' && seg[2] && seg.length === 3) {
       const target = await store.getTarget(seg[2]);
       if (!target) return sendJson(res, 404, { error: 'target not found' });
       await store.deleteTarget(target.id);
       return sendJson(res, 200, { ok: true, id: target.id });
+    }
+
+    // DELETE /api/replies/:id
+    if (method === 'DELETE' && seg[1] === 'replies' && seg[2] && seg.length === 3) {
+      await store.deleteReply(seg[2]);
+      return sendJson(res, 200, { ok: true, id: seg[2] });
     }
 
     // GET /api/responses — replies + parsed result, enriched with target website
@@ -291,6 +398,7 @@ async function handle(
     if (method === 'POST' && seg[1] === 'run' && seg[2]) {
       if (seg[2] === 'send') return sendJson(res, 200, await deps.runSend());
       if (seg[2] === 'poll') return sendJson(res, 200, await deps.runPoll());
+      if (seg[2] === 'fetch') return sendJson(res, 200, await deps.runFetch());
     }
 
     // GET /api/stream — SSE

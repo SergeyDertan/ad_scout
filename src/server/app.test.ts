@@ -78,6 +78,7 @@ async function start(): Promise<Harness> {
       pollCalls++;
       return { fetched: 0 };
     },
+    runFetch: async () => ({ fetched: 0, deduped: 0, bounced: 0, matched: 0, unmatched: 0 }),
     webDir,
     providers: { llm: 'dummy', email: 'dummy', store: 'memory' },
   };

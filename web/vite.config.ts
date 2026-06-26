@@ -18,5 +18,13 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'chakra': ['@chakra-ui/react'],
+          'react-window': ['react-window'],
+        },
+      },
+    },
   },
 });

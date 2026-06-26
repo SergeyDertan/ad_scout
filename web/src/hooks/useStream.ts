@@ -2,11 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 
 export type LiveState = 'connecting' | 'live' | 'reconnecting';
 
-/**
- * Subscribe to the server's SSE change feed (`/api/stream`). Calls `onChange`
- * (debounced) whenever the store emits, and reports connection liveness.
- */
-export function useStream(onChange: () => void): LiveState {
+export function useStream(onChange: (type?: string) => void): LiveState {
   const [state, setState] = useState<LiveState>('connecting');
   const cb = useRef(onChange);
   cb.current = onChange;
@@ -17,9 +13,13 @@ export function useStream(onChange: () => void): LiveState {
 
     es.onopen = () => setState('live');
     es.onerror = () => setState('reconnecting');
-    es.addEventListener('change', () => {
+    es.addEventListener('change', (e) => {
+      const type = (() => {
+        try { return (JSON.parse((e as MessageEvent).data) as { type?: string }).type; }
+        catch { return undefined; }
+      })();
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => cb.current(), 150);
+      timer = setTimeout(() => cb.current(type), 150);
     });
 
     return () => {

@@ -1,19 +1,22 @@
 import {
+  Badge,
   Box,
   Button,
   Flex,
   HStack,
   Link,
   NativeSelect,
-  Table,
+  SimpleGrid,
   Text,
 } from '@chakra-ui/react';
 import { useCallback, useState } from 'react';
+import { List, type RowComponentProps } from 'react-window';
 import { api } from '../api';
-import type { Target, TargetStatus } from '../types';
+import type { Campaign, Target, TargetStatus } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { AddTargetForm } from './AddTargetForm';
-import { DataPanel } from './DataPanel';
+import { BulkImportForm } from './BulkImportForm';
+import { ThreadPanel } from './ThreadPanel';
 import { Empty } from './Empty';
 import { useConfirm } from './Confirm';
 import { toaster, toastError } from './Toaster';
@@ -21,35 +24,142 @@ import { useResource } from '../hooks/useResource';
 import { FilterIcon, PlusIcon, TargetIcon, TrashIcon } from './icons';
 
 const STATUSES: (TargetStatus | '')[] = [
-  '',
-  'pending',
-  'reserved',
-  'contacted',
-  'replied',
-  'bounced',
-  'needs_review',
-  'excluded',
+  '', 'pending', 'reserved', 'contacted', 'replied', 'bounced', 'needs_review', 'excluded',
 ];
 
+// px widths for the 6 columns: website | contact | status | followups | canpost | actions
+const COLS = '1fr 200px 110px 64px 70px 80px';
+const ROW_H = 52;
+const MAX_LIST_H = 600;
+
+type Mode = 'add' | 'import' | null;
+
+// Stat chip for status breakdown
+function StatChip({ label, value, active, onClick }: { label: string; value: number; active: boolean; onClick: () => void }) {
+  return (
+    <HStack
+      gap={1.5}
+      px={2.5}
+      py={1}
+      rounded="full"
+      cursor="pointer"
+      bg={active ? 'brand.subtle' : 'bg.muted'}
+      borderWidth="1px"
+      borderColor={active ? 'brand.muted' : 'border'}
+      onClick={onClick}
+      userSelect="none"
+      _hover={{ borderColor: 'brand.emphasized' }}
+      transition="all 0.12s"
+    >
+      <Text fontSize="xs" color={active ? 'brand.fg' : 'fg.muted'} fontWeight={active ? 'semibold' : 'normal'}>
+        {label}
+      </Text>
+      <Badge size="sm" colorPalette={active ? 'brand' : 'gray'} variant={active ? 'solid' : 'subtle'} rounded="full">
+        {value}
+      </Badge>
+    </HStack>
+  );
+}
+
+// Row renderer for react-window 2.x — extra props come from rowProps
+interface RowData {
+  targets: Target[];
+  onRemove: (t: Target) => void;
+  onThread: (t: Target) => void;
+  threadId: string | null;
+}
+
+function VirtualRow({ index, style, targets, onRemove, onThread, threadId }: RowComponentProps<RowData>) {
+  const t = targets[index]!;
+  const isThreadOpen = threadId === t.id;
+  return (
+    <Box
+      style={style}
+      display="grid"
+      gridTemplateColumns={COLS}
+      alignItems="center"
+      px={4}
+      borderBottomWidth="1px"
+      borderColor="border"
+      bg={isThreadOpen ? 'bg.muted' : index % 2 === 0 ? 'bg.panel' : 'bg.subtle'}
+      _hover={{ bg: 'bg.muted' }}
+      transition="background 0.1s"
+      gap={3}
+      fontSize="sm"
+    >
+      <Box minW={0}>
+        <Link
+          href={t.websiteUrl.startsWith('http') ? t.websiteUrl : `https://${t.websiteUrl}`}
+          target="_blank"
+          rel="noreferrer"
+          fontWeight="semibold"
+          color="fg"
+          display="block"
+          overflow="hidden"
+          textOverflow="ellipsis"
+          whiteSpace="nowrap"
+          _hover={{ color: 'brand.fg', textDecoration: 'underline' }}
+        >
+          {t.websiteUrl}
+        </Link>
+        {t.contactName && (
+          <Text fontSize="xs" color="fg.muted" overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
+            {t.contactName}
+          </Text>
+        )}
+      </Box>
+      <Text color="fg.muted" overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
+        {t.contactEmail}
+      </Text>
+      <Box><StatusBadge value={t.status} /></Box>
+      <Text textAlign="center" color={t.followUpCount ? 'fg' : 'fg.subtle'}>{t.followUpCount}</Text>
+      <Text color="fg.muted">{t.result?.canPost ?? '—'}</Text>
+      <HStack justify="flex-end" gap={1}>
+        <Button
+          size="xs"
+          variant={isThreadOpen ? 'solid' : 'outline'}
+          colorPalette={isThreadOpen ? 'brand' : 'gray'}
+          onClick={() => onThread(t)}
+          px={2}
+        >
+          {isThreadOpen ? '↑' : 'Thread'}
+        </Button>
+        <Button size="xs" variant="ghost" colorPalette="red" onClick={() => onRemove(t)}>
+          <TrashIcon />
+        </Button>
+      </HStack>
+    </Box>
+  );
+}
+
 export function TargetsView({ tick }: { tick: number }) {
-  const [filter, setFilter] = useState<TargetStatus | ''>('');
-  const [adding, setAdding] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<TargetStatus | ''>('');
+  const [campaignFilter, setCampaignFilter] = useState('');
+  const [mode, setMode] = useState<Mode>(null);
+  const [threadTarget, setThreadTarget] = useState<Target | null>(null);
   const confirm = useConfirm();
+
+  const { rows: campaigns } = useResource(useCallback(() => api.listCampaigns(), []), tick);
   const {
     rows: targets,
     loading,
     error,
     reload: load,
-  } = useResource(useCallback(() => api.listTargets(filter), [filter]), tick);
+  } = useResource(
+    useCallback(() => api.listTargets(statusFilter, campaignFilter || undefined), [statusFilter, campaignFilter]),
+    tick,
+  );
+
+  // Status breakdown from loaded targets
+  const byStatus = targets.reduce<Record<string, number>>((acc, t) => {
+    acc[t.status] = (acc[t.status] ?? 0) + 1;
+    return acc;
+  }, {});
 
   const remove = async (t: Target) => {
     const ok = await confirm({
       title: 'Remove target?',
-      description: (
-        <>
-          Remove <b>{t.websiteUrl}</b> from the outreach queue?
-        </>
-      ),
+      description: <><b>{t.websiteUrl}</b> will be removed from the outreach queue.</>,
       confirmLabel: 'Remove',
       destructive: true,
     });
@@ -57,15 +167,53 @@ export function TargetsView({ tick }: { tick: number }) {
     try {
       await api.deleteTarget(t.id);
       toaster.create({ type: 'success', title: `Removed ${t.websiteUrl}` });
+      if (threadTarget?.id === t.id) setThreadTarget(null);
       load();
     } catch (e) {
       toastError('Could not remove target', e);
     }
   };
 
+  const handleThread = (t: Target) => {
+    setThreadTarget((prev) => (prev?.id === t.id ? null : t));
+  };
+
+  const listHeight = Math.min(targets.length * ROW_H, MAX_LIST_H);
+
+  const rowData: RowData = {
+    targets,
+    onRemove: remove,
+    onThread: handleThread,
+    threadId: threadTarget?.id ?? null,
+  };
+
   return (
     <Box pt={4}>
-      <Flex mb={4} align="center" gap={3} wrap="wrap">
+      {/* Stats row */}
+      {targets.length > 0 && !loading && (
+        <HStack gap={2} mb={3} flexWrap="wrap">
+          <StatChip
+            label="all"
+            value={targets.length}
+            active={statusFilter === ''}
+            onClick={() => setStatusFilter('')}
+          />
+          {STATUSES.filter(Boolean).map((s) =>
+            byStatus[s] ? (
+              <StatChip
+                key={s}
+                label={s.replace(/_/g, ' ')}
+                value={byStatus[s]}
+                active={statusFilter === s}
+                onClick={() => setStatusFilter(statusFilter === s ? '' : s as TargetStatus)}
+              />
+            ) : null
+          )}
+        </HStack>
+      )}
+
+      {/* Toolbar */}
+      <Flex mb={3} align="center" gap={2} wrap="wrap">
         <HStack
           gap={2}
           bg="bg.panel"
@@ -77,121 +225,133 @@ export function TargetsView({ tick }: { tick: number }) {
           py={1}
         >
           <FilterIcon boxSize={3.5} color="fg.muted" />
-          <Text color="fg.muted" fontSize="sm">
-            Filter
-          </Text>
           <NativeSelect.Root size="sm" width="36" variant="plain">
             <NativeSelect.Field
-              value={filter}
-              onChange={(e) => setFilter(e.target.value as TargetStatus | '')}
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as TargetStatus | '')}
               fontWeight="medium"
             >
               {STATUSES.map((s) => (
-                <option key={s} value={s}>
-                  {s ? s.replace(/_/g, ' ') : 'all statuses'}
-                </option>
+                <option key={s} value={s}>{s ? s.replace(/_/g, ' ') : 'all statuses'}</option>
               ))}
             </NativeSelect.Field>
             <NativeSelect.Indicator />
           </NativeSelect.Root>
         </HStack>
+
+        {campaigns.length > 1 && (
+          <HStack
+            gap={2}
+            bg="bg.panel"
+            borderWidth="1px"
+            borderColor="border"
+            rounded="lg"
+            pl={3}
+            pr={1.5}
+            py={1}
+          >
+            <NativeSelect.Root size="sm" width="40" variant="plain">
+              <NativeSelect.Field
+                value={campaignFilter}
+                onChange={(e) => setCampaignFilter(e.target.value)}
+                fontWeight="medium"
+              >
+                <option value="">all campaigns</option>
+                {(campaigns as Campaign[]).map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </NativeSelect.Field>
+              <NativeSelect.Indicator />
+            </NativeSelect.Root>
+          </HStack>
+        )}
+
         <Box flex="1" />
         <Button
           size="sm"
-          colorPalette="brand"
-          variant={adding ? 'outline' : 'solid'}
-          onClick={() => setAdding((v) => !v)}
+          variant={mode === 'import' ? 'outline' : 'subtle'}
+          onClick={() => setMode((m) => (m === 'import' ? null : 'import'))}
         >
-          {adding ? 'Close' : (
-            <>
-              <PlusIcon />
-              Add target
-            </>
-          )}
+          Import list
+        </Button>
+        <Button
+          size="sm"
+          colorPalette="brand"
+          variant={mode === 'add' ? 'outline' : 'solid'}
+          onClick={() => setMode((m) => (m === 'add' ? null : 'add'))}
+        >
+          {mode === 'add' ? 'Close' : <><PlusIcon /> Add target</>}
         </Button>
       </Flex>
 
-      {adding && <AddTargetForm onClose={() => setAdding(false)} onCreated={load} />}
+      {mode === 'add' && <AddTargetForm onClose={() => setMode(null)} onCreated={load} />}
+      {mode === 'import' && <BulkImportForm onClose={() => setMode(null)} onCreated={load} />}
+      {threadTarget && <ThreadPanel target={threadTarget} onClose={() => setThreadTarget(null)} />}
 
-      {error && (
-        <Text color="red.fg" fontSize="sm" mb={3}>
-          {error}
-        </Text>
-      )}
+      {error && <Text color="red.fg" fontSize="sm" mb={3}>{error}</Text>}
 
-      <DataPanel
-        loading={loading}
-        isEmpty={targets.length === 0}
-        empty={
-          <Empty
-            icon={TargetIcon}
-            title={filter ? `No ${filter.replace(/_/g, ' ')} targets` : 'No targets queued'}
-            description={
-              filter
-                ? 'Try a different status filter, or add a new target.'
-                : 'Add a website to the outreach queue to begin contacting it.'
-            }
+      {loading && targets.length === 0 ? (
+        <Box py={12} display="flex" justifyContent="center">
+          <Text color="fg.muted" fontSize="sm">Loading…</Text>
+        </Box>
+      ) : targets.length === 0 ? (
+        <Empty
+          icon={TargetIcon}
+          title={statusFilter ? `No ${statusFilter.replace(/_/g, ' ')} targets` : 'No targets queued'}
+          description={statusFilter ? 'Try a different filter.' : 'Add a website to the outreach queue to begin.'}
+        >
+          {!statusFilter && (
+            <Button size="sm" colorPalette="brand" mt={2} onClick={() => setMode('add')}>
+              <PlusIcon /> Add target
+            </Button>
+          )}
+        </Empty>
+      ) : (
+        <Box
+          bg="bg.panel"
+          borderWidth="1px"
+          borderColor="border"
+          rounded="xl"
+          boxShadow="xs"
+          overflow="hidden"
+        >
+          {/* Sticky header */}
+          <Box
+            display="grid"
+            gridTemplateColumns={COLS}
+            px={4}
+            py={2}
+            bg="bg.subtle"
+            borderBottomWidth="1px"
+            borderColor="border"
+            gap={3}
+            fontSize="xs"
+            fontWeight="semibold"
+            color="fg.muted"
+            textTransform="uppercase"
+            letterSpacing="wide"
+            position="sticky"
+            top={0}
+            zIndex={1}
           >
-            {!filter && (
-              <Button size="sm" colorPalette="brand" mt={2} onClick={() => setAdding(true)}>
-                <PlusIcon />
-                Add target
-              </Button>
-            )}
-          </Empty>
-        }
-      >
-        <Table.Root size="md" variant="line" interactive>
-          <Table.Header>
-            <Table.Row bg="bg.subtle">
-              <Table.ColumnHeader>Website</Table.ColumnHeader>
-              <Table.ColumnHeader>Contact</Table.ColumnHeader>
-              <Table.ColumnHeader>Status</Table.ColumnHeader>
-              <Table.ColumnHeader textAlign="center">Follow-ups</Table.ColumnHeader>
-              <Table.ColumnHeader>Can post</Table.ColumnHeader>
-              <Table.ColumnHeader textAlign="end">Actions</Table.ColumnHeader>
-            </Table.Row>
-          </Table.Header>
-          <Table.Body>
-            {targets.map((t) => (
-              <Table.Row key={t.id}>
-                <Table.Cell>
-                  <Link
-                    href={t.websiteUrl.startsWith('http') ? t.websiteUrl : `https://${t.websiteUrl}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    fontWeight="semibold"
-                    color="fg"
-                    _hover={{ color: 'brand.fg', textDecoration: 'underline' }}
-                  >
-                    {t.websiteUrl}
-                  </Link>
-                </Table.Cell>
-                <Table.Cell color="fg.muted">{t.contactEmail}</Table.Cell>
-                <Table.Cell>
-                  <StatusBadge value={t.status} />
-                </Table.Cell>
-                <Table.Cell textAlign="center" color={t.followUpCount ? 'fg' : 'fg.subtle'}>
-                  {t.followUpCount}
-                </Table.Cell>
-                <Table.Cell color="fg.muted">{t.result?.canPost ?? '—'}</Table.Cell>
-                <Table.Cell>
-                  <HStack justify="flex-end">
-                    <Button
-                      size="xs"
-                      variant="ghost"
-                      colorPalette="red"
-                      onClick={() => remove(t)}
-                    >
-                      <TrashIcon />
-                    </Button>
-                  </HStack>
-                </Table.Cell>
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table.Root>
-      </DataPanel>
+            <Text>Website</Text>
+            <Text>Contact</Text>
+            <Text>Status</Text>
+            <Text textAlign="center">F/U</Text>
+            <Text>Can post</Text>
+            <Text textAlign="end">Actions</Text>
+          </Box>
+
+          <List
+            style={{ height: listHeight }}
+            rowCount={targets.length}
+            rowHeight={ROW_H}
+            rowComponent={VirtualRow}
+            rowProps={rowData}
+            overscanCount={5}
+          />
+        </Box>
+      )}
     </Box>
   );
 }

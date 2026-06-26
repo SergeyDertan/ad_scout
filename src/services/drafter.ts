@@ -32,14 +32,21 @@ export function draftEmail(campaign: Campaign, account: Account, target: Target)
   const sig = account.signature?.trim() || `Best regards,\n${account.senderName}`;
   const hook = target.notes?.trim() ? `\n${target.notes.trim()}\n` : '';
 
+  const manageLine = campaign.advertised.description
+    ? `My name is ${account.senderName} and I manage ${campaign.advertised.description} - ${campaign.advertised.url}.`
+    : `My name is ${account.senderName} and I represent ${campaign.advertised.url}.`;
+
+  const topicClause = campaign.topic ? ` about ${campaign.topic}` : '';
+  const inquiryLine = questions
+    ? `I'm writing to inquire about the possibility of publishing ${indefinite(campaign.format)}${topicClause} on your website. Could you please confirm the following:\n\n${questions}`
+    : `I'm writing to inquire about the possibility of publishing ${indefinite(campaign.format)}${topicClause} on your website.`;
+
   const body = [
     `Hello, ${greeting},`,
     '',
-    `My name is ${account.senderName} and I manage ${campaign.advertised.description} — ${campaign.advertised.url}.`,
+    manageLine,
     '',
-    `I'm writing to inquire about the possibility of publishing ${indefinite(campaign.format)} about ${campaign.topic} on your website. Could you please confirm the following:`,
-    '',
-    questions,
+    inquiryLine,
     hook,
     'Thank you in advance for your time and response!',
     '',

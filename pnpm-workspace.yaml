@@ -9,3 +9,4 @@ packages:
 onlyBuiltDependencies:
   - esbuild
   - fsevents
+  - leveldown

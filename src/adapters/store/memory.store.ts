@@ -57,6 +57,9 @@ export class MemoryStore implements Store {
   async listCampaigns() {
     return [...this.campaigns.values()].map(clone);
   }
+  async deleteCampaign(id: string) {
+    if (this.campaigns.delete(id)) this.emit('campaign', 'delete', id);
+  }
 
   // accounts
   async getAccount(id: string) {
@@ -127,6 +130,14 @@ export class MemoryStore implements Store {
   }
   async listReplies() {
     return [...this.replies.values()].map(clone);
+  }
+  async deleteReply(id: string) {
+    const r = this.replies.get(id);
+    if (r) {
+      this.repliesByEmailId.delete(r.emailId);
+      this.replies.delete(id);
+      this.emit('reply', 'delete', id);
+    }
   }
 
   // suppression

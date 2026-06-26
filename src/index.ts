@@ -6,6 +6,7 @@
 //
 //   pnpm demo
 
+import 'dotenv/config';
 import { loadConfig } from './config';
 import { DummyEmailProvider } from './adapters/email/dummy.provider';
 import { DummyLlmProvider } from './adapters/llm/dummy.provider';

@@ -12,12 +12,13 @@ import {
 } from '@chakra-ui/react';
 import { useRef, useState } from 'react';
 import { api } from '../api';
+import type { Status } from '../types';
 import { Empty } from './Empty';
 import { Panel } from './Panel';
 import { toastError } from './Toaster';
-import { ClockIcon, PlayIcon, RefreshIcon, SendIcon } from './icons';
+import { ClockIcon, InboxIcon, PlayIcon, RefreshIcon, SendIcon } from './icons';
 
-type Kind = 'send' | 'poll';
+type Kind = 'send' | 'poll' | 'fetch';
 
 interface Entry {
   id: number;
@@ -63,15 +64,21 @@ function Metric({ name, value }: { name: string; value: number }) {
   );
 }
 
+const KIND_META: Record<Kind, { label: string; palette: string; icon: typeof SendIcon }> = {
+  send:  { label: 'Send pass',  palette: 'brand',  icon: SendIcon },
+  poll:  { label: 'Poll pass',  palette: 'purple', icon: RefreshIcon },
+  fetch: { label: 'Fetch pass', palette: 'teal',   icon: InboxIcon },
+};
+
 function ReportCard({ entry }: { entry: Entry }) {
-  const isSend = entry.kind === 'send';
+  const { label, palette, icon: Icon } = KIND_META[entry.kind];
   return (
     <Card.Root size="sm" variant="outline">
       <Card.Body>
         <Flex align="center" gap={2} mb={entry.report || entry.error ? 3 : 0}>
-          <Badge colorPalette={isSend ? 'brand' : 'purple'} variant="subtle">
-            {isSend ? <SendIcon /> : <RefreshIcon />}
-            {isSend ? 'Send pass' : 'Poll pass'}
+          <Badge colorPalette={palette} variant="subtle">
+            <Icon />
+            {label}
           </Badge>
           <Box flex="1" />
           <HStack gap={1} color="fg.subtle" fontSize="xs">
@@ -96,7 +103,40 @@ function ReportCard({ entry }: { entry: Entry }) {
   );
 }
 
-export function RunView() {
+function fmt(h: number) {
+  return `${h % 12 === 0 ? 12 : h % 12}${h < 12 ? 'am' : 'pm'}`;
+}
+
+function WindowBadge({ status }: { status: Status | null }) {
+  if (!status?.sendWindow) return null;
+  const { startHour, endHour } = status.sendWindow;
+  const active = status.windowActive;
+  return (
+    <HStack gap={2} align="center">
+      <Badge
+        colorPalette={active ? 'green' : 'gray'}
+        variant={active ? 'surface' : 'subtle'}
+        size="md"
+        rounded="full"
+        gap={1.5}
+      >
+        <Box
+          w="1.5"
+          h="1.5"
+          rounded="full"
+          bg={active ? 'green.500' : 'gray.400'}
+          display="inline-block"
+        />
+        {active ? 'Send window active' : 'Send window closed'}
+      </Badge>
+      <Text fontSize="xs" color="fg.muted">
+        {fmt(startHour)}–{fmt(endHour)} local time
+      </Text>
+    </HStack>
+  );
+}
+
+export function RunView({ status }: { status: Status | null }) {
   const [log, setLog] = useState<Entry[]>([]);
   const [busy, setBusy] = useState<Kind | null>(null);
   const nextId = useRef(0);
@@ -106,10 +146,8 @@ export function RunView() {
     const id = nextId.current++;
     const time = new Date().toLocaleTimeString();
     try {
-      const report = (await (kind === 'send' ? api.runSend() : api.runPoll())) as Record<
-        string,
-        unknown
-      >;
+      const apiFn = kind === 'send' ? api.runSend : kind === 'poll' ? api.runPoll : api.runFetch;
+      const report = (await apiFn()) as Record<string, unknown>;
       setLog((l) => [{ id, kind, time, report }, ...l]);
     } catch (e) {
       const error = toastError(`${kind} pass failed`, e);
@@ -121,7 +159,10 @@ export function RunView() {
 
   return (
     <Box pt={4}>
-      <SimpleGrid columns={{ base: 1, sm: 2 }} gap={3} mb={5}>
+      <Flex align="center" mb={4}>
+        <WindowBadge status={status} />
+      </Flex>
+      <SimpleGrid columns={{ base: 1, sm: 3 }} gap={3} mb={5}>
         <Card.Root variant="outline">
           <Card.Body gap={3}>
             <HStack>
@@ -163,6 +204,29 @@ export function RunView() {
             >
               <RefreshIcon />
               Run poll pass
+            </Button>
+          </Card.Body>
+        </Card.Root>
+
+        <Card.Root variant="outline">
+          <Card.Body gap={3}>
+            <HStack>
+              <InboxIcon boxSize={5} color="teal.fg" />
+              <Text fontWeight="semibold">Fetch responses</Text>
+            </HStack>
+            <Text fontSize="sm" color="fg.muted">
+              Download new replies and store them — no AI extraction. Run poll pass afterward to process.
+            </Text>
+            <Button
+              colorPalette="teal"
+              variant="outline"
+              onClick={() => run('fetch')}
+              loading={busy === 'fetch'}
+              loadingText="Fetching…"
+              alignSelf="flex-start"
+            >
+              <InboxIcon />
+              Fetch responses
             </Button>
           </Card.Body>
         </Card.Root>

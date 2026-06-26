@@ -2,6 +2,7 @@
 //   pnpm serve                  (defaults: dummy providers, memory store)
 // Switch providers/store via .env (see .env.example).
 
+import 'dotenv/config';
 import { loadConfig } from './config';
 import { buildAgent } from './lib/factory';
 import { acquireLock, LockHeldError } from './lib/lock';
@@ -10,6 +11,7 @@ import { logger } from './lib/logger';
 import { runReconcile } from './pipeline/reconcile';
 import { runSendPass } from './pipeline/send-pass';
 import { runPollPass } from './pipeline/poll-pass';
+import { runFetchPass } from './pipeline/fetch-pass';
 import { totalRemainingToday } from './pipeline/quota';
 import { createApiServer } from './server/app';
 import { DripScheduler } from './scheduler/scheduler';
@@ -35,6 +37,7 @@ async function main(): Promise<void> {
 
   const sendDeps = { store, email, clock, config };
   const pollDeps = { store, email, extractor, clock };
+  const fetchDeps = { store, email, clock };
 
   const rec = await runReconcile({ store, email, clock, config });
   logger.info('reconcile', rec as unknown as Record<string, unknown>);
@@ -45,6 +48,7 @@ async function main(): Promise<void> {
     clock,
     runSend: () => runSendPass(sendDeps),
     runPoll: () => runPollPass(pollDeps),
+    runFetch: () => runFetchPass(fetchDeps),
     // Built front-end (web/ is a separate Vite + React + Chakra module).
     // Run `pnpm web:build` first; in dev use `pnpm web:dev` (proxies /api).
     webDir: process.env.WEB_DIR ?? './web/dist',
@@ -55,7 +59,7 @@ async function main(): Promise<void> {
     clock,
     window: config.sendWindow,
     runSend: () => runSendPass(sendDeps, { maxPerAccount: 1 }),
-    runPoll: () => runPollPass(pollDeps),
+    runPoll: () => runFetchPass(fetchDeps),
     quotaRemaining: () => totalRemainingToday(store, config, clock.now()),
   });
 

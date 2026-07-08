@@ -5,6 +5,7 @@ import type {
   NewAccount,
   NewCampaign,
   NewTarget,
+  Niche,
   Outreach,
   ResponseRow,
   Status,
@@ -72,6 +73,7 @@ export const api = {
   listResponses: (campaignId?: string) =>
     req<ResponseRow[]>('/responses' + (campaignId ? `?campaignId=${encodeURIComponent(campaignId)}` : '')),
   listSuppressions: () => req<Suppression[]>('/suppressions'),
+  listNiches: () => req<Niche[]>('/niches'),
 
   // manual passes
   runSend: () => req<unknown>('/run/send', { method: 'POST' }),

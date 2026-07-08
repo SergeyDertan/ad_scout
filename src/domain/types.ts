@@ -157,9 +157,44 @@ export interface Suppression {
 
 export type CanPost = 'yes' | 'no' | 'maybe';
 
+/** A parsed price (shared by PostOffer and the 'price' FieldValue). */
+export interface PriceValue {
+  amount?: number;
+  currency?: string;
+  raw: string;
+}
+
+/**
+ * A canonical post category the publisher prices separately. The seed set lives in
+ * domain/niches.ts; new ones are learned from replies and persisted as `niche` docs.
+ */
+export interface Niche {
+  key: string; // canonical id, e.g. 'short_term_loans' (also the doc id)
+  label: string; // human label, e.g. 'Short-term loans'
+  sensitive: boolean; // rolls under the 'sensitive' umbrella for filtering
+  aliases: string[]; // owner phrasings seen for this niche (grows over time)
+  createdAt?: ISO; // set when learned (seed niches have none)
+}
+
+/** Willingness + price for ONE niche the owner addressed in the reply. */
+export interface PostOffer {
+  category: string; // niche key
+  label: string; // niche label at extraction time (display convenience)
+  sensitive: boolean; // copied from the niche — lets the UI filter without the registry
+  canPost: CanPost;
+  price?: PriceValue;
+}
+
 export interface OutreachResult {
+  /** Summary for the niche we asked about (umbrella-resolved). Back-compat field. */
   canPost: CanPost;
   optOut: boolean;
+  /** The niche key the campaign asked about, if we could map its topic. */
+  requestedCategory?: string;
+  /** Every priced post type found in the reply — the core of the extraction. */
+  offers: PostOffer[];
+  /** One short line on why the AI classified the offers this way (shown in the UI). */
+  reasoning?: string;
   conditions?: string;
   notes?: string;
   fields: Record<string, FieldValue>;

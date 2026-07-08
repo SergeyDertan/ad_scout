@@ -5,6 +5,7 @@
 import type {
   Account,
   Campaign,
+  Niche,
   Outreach,
   Reply,
   Suppression,
@@ -32,6 +33,7 @@ export class MemoryStore implements Store {
   private replies = new Map<string, Reply>(); // keyed by id
   private repliesByEmailId = new Map<string, string>(); // emailId -> reply id
   private suppressions = new Map<string, Suppression>(); // keyed by normalized email
+  private niches = new Map<string, Niche>(); // keyed by niche.key
   private listeners = new Set<ChangeListener>();
 
   private emit(type: DocType, action: ChangeEvent['action'], id: string): void {
@@ -148,6 +150,16 @@ export class MemoryStore implements Store {
       this.replies.delete(id);
       this.emit('reply', 'delete', id);
     }
+  }
+
+  // niches
+  async listNiches() {
+    return [...this.niches.values()].map(clone);
+  }
+  async putNiche(n: Niche) {
+    this.niches.set(n.key, clone(n));
+    this.emit('niche', 'put', n.key);
+    return clone(n);
   }
 
   // suppression

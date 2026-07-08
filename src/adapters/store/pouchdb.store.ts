@@ -11,6 +11,7 @@ import { normalizeEmail } from '../../domain/reply-matching';
 import type {
   Account,
   Campaign,
+  Niche,
   Outreach,
   Reply,
   Suppression,
@@ -213,6 +214,16 @@ export class PouchDbStore implements Store {
   }
   deleteReply(id: string) {
     return this.delete('reply', id);
+  }
+
+  // niches (doc id = niche.key)
+  async listNiches() {
+    const list = await this.listByType<Niche & { id?: string }>('niche');
+    return list.map(({ id, ...n }) => n as Niche);
+  }
+  async putNiche(n: Niche) {
+    await this.put('niche', { ...n, id: n.key });
+    return n;
   }
 
   // suppression

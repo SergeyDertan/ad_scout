@@ -1,6 +1,54 @@
 // Client-side mirror of the server domain types (src/domain/types.ts) — only
 // the fields the UI reads/writes. Kept deliberately small.
 
+export type CanPost = 'yes' | 'no' | 'maybe';
+
+export interface PriceValue {
+  amount?: number;
+  currency?: string;
+  raw: string;
+}
+
+export interface PostOffer {
+  category: string;
+  label: string;
+  sensitive: boolean;
+  canPost: CanPost;
+  price?: PriceValue;
+}
+
+/** A post-category the taxonomy knows about (seed or learned). Mirrors domain Niche. */
+export interface Niche {
+  key: string;
+  label: string;
+  sensitive: boolean;
+  aliases: string[];
+  createdAt?: string;
+}
+
+/** Format an offer's price for display: "$150", "150 EUR", or "—". */
+export function formatPrice(price?: PriceValue): string {
+  if (!price) return '—';
+  if (price.amount !== undefined) {
+    return price.currency ? `${price.amount} ${price.currency}` : String(price.amount);
+  }
+  return price.raw || '—';
+}
+
+/**
+ * Two-way umbrella filter (mirrors domain/niches.ts offerMatchesFilter):
+ *  - exact category, OR
+ *  - filtering the 'sensitive' umbrella matches any sensitive offer, OR
+ *  - filtering a sensitive child (casino) also matches a generic 'sensitive' offer.
+ */
+export function offerMatchesFilter(offer: PostOffer, filterKey: string, niches: Niche[]): boolean {
+  if (offer.category === filterKey) return true;
+  if (filterKey === 'sensitive') return offer.sensitive;
+  const target = niches.find((n) => n.key === filterKey);
+  if ((filterKey === 'sensitive' || target?.sensitive) && offer.category === 'sensitive') return true;
+  return false;
+}
+
 export type AccountStatus = 'warming' | 'active' | 'paused' | 'cooldown';
 export type ProviderType = 'smtp-imap' | 'gmail-api';
 
@@ -37,7 +85,12 @@ export interface Target {
   notes?: string;
   status: TargetStatus;
   followUpCount: number;
-  result?: { canPost?: string };
+  result?: {
+    canPost?: string;
+    requestedCategory?: string;
+    offers?: PostOffer[];
+    reasoning?: string;
+  };
   createdAt: string;
 }
 
@@ -94,7 +147,13 @@ export interface ResponseRow {
   campaignName?: string;
   matchMethod: 'threadId' | 'fromAddress' | 'unmatched';
   extractionStatus: 'pending' | 'done' | 'failed';
-  parsed?: { canPost: string; fields: Record<string, unknown> };
+  parsed?: {
+    canPost: string;
+    requestedCategory?: string;
+    offers?: PostOffer[];
+    reasoning?: string;
+    fields: Record<string, unknown>;
+  };
 }
 
 export interface Suppression {

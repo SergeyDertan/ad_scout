@@ -34,7 +34,9 @@ async function main() {
     console.log(`--- ${reply.id} ---`);
     console.log('text:', reply.text.slice(0, 200).replace(/\s+/g, ' '));
     try {
-      const result = await extractor.extract(campaign, reply.text);
+      const knownNiches = await store.listNiches();
+      const { result, discovered } = await extractor.extract(campaign, reply.text, knownNiches);
+      if (discovered.length) console.log('would-learn niches:', discovered.map((n) => n.key).join(', '));
       console.log(`result (${Date.now() - t0}ms):`, JSON.stringify(result, null, 2));
     } catch (err) {
       console.log(`FAILED (${Date.now() - t0}ms):`, err);

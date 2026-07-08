@@ -5,6 +5,7 @@
 import type {
   Account,
   Campaign,
+  Niche,
   Outreach,
   Reply,
   Suppression,
@@ -18,7 +19,8 @@ export type DocType =
   | 'target'
   | 'outreach'
   | 'reply'
-  | 'suppression';
+  | 'suppression'
+  | 'niche';
 
 export interface ChangeEvent {
   type: DocType;
@@ -78,6 +80,10 @@ export interface Store {
   putReply(r: Reply): Promise<Reply>;
   listReplies(): Promise<Reply[]>;
   deleteReply(id: string): Promise<void>;
+
+  // niches (self-learning post-category registry; keyed by niche.key)
+  listNiches(): Promise<Niche[]>;
+  putNiche(n: Niche): Promise<Niche>;
 
   // suppression (persistent do-not-contact)
   isSuppressed(email: string): Promise<boolean>;

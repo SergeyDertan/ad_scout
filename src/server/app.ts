@@ -31,6 +31,7 @@ import type {
   Target,
   TargetStatus,
 } from '../domain/types';
+import { allNiches } from '../domain/niches';
 import type { Clock } from '../lib/clock';
 import { newId } from '../lib/ids';
 import { draftEmail } from '../services/drafter';
@@ -437,6 +438,11 @@ async function handle(
     // GET /api/suppressions
     if (method === 'GET' && seg[1] === 'suppressions' && seg.length === 2) {
       return sendJson(res, 200, await store.listSuppressions());
+    }
+
+    // GET /api/niches — seed + learned post-category registry (drives the response filter)
+    if (method === 'GET' && seg[1] === 'niches' && seg.length === 2) {
+      return sendJson(res, 200, allNiches(await store.listNiches()));
     }
 
     // POST /api/run/send | /api/run/poll

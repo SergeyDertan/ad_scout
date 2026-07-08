@@ -9,7 +9,7 @@ import {
   type AwaitingTargetRef,
   type SentOutreachRef,
 } from '../domain/reply-matching';
-import type { Reply, Suppression } from '../domain/types';
+import type { Niche, Reply, Suppression } from '../domain/types';
 import type { Clock } from '../lib/clock';
 import { newId } from '../lib/ids';
 import { logger } from '../lib/logger';
@@ -88,6 +88,13 @@ export async function runPollPass(deps: PollDeps): Promise<PollReport> {
   return report;
 }
 
+/** Persist niches the extractor learned for the first time (idempotent by key). */
+async function persistDiscovered(store: Store, discovered: Niche[], clock: Clock): Promise<void> {
+  for (const n of discovered) {
+    await store.putNiche({ ...n, createdAt: n.createdAt ?? clock.now().toISOString() });
+  }
+}
+
 async function retryFailedExtractions(deps: PollDeps, report: PollReport): Promise<void> {
   const { store, extractor, clock } = deps;
   const failed = (await store.listReplies()).filter(
@@ -98,7 +105,9 @@ async function retryFailedExtractions(deps: PollDeps, report: PollReport): Promi
     const campaign = target ? await store.getCampaign(target.campaignId) : undefined;
     if (!target || !campaign) continue;
     try {
-      const parsed = await extractor.extract(campaign, reply.text);
+      const knownNiches = await store.listNiches();
+      const { result: parsed, discovered } = await extractor.extract(campaign, reply.text, knownNiches);
+      await persistDiscovered(store, discovered, clock);
       reply.parsed = parsed;
       reply.extractionStatus = 'done';
       report.extracted++;
@@ -188,7 +197,9 @@ async function handleMessage(
   const campaign = target ? await store.getCampaign(target.campaignId) : undefined;
   if (target && campaign) {
     try {
-      const parsed = await extractor.extract(campaign, msg.text);
+      const knownNiches = await store.listNiches();
+      const { result: parsed, discovered } = await extractor.extract(campaign, msg.text, knownNiches);
+      await persistDiscovered(store, discovered, clock);
       reply.parsed = parsed;
       reply.extractionStatus = 'done';
       report.extracted++;

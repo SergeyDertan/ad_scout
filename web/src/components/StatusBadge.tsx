@@ -7,13 +7,16 @@ const PALETTE: Record<string, string> = {
   replied: 'green',
   done: 'green',
   threadId: 'green',
+  yes: 'green',
   // bad
   paused: 'red',
   bounced: 'red',
   excluded: 'red',
   failed: 'red',
   unmatched: 'red',
+  no: 'red',
   // warn / in-flight
+  maybe: 'orange',
   contacted: 'blue',
   reserved: 'orange',
   warming: 'orange',

@@ -154,7 +154,11 @@ async function sendOne(
 
   // Initial sends move the target to 'reserved'; follow-ups stay 'contacted'.
   if (kind === 'initial') {
-    await store.putTarget({ ...target, status: 'reserved', assignedAccountId: account.id });
+    await store.updateTarget(target.id, (t) => ({
+      ...t,
+      status: 'reserved',
+      assignedAccountId: account.id,
+    }));
   }
   report.reserved++;
 
@@ -181,20 +185,19 @@ async function sendOne(
       ...(threadId ? { threadId, threadResolvedAt: now.toISOString() } : {}),
     });
 
-    const fresh = (await store.getTarget(target.id)) ?? target;
     if (kind === 'initial') {
-      await store.putTarget({
-        ...fresh,
+      await store.updateTarget(target.id, (t) => ({
+        ...t,
         status: 'contacted',
         assignedAccountId: account.id,
         lastOutreachAt: now.toISOString(),
-      });
+      }));
     } else {
-      await store.putTarget({
-        ...fresh,
-        followUpCount: fresh.followUpCount + 1,
+      await store.updateTarget(target.id, (t) => ({
+        ...t,
+        followUpCount: t.followUpCount + 1,
         lastOutreachAt: now.toISOString(),
-      });
+      }));
     }
     report.sent++;
   } catch (err) {
@@ -208,8 +211,7 @@ async function sendOne(
     });
     // Initial sends revert the target to 'pending' for retry on a later pass.
     if (kind === 'initial') {
-      const fresh = (await store.getTarget(target.id)) ?? target;
-      await store.putTarget({ ...fresh, status: 'pending' });
+      await store.updateTarget(target.id, (t) => ({ ...t, status: 'pending' }));
     }
     report.failed++;
   }

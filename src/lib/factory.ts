@@ -3,10 +3,13 @@
 import type { Config } from '../config';
 import { DummyEmailProvider } from '../adapters/email/dummy.provider';
 import { SmtpImapProvider } from '../adapters/email/smtp-imap.provider';
+import { GmailApiProvider, type GmailOAuthHandler } from '../adapters/email/gmail-api.provider';
+import { RoutingEmailProvider } from '../adapters/email/routing.provider';
 import { DummyLlmProvider } from '../adapters/llm/dummy.provider';
 import { OllamaLlmProvider } from '../adapters/llm/ollama.provider';
 import { OpenAiLlmProvider } from '../adapters/llm/openai.provider';
 import { ClaudeLlmProvider } from '../adapters/llm/claude.provider';
+import { ClaudeCodeLlmProvider } from '../adapters/llm/claude-code.provider';
 import { MemoryStore } from '../adapters/store/memory.store';
 import { PouchDbStore } from '../adapters/store/pouchdb.store';
 import type { EmailProvider } from '../ports/email-provider';
@@ -24,16 +27,6 @@ export function buildStore(config: Config): Store {
   }
 }
 
-export function buildEmail(config: Config): EmailProvider {
-  switch (config.email) {
-    case 'smtp-imap':
-      return new SmtpImapProvider();
-    case 'dummy':
-    default:
-      return new DummyEmailProvider();
-  }
-}
-
 export function buildLlm(config: Config): LlmProvider {
   switch (config.llm) {
     case 'ollama':
@@ -42,6 +35,8 @@ export function buildLlm(config: Config): LlmProvider {
       return new OpenAiLlmProvider(config.openai);
     case 'claude':
       return new ClaudeLlmProvider(config.claude);
+    case 'claude-code':
+      return new ClaudeCodeLlmProvider(config.claudeCode);
     case 'dummy':
     default:
       return new DummyLlmProvider();
@@ -53,11 +48,32 @@ export interface Agent {
   email: EmailProvider;
   llm: LlmProvider;
   extractor: Extractor;
+  /** Present when Google OAuth credentials are configured (client_secret.json or env vars). */
+  gmailOAuth?: GmailOAuthHandler;
 }
 
 export function buildAgent(config: Config): Agent {
   const store = buildStore(config);
-  const email = buildEmail(config);
   const llm = buildLlm(config);
-  return { store, email, llm, extractor: new Extractor(llm) };
+
+  let email: EmailProvider;
+  let gmailOAuth: GmailOAuthHandler | undefined;
+
+  const { clientId, clientSecret } = config.googleOAuth;
+  if (clientId && clientSecret) {
+    const gmailApi = new GmailApiProvider(store, clientId, clientSecret);
+    gmailOAuth = gmailApi;
+
+    if (config.dummyEmail) {
+      email = new DummyEmailProvider();
+    } else {
+      email = new RoutingEmailProvider(new SmtpImapProvider(), gmailApi);
+    }
+  } else if (config.dummyEmail) {
+    email = new DummyEmailProvider();
+  } else {
+    email = new SmtpImapProvider();
+  }
+
+  return { store, email, llm, extractor: new Extractor(llm), gmailOAuth };
 }

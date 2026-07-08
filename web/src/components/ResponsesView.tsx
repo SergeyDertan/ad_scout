@@ -1,11 +1,11 @@
-import { Box, Code, HStack, Table, Text, Wrap } from '@chakra-ui/react';
-import { useCallback } from 'react';
+import { Box, Code, HStack, Input, InputGroup, Table, Text, Wrap } from '@chakra-ui/react';
+import { useCallback, useState } from 'react';
 import { api } from '../api';
 import { StatusBadge } from './StatusBadge';
 import { DataPanel } from './DataPanel';
 import { Empty } from './Empty';
 import { useResource } from '../hooks/useResource';
-import { InboxIcon } from './icons';
+import { InboxIcon, SearchIcon } from './icons';
 
 function Fields({ fields }: { fields: Record<string, unknown> }) {
   const entries = Object.entries(fields ?? {});
@@ -34,10 +34,19 @@ function Fields({ fields }: { fields: Record<string, unknown> }) {
 }
 
 export function ResponsesView({ tick }: { tick: number }) {
-  const { rows, loading, error } = useResource(
+  const { rows: allRows, loading, error } = useResource(
     useCallback(() => api.listResponses(), []),
     tick,
   );
+  const [search, setSearch] = useState('');
+
+  const q = search.trim().toLowerCase();
+  const rows = q
+    ? allRows.filter(
+        (r) =>
+          r.fromAddress.toLowerCase().includes(q) || (r.website ?? '').toLowerCase().includes(q),
+      )
+    : allRows;
 
   if (error)
     return (
@@ -51,14 +60,27 @@ export function ResponsesView({ tick }: { tick: number }) {
       <Text color="fg.muted" fontSize="sm" mb={4}>
         Inbound replies matched back to a target, with the AI-extracted posting terms.
       </Text>
+      <InputGroup startElement={<SearchIcon boxSize={3.5} color="fg.muted" />} maxW="64" mb={3}>
+        <Input
+          size="sm"
+          placeholder="Search email or website…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          bg="bg.panel"
+        />
+      </InputGroup>
       <DataPanel
         loading={loading}
         isEmpty={rows.length === 0}
         empty={
           <Empty
             icon={InboxIcon}
-            title="No responses yet"
-            description="Replies from contacted targets will show up here as they arrive."
+            title={q ? `No responses match "${search.trim()}"` : 'No responses yet'}
+            description={
+              q
+                ? 'Try a different search.'
+                : 'Replies from contacted targets will show up here as they arrive.'
+            }
           />
         }
       >

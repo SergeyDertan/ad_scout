@@ -4,6 +4,13 @@
 packages:
   - 'web'
 
+allowBuilds:
+  esbuild: true
+  leveldown: true
+
+minimumReleaseAgeExclude:
+  - '@types/node@26.1.1'
+
 # Native/binary deps whose install scripts we allow to run (pnpm v10 blocks
 # build scripts by default).
 onlyBuiltDependencies:

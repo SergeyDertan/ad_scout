@@ -1,17 +1,18 @@
 {
   "name": "adscout",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@10.34.3",
+  "packageManager": "pnpm@11.10.0+sha256.620b6605ea4f62fc56a6d0a98733f479071d0321e03e486b522c7e9a74617431",
   "engines": {
     "node": ">=26",
-    "pnpm": ">=10"
+    "pnpm": ">=11"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test $(find src -name '*.test.ts')",
     "demo": "tsx src/index.ts",
+    "sample:extract": "tsx src/scripts/sample-extract.ts",
     "serve": "tsx src/serve.ts",
     "dev": "tsx watch src/serve.ts",
     "web:build": "pnpm --filter adscout-web build",
@@ -20,20 +21,20 @@
     "build": "pnpm --filter adscout-web build",
     "dev:all": "concurrently -n server,web -c blue,green 'pnpm dev' 'pnpm web:dev'"
   },
-  "devDependencies": {
-    "@types/mailparser": "^3.4.6",
-    "@types/node": "^26.0.1",
-    "@types/pouchdb": "^6.4.2",
-    "concurrently": "^10.0.3",
-    "tsx": "^4.22.4",
-    "typescript": "^6.0.3"
-  },
   "dependencies": {
     "dotenv": "^17.4.2",
-    "imapflow": "^1.4.2",
-    "mailparser": "^3.9.11",
+    "imapflow": "^1.4.6",
+    "mailparser": "^3.9.14",
     "node-html-markdown": "^2.0.0",
-    "nodemailer": "^9.0.1",
+    "nodemailer": "^9.0.3",
     "pouchdb": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/mailparser": "^3.4.6",
+    "@types/node": "^26.1.1",
+    "@types/pouchdb": "^6.4.2",
+    "concurrently": "^10.0.3",
+    "tsx": "^4.23.0",
+    "typescript": "^6.0.3"
   }
 }

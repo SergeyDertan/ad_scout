@@ -1,6 +1,6 @@
 // LLM port. Drafting is template-based (no LLM); the LLM is used for reply
 // extraction. Implementations: dummy (default, deterministic), ollama, openai,
-// claude. The factory wires the concrete one.
+// claude, claude-code. The factory wires the concrete one.
 
 import type { JsonSchema } from '../domain/types';
 

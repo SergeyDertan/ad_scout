@@ -1,25 +1,27 @@
 // Central config, loaded from the environment (.env). No secrets are stored on
 // entities — Account.credentialRef names the env vars holding the secret.
 
+import { readFileSync } from 'node:fs';
 import type { WarmupConfig } from './domain/warmup';
 import { DEFAULT_WARMUP } from './domain/warmup';
 import type { HealthConfig } from './domain/health';
 import { DEFAULT_HEALTH } from './domain/health';
 
-export type LlmProviderKind = 'dummy' | 'ollama' | 'openai' | 'claude';
-export type EmailProviderKind = 'dummy' | 'smtp-imap';
+export type LlmProviderKind = 'dummy' | 'ollama' | 'openai' | 'claude' | 'claude-code';
 export type StoreKind = 'memory' | 'pouchdb';
 
 export interface Config {
   dataDir: string;
   lockPath: string;
   llm: LlmProviderKind;
-  email: EmailProviderKind;
+  dummyEmail: boolean;
   store: StoreKind;
   pouchDir: string;
   ollama: { baseUrl: string; model: string };
   openai: { apiKey: string; model: string };
   claude: { apiKey: string; model: string };
+  claudeCode: { model: string; timeoutMs: number };
+  googleOAuth: { clientId: string; clientSecret: string };
   sendWindow: { startHour: number; endHour: number };
   reconcileGraceMs: number;
   warmup: WarmupConfig;
@@ -32,13 +34,32 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function loadGoogleOAuth(env: NodeJS.ProcessEnv): { clientId: string; clientSecret: string } {
+  if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
+    return { clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET };
+  }
+  // Fallback: parse client_secret.json from GOOGLE_CLIENT_SECRET_PATH or ./client_secret.json
+  const path = env.GOOGLE_CLIENT_SECRET_PATH ?? './client_secret.json';
+  try {
+    const json = readFileSync(path, 'utf8');
+    const data = JSON.parse(json) as Record<string, unknown>;
+    const installed = (data['installed'] ?? data['web']) as Record<string, string> | undefined;
+    if (installed?.['client_id'] && installed?.['client_secret']) {
+      return { clientId: installed['client_id'], clientSecret: installed['client_secret'] };
+    }
+  } catch {
+    // File not found or invalid — Google OAuth simply not configured.
+  }
+  return { clientId: '', clientSecret: '' };
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const dataDir = env.DATA_DIR ?? './data';
   return {
     dataDir,
     lockPath: `${dataDir}/agent.lock`,
     llm: (env.LLM_PROVIDER as LlmProviderKind) ?? 'dummy',
-    email: (env.EMAIL_PROVIDER as EmailProviderKind) ?? 'dummy',
+    dummyEmail: !env.EMAIL_PROVIDER || env.EMAIL_PROVIDER === 'dummy',
     store: (env.STORE as StoreKind) ?? 'memory',
     pouchDir: env.POUCH_DIR ?? `${dataDir}/pouch`,
     ollama: {
@@ -53,6 +74,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       apiKey: env.ANTHROPIC_API_KEY ?? '',
       model: env.CLAUDE_MODEL ?? 'claude-opus-4-8',
     },
+    claudeCode: {
+      model: env.CLAUDE_CODE_MODEL ?? 'sonnet',
+      timeoutMs: envInt('CLAUDE_CODE_TIMEOUT_MS', 120_000),
+    },
+    googleOAuth: loadGoogleOAuth(env),
     sendWindow: {
       startHour: envInt('SEND_WINDOW_START_HOUR', 9),
       endHour: envInt('SEND_WINDOW_END_HOUR', 18),

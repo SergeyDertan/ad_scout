@@ -1,4 +1,4 @@
-import { Box, Button, Flex, HStack, Input, Table, Text } from '@chakra-ui/react';
+import { Badge, Box, Button, Flex, HStack, Input, Table, Text } from '@chakra-ui/react';
 import { useCallback, useState } from 'react';
 import { api } from '../api';
 import type { Account } from '../types';
@@ -55,6 +55,30 @@ export function AccountsView({ tick }: { tick: number }) {
       load();
     } catch (e) {
       toastError('Could not delete account', e);
+    }
+  };
+
+  const connectGmail = async (a: Account) => {
+    try {
+      const { authUrl } = await api.getOAuthUrl(a.id);
+      window.open(authUrl, '_blank', 'noopener,noreferrer');
+      toaster.create({
+        type: 'info',
+        title: 'Opening Gmail authorization…',
+        description: 'Reload accounts after completing the Google sign-in.',
+      });
+    } catch (e) {
+      toastError('Could not get OAuth URL', e);
+    }
+  };
+
+  const switchToOAuth = async (a: Account) => {
+    try {
+      await api.patchAccount(a.id, { providerType: 'gmail-api' });
+      load();
+      await connectGmail({ ...a, providerType: 'gmail-api' });
+    } catch (e) {
+      toastError('Could not switch to OAuth', e);
     }
   };
 
@@ -158,7 +182,23 @@ export function AccountsView({ tick }: { tick: number }) {
                     </Text>
                   )}
                 </Table.Cell>
-                <Table.Cell color="fg.muted">{a.providerType}</Table.Cell>
+                <Table.Cell>
+                  {a.providerType === 'gmail-api' ? (
+                    a.oauthConnected ? (
+                      <>
+                        <Text color="fg.muted" fontSize="sm">gmail-api</Text>
+                        <Badge colorPalette="green" size="sm" mt={0.5}>OAuth</Badge>
+                      </>
+                    ) : (
+                      <>
+                        <Text color="fg.muted" fontSize="sm">imap</Text>
+                        <Badge colorPalette="gray" size="sm" mt={0.5}>upgrade available</Badge>
+                      </>
+                    )
+                  ) : (
+                    <Text color="fg.muted" fontSize="sm">imap</Text>
+                  )}
+                </Table.Cell>
                 <Table.Cell>
                   <Input
                     size="sm"
@@ -174,6 +214,26 @@ export function AccountsView({ tick }: { tick: number }) {
                 </Table.Cell>
                 <Table.Cell>
                   <HStack justify="flex-end" gap={2}>
+                    {a.providerType === 'smtp-imap' && (
+                      <Button
+                        size="xs"
+                        colorPalette="blue"
+                        variant="outline"
+                        onClick={() => switchToOAuth(a)}
+                      >
+                        Switch to OAuth
+                      </Button>
+                    )}
+                    {a.providerType === 'gmail-api' && !a.oauthConnected && (
+                      <Button
+                        size="xs"
+                        colorPalette="blue"
+                        variant="outline"
+                        onClick={() => connectGmail(a)}
+                      >
+                        Upgrade to OAuth
+                      </Button>
+                    )}
                     {a.status === 'active' ? (
                       <Button size="xs" variant="outline" onClick={() => setActive(a, false)}>
                         <PauseIcon />

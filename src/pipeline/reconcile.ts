@@ -52,7 +52,9 @@ export async function runReconcile(deps: ReconcileDeps): Promise<ReconcileReport
         await store.putOutreach({ ...o, status: 'needs_review' });
         const target = await store.getTarget(o.targetId);
         if (target && target.status === 'reserved') {
-          await store.putTarget({ ...target, status: 'needs_review' });
+          await store.updateTarget(target.id, (t) =>
+            t.status === 'reserved' ? { ...t, status: 'needs_review' } : t,
+          );
         }
         report.needsReview++;
       }

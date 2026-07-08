@@ -1,7 +1,7 @@
 // Entry point. With the default config (memory store + dummy email + dummy LLM)
 // this runs a full send → reply → poll → extract cycle end-to-end with no
 // external services — a live demonstration of the pipeline. Swap providers via
-// .env (LLM_PROVIDER / EMAIL_PROVIDER / STORE) to use Ollama/OpenAI/Claude,
+// .env (LLM_PROVIDER / STORE / set EMAIL_PROVIDER=smtp-imap) to use Ollama/OpenAI/Claude,
 // real SMTP/IMAP, and PouchDB.
 //
 //   pnpm demo

@@ -4,6 +4,8 @@ import {
   Button,
   Flex,
   HStack,
+  Input,
+  InputGroup,
   Link,
   NativeSelect,
   SimpleGrid,
@@ -21,7 +23,7 @@ import { Empty } from './Empty';
 import { useConfirm } from './Confirm';
 import { toaster, toastError } from './Toaster';
 import { useResource } from '../hooks/useResource';
-import { FilterIcon, PlusIcon, TargetIcon, TrashIcon } from './icons';
+import { FilterIcon, PlusIcon, SearchIcon, TargetIcon, TrashIcon } from './icons';
 
 const STATUSES: (TargetStatus | '')[] = [
   '', 'pending', 'reserved', 'contacted', 'replied', 'bounced', 'needs_review', 'excluded',
@@ -135,13 +137,14 @@ function VirtualRow({ index, style, targets, onRemove, onThread, threadId }: Row
 export function TargetsView({ tick }: { tick: number }) {
   const [statusFilter, setStatusFilter] = useState<TargetStatus | ''>('');
   const [campaignFilter, setCampaignFilter] = useState('');
+  const [search, setSearch] = useState('');
   const [mode, setMode] = useState<Mode>(null);
   const [threadTarget, setThreadTarget] = useState<Target | null>(null);
   const confirm = useConfirm();
 
   const { rows: campaigns } = useResource(useCallback(() => api.listCampaigns(), []), tick);
   const {
-    rows: targets,
+    rows: allTargets,
     loading,
     error,
     reload: load,
@@ -149,6 +152,13 @@ export function TargetsView({ tick }: { tick: number }) {
     useCallback(() => api.listTargets(statusFilter, campaignFilter || undefined), [statusFilter, campaignFilter]),
     tick,
   );
+
+  const q = search.trim().toLowerCase();
+  const targets = q
+    ? allTargets.filter(
+        (t) => t.websiteUrl.toLowerCase().includes(q) || t.contactEmail.toLowerCase().includes(q),
+      )
+    : allTargets;
 
   // Status breakdown from loaded targets
   const byStatus = targets.reduce<Record<string, number>>((acc, t) => {
@@ -266,6 +276,16 @@ export function TargetsView({ tick }: { tick: number }) {
           </HStack>
         )}
 
+        <InputGroup startElement={<SearchIcon boxSize={3.5} color="fg.muted" />} maxW="64">
+          <Input
+            size="sm"
+            placeholder="Search email or website…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            bg="bg.panel"
+          />
+        </InputGroup>
+
         <Box flex="1" />
         <Button
           size="sm"
@@ -297,10 +317,18 @@ export function TargetsView({ tick }: { tick: number }) {
       ) : targets.length === 0 ? (
         <Empty
           icon={TargetIcon}
-          title={statusFilter ? `No ${statusFilter.replace(/_/g, ' ')} targets` : 'No targets queued'}
-          description={statusFilter ? 'Try a different filter.' : 'Add a website to the outreach queue to begin.'}
+          title={
+            q
+              ? `No targets match "${search.trim()}"`
+              : statusFilter
+                ? `No ${statusFilter.replace(/_/g, ' ')} targets`
+                : 'No targets queued'
+          }
+          description={
+            q || statusFilter ? 'Try a different filter.' : 'Add a website to the outreach queue to begin.'
+          }
         >
-          {!statusFilter && (
+          {!statusFilter && !q && (
             <Button size="sm" colorPalette="brand" mt={2} onClick={() => setMode('add')}>
               <PlusIcon /> Add target
             </Button>

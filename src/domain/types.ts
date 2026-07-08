@@ -44,6 +44,12 @@ export interface InquiryField {
 export type AccountStatus = 'warming' | 'active' | 'paused' | 'cooldown';
 export type ProviderType = 'smtp-imap' | 'gmail-api';
 
+export interface OAuthTokens {
+  refreshToken: string;
+  accessToken?: string;
+  accessTokenExpiresAt?: ISO;
+}
+
 export interface Account {
   id: ID;
   email: string;
@@ -58,6 +64,7 @@ export interface Account {
   lastError?: string;
   lastErrorAt?: ISO;
   pollCursor?: PollCursor;
+  oauthTokens?: OAuthTokens; // present for gmail-api accounts after OAuth flow
 }
 
 export interface PollCursor {

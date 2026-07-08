@@ -48,12 +48,23 @@ export interface Store {
   // accounts
   getAccount(id: string): Promise<Account | undefined>;
   putAccount(a: Account): Promise<Account>;
+  /**
+   * Concurrency-safe update: re-reads the current doc, applies `mutate`, and
+   * on a write conflict (another writer landed in between) re-fetches and
+   * re-applies `mutate` rather than blindly retrying a stale object. Prefer
+   * this over get+putAccount whenever the write depends on the current doc —
+   * accounts are written from multiple independent loops (send/poll
+   * schedulers, HTTP routes) that can otherwise race each other.
+   */
+  updateAccount(id: string, mutate: (current: Account) => Account): Promise<Account>;
   listAccounts(): Promise<Account[]>;
   deleteAccount(id: string): Promise<void>;
 
   // targets
   getTarget(id: string): Promise<Target | undefined>;
   putTarget(t: Target): Promise<Target>;
+  /** Concurrency-safe update — see updateAccount. */
+  updateTarget(id: string, mutate: (current: Target) => Target): Promise<Target>;
   listTargets(filter?: TargetFilter): Promise<Target[]>;
   deleteTarget(id: string): Promise<void>;
 

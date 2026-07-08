@@ -16,6 +16,7 @@ export interface Account {
   maxDailyLimit: number;
   dailyLimitOverride?: number;
   lastError?: string;
+  oauthConnected?: boolean; // gmail-api accounts: true after OAuth flow completes
 }
 
 export type TargetStatus =

@@ -104,6 +104,13 @@ export const ClockIcon = make(
 
 export const FilterIcon = make(<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />);
 
+export const SearchIcon = make(
+  <>
+    <circle cx="11" cy="11" r="8" />
+    <line x1="21" y1="21" x2="16.65" y2="16.65" />
+  </>,
+);
+
 export const MegaphoneIcon = make(
   <>
     <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />

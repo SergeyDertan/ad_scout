@@ -71,6 +71,11 @@ export class MemoryStore implements Store {
     this.emit('account', 'put', a.id);
     return clone(a);
   }
+  async updateAccount(id: string, mutate: (current: Account) => Account) {
+    const current = this.accounts.get(id);
+    if (!current) throw new Error(`account ${id} not found`);
+    return this.putAccount(mutate(clone(current)));
+  }
   async listAccounts() {
     return [...this.accounts.values()].map(clone);
   }
@@ -87,6 +92,11 @@ export class MemoryStore implements Store {
     this.targets.set(t.id, clone(t));
     this.emit('target', 'put', t.id);
     return clone(t);
+  }
+  async updateTarget(id: string, mutate: (current: Target) => Target) {
+    const current = this.targets.get(id);
+    if (!current) throw new Error(`target ${id} not found`);
+    return this.putTarget(mutate(clone(current)));
   }
   async listTargets(filter?: TargetFilter) {
     let list = [...this.targets.values()];

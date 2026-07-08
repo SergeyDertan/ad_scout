@@ -22,6 +22,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { readFile } from 'node:fs/promises';
 import { extname, normalize, join } from 'node:path';
 import type { Config } from '../config';
+import type { GmailOAuthHandler } from '../adapters/email/gmail-api.provider';
 import type {
   Account,
   AccountStatus,
@@ -51,6 +52,8 @@ export interface ServerDeps {
   webDir?: string;
   /** Names of the wired providers, for /api/status. */
   providers?: { llm: string; email: string; store: string };
+  /** Present when Google OAuth is configured — drives /api/oauth/* endpoints. */
+  gmailOAuth?: GmailOAuthHandler;
 }
 
 const MIME: Record<string, string> = {
@@ -85,6 +88,21 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 
 function str(v: unknown): string | undefined {
   return typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined;
+}
+
+/** Strip raw OAuth tokens from an account before sending to the client.
+ *  Replaces oauthTokens with a safe boolean oauthConnected. */
+function sanitizeAccount(a: Account): Record<string, unknown> {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { oauthTokens: _tokens, ...rest } = a;
+  return { ...rest, oauthConnected: !!a.oauthTokens?.refreshToken };
+}
+
+/** Build the OAuth redirect URI from the incoming request's host header. */
+function oauthRedirectUri(req: IncomingMessage): string {
+  const host = req.headers.host ?? 'localhost:8787';
+  const proto = req.headers['x-forwarded-proto'] ?? 'http';
+  return `${proto}://${host}/api/oauth/callback`;
 }
 
 /** Default env-var NAME for a new account's secret (never the secret itself). */
@@ -233,7 +251,7 @@ async function handle(
 
     // GET /api/accounts
     if (method === 'GET' && seg[1] === 'accounts' && seg.length === 2) {
-      return sendJson(res, 200, await store.listAccounts());
+      return sendJson(res, 200, (await store.listAccounts()).map(sanitizeAccount));
     }
 
     // POST /api/accounts — add a (Gmail) sending account
@@ -258,7 +276,7 @@ async function handle(
         createdAt: deps.clock.now().toISOString(),
         maxDailyLimit,
       };
-      return sendJson(res, 201, await store.putAccount(account));
+      return sendJson(res, 201, sanitizeAccount(await store.putAccount(account)));
     }
 
     // /api/accounts/:id ...
@@ -268,30 +286,46 @@ async function handle(
 
       if (method === 'PATCH' && seg.length === 3) {
         const body = (await readJsonBody(req)) as Partial<Account>;
-        const updated: Account = { ...account };
-        if (typeof body.dailyLimitOverride === 'number')
-          updated.dailyLimitOverride = body.dailyLimitOverride;
-        if (typeof body.maxDailyLimit === 'number') updated.maxDailyLimit = body.maxDailyLimit;
-        if (typeof body.senderName === 'string') updated.senderName = body.senderName;
-        if (typeof body.signature === 'string') updated.signature = body.signature;
-        return sendJson(res, 200, await store.putAccount(updated));
+        const updated = await store.updateAccount(account.id, (current) => {
+          const next: Account = { ...current };
+          if (typeof body.dailyLimitOverride === 'number')
+            next.dailyLimitOverride = body.dailyLimitOverride;
+          if (typeof body.maxDailyLimit === 'number') next.maxDailyLimit = body.maxDailyLimit;
+          if (typeof body.senderName === 'string') next.senderName = body.senderName;
+          if (typeof body.signature === 'string') next.signature = body.signature;
+          if (body.providerType === 'gmail-api' || body.providerType === 'smtp-imap')
+            next.providerType = body.providerType;
+          return next;
+        });
+        return sendJson(res, 200, sanitizeAccount(updated));
       }
       if (method === 'POST' && seg[3] === 'pause') {
-        return sendJson(res, 200, await store.putAccount({ ...account, status: 'paused' }));
+        const updated = await store.updateAccount(account.id, (current) => ({
+          ...current,
+          status: 'paused',
+        }));
+        return sendJson(res, 200, sanitizeAccount(updated));
       }
       if (method === 'POST' && seg[3] === 'resume') {
-        return sendJson(res, 200, await store.putAccount({ ...account, status: 'active' }));
+        const updated = await store.updateAccount(account.id, (current) => ({
+          ...current,
+          status: 'active',
+        }));
+        return sendJson(res, 200, sanitizeAccount(updated));
       }
       if (method === 'POST' && seg[3] === 'rollback-cursor') {
         // Roll the poll cursor back by 24 h so the next poll re-fetches recent mail.
-        const current = account.pollCursor?.lastPolledAt
-          ? new Date(account.pollCursor.lastPolledAt).getTime()
-          : Date.now();
-        const rolled = new Date(current - 24 * 60 * 60 * 1000).toISOString();
-        return sendJson(res, 200, await store.putAccount({
-          ...account,
-          pollCursor: { mailbox: account.pollCursor?.mailbox ?? 'INBOX', lastPolledAt: rolled },
-        }));
+        const updated = await store.updateAccount(account.id, (current) => {
+          const base = current.pollCursor?.lastPolledAt
+            ? new Date(current.pollCursor.lastPolledAt).getTime()
+            : Date.now();
+          const rolled = new Date(base - 24 * 60 * 60 * 1000).toISOString();
+          return {
+            ...current,
+            pollCursor: { mailbox: current.pollCursor?.mailbox ?? 'INBOX', lastPolledAt: rolled },
+          };
+        });
+        return sendJson(res, 200, sanitizeAccount(updated));
       }
       if (method === 'DELETE' && seg.length === 3) {
         await store.deleteAccount(account.id);
@@ -358,10 +392,13 @@ async function handle(
       const target = await store.getTarget(seg[2]);
       if (!target) return sendJson(res, 404, { error: 'target not found' });
       const body = (await readJsonBody(req)) as Partial<Target>;
-      const updated: Target = { ...target };
-      if (typeof body.status === 'string') updated.status = body.status as Target['status'];
-      if ('result' in body) updated.result = body.result as Target['result'];
-      return sendJson(res, 200, await store.putTarget(updated));
+      const updated = await store.updateTarget(target.id, (current) => {
+        const next: Target = { ...current };
+        if (typeof body.status === 'string') next.status = body.status as Target['status'];
+        if ('result' in body) next.result = body.result as Target['result'];
+        return next;
+      });
+      return sendJson(res, 200, updated);
     }
 
     // DELETE /api/targets/:id
@@ -399,6 +436,44 @@ async function handle(
       if (seg[2] === 'send') return sendJson(res, 200, await deps.runSend());
       if (seg[2] === 'poll') return sendJson(res, 200, await deps.runPoll());
       if (seg[2] === 'fetch') return sendJson(res, 200, await deps.runFetch());
+    }
+
+    // GET /api/oauth/start?accountId=xxx
+    // Returns { authUrl } — the caller should open it in a browser.
+    if (method === 'GET' && seg[1] === 'oauth' && seg[2] === 'start') {
+      if (!deps.gmailOAuth) return sendJson(res, 503, { error: 'Google OAuth not configured' });
+      const accountId = url.searchParams.get('accountId');
+      if (!accountId) return sendJson(res, 400, { error: 'accountId required' });
+      const account = await store.getAccount(accountId);
+      if (!account) return sendJson(res, 404, { error: 'account not found' });
+      const redirectUri = oauthRedirectUri(req);
+      const authUrl = deps.gmailOAuth.getAuthUrl(accountId, redirectUri);
+      return sendJson(res, 200, { authUrl });
+    }
+
+    // GET /api/oauth/callback?code=xxx&state=accountId
+    // Google redirects here after the user approves. Exchanges code for tokens,
+    // saves them on the account, and responds with a self-closing HTML page.
+    if (method === 'GET' && seg[1] === 'oauth' && seg[2] === 'callback') {
+      if (!deps.gmailOAuth) return sendJson(res, 503, { error: 'Google OAuth not configured' });
+      const code = url.searchParams.get('code');
+      const accountId = url.searchParams.get('state');
+      if (!code || !accountId) return sendJson(res, 400, { error: 'code and state required' });
+      try {
+        const redirectUri = oauthRedirectUri(req);
+        await deps.gmailOAuth.handleCallback(code, accountId, redirectUri);
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(
+          '<!DOCTYPE html><html><body style="font-family:sans-serif;padding:2rem">' +
+          '<h2>Gmail connected ✓</h2>' +
+          '<p>You can close this tab and return to AdScout.</p>' +
+          '<script>setTimeout(()=>window.close(),2000)</script>' +
+          '</body></html>',
+        );
+      } catch (err) {
+        return sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return;
     }
 
     // GET /api/stream — SSE

@@ -50,6 +50,7 @@ export const api = {
   resumeAccount: (id: string) => req<Account>(`/accounts/${id}/resume`, { method: 'POST' }),
   rollbackCursor: (id: string) => req<Account>(`/accounts/${id}/rollback-cursor`, { method: 'POST' }),
   deleteAccount: (id: string) => req<{ ok: boolean }>(`/accounts/${id}`, { method: 'DELETE' }),
+  getOAuthUrl: (accountId: string) => req<{ authUrl: string }>(`/oauth/start?accountId=${accountId}`),
 
   // targets
   listTargets: (status?: TargetStatus | '', campaignId?: string) => {

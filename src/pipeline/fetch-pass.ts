@@ -69,10 +69,10 @@ export async function runFetchPass(deps: FetchDeps): Promise<FetchReport> {
       await handleMessage(deps, msg, sentRefs, awaiting, report);
     }
 
-    await store.putAccount({
-      ...account,
+    await store.updateAccount(account.id, (current) => ({
+      ...current,
       pollCursor: { mailbox: 'INBOX', lastPolledAt: clock.now().toISOString() },
-    });
+    }));
   }
 
   return report;
@@ -110,7 +110,7 @@ async function handleMessage(
       const target = (await store.listTargets()).find(
         (t) => normalizeEmail(t.contactEmail) === failed,
       );
-      if (target) await store.putTarget({ ...target, status: 'bounced' });
+      if (target) await store.updateTarget(target.id, (t) => ({ ...t, status: 'bounced' }));
     }
     report.bounced++;
     return;
@@ -140,8 +140,10 @@ async function handleMessage(
   if (match.targetId) {
     report.matched++;
     const target = await store.getTarget(match.targetId);
-    if (target && target.status !== 'bounced' && target.status !== 'excluded') {
-      await store.putTarget({ ...target, status: 'replied' });
+    if (target) {
+      await store.updateTarget(target.id, (t) =>
+        t.status === 'bounced' || t.status === 'excluded' ? t : { ...t, status: 'replied' },
+      );
     }
   } else {
     report.unmatched++;

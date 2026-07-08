@@ -33,7 +33,7 @@ async function main(): Promise<void> {
   }
 
   const agent = buildAgent(config);
-  const { store, email, extractor } = agent;
+  const { store, email, extractor, gmailOAuth } = agent;
 
   const sendDeps = { store, email, clock, config };
   const pollDeps = { store, email, extractor, clock };
@@ -52,7 +52,8 @@ async function main(): Promise<void> {
     // Built front-end (web/ is a separate Vite + React + Chakra module).
     // Run `pnpm web:build` first; in dev use `pnpm web:dev` (proxies /api).
     webDir: process.env.WEB_DIR ?? './web/dist',
-    providers: { llm: agent.llm.name, email: email.name, store: config.store },
+    providers: { llm: agent.llm.name, email: config.dummyEmail ? 'dummy' : 'real', store: config.store },
+    gmailOAuth,
   });
 
   const scheduler = new DripScheduler({
@@ -65,7 +66,7 @@ async function main(): Promise<void> {
 
   server.listen(port, () => {
     logger.info(`AdScout server on http://localhost:${port}`, {
-      providers: { llm: agent.llm.name, email: email.name, store: config.store },
+      providers: { llm: agent.llm.name, email: config.dummyEmail ? 'dummy' : 'real', store: config.store },
     });
     scheduler.start();
   });

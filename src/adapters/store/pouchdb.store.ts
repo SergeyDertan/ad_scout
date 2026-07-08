@@ -86,6 +86,34 @@ export class PouchDbStore implements Store {
     return obj;
   }
 
+  /**
+   * Read-mutate-write with retry on a 409 conflict. Unlike put(), the write is
+   * derived from a *freshly re-read* doc on every attempt, so a concurrent
+   * writer's change isn't clobbered by a stale retry — each side's mutate
+   * re-applies its own delta on top of whatever the other side just wrote.
+   */
+  private async update<T extends { id: string }>(
+    type: DocType,
+    id: string,
+    mutate: (current: T) => T,
+  ): Promise<T> {
+    const db = await this.getDb();
+    const _id = this.docId(type, id);
+    const MAX_ATTEMPTS = 10;
+    for (let attempt = 1; ; attempt++) {
+      const existing = await db.get(_id);
+      const next = mutate(this.strip<T>(existing));
+      try {
+        await db.put({ ...next, _id, type, _rev: existing._rev });
+        this.emit(type, 'put', id);
+        return next;
+      } catch (err: any) {
+        if (err?.status === 409 && attempt < MAX_ATTEMPTS) continue;
+        throw err;
+      }
+    }
+  }
+
   private async delete(type: DocType, id: string): Promise<void> {
     const db = await this.getDb();
     try {
@@ -128,6 +156,9 @@ export class PouchDbStore implements Store {
   putAccount(a: Account) {
     return this.put('account', a);
   }
+  updateAccount(id: string, mutate: (current: Account) => Account) {
+    return this.update('account', id, mutate);
+  }
   listAccounts() {
     return this.listByType<Account>('account');
   }
@@ -141,6 +172,9 @@ export class PouchDbStore implements Store {
   }
   putTarget(t: Target) {
     return this.put('target', t);
+  }
+  updateTarget(id: string, mutate: (current: Target) => Target) {
+    return this.update('target', id, mutate);
   }
   async listTargets(filter?: TargetFilter) {
     let list = await this.listByType<Target>('target');

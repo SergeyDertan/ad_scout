@@ -77,10 +77,10 @@ export async function runPollPass(deps: PollDeps): Promise<PollReport> {
     }
 
     // Advance the cursor.
-    await store.putAccount({
-      ...account,
+    await store.updateAccount(account.id, (current) => ({
+      ...current,
       pollCursor: { mailbox: 'INBOX', lastPolledAt: clock.now().toISOString() },
-    });
+    }));
   }
 
   await retryFailedExtractions(deps, report);
@@ -104,10 +104,10 @@ async function retryFailedExtractions(deps: PollDeps, report: PollReport): Promi
       report.extracted++;
       await store.putReply(reply);
       if (parsed.optOut) {
-        await store.putTarget({ ...target, status: 'excluded', result: parsed });
+        await store.updateTarget(target.id, (t) => ({ ...t, status: 'excluded', result: parsed }));
         await suppress(store, target.contactEmail, 'opt_out', clock);
       } else {
-        await store.putTarget({ ...target, status: 'replied', result: parsed });
+        await store.updateTarget(target.id, (t) => ({ ...t, status: 'replied', result: parsed }));
       }
     } catch {
       reply.extractionStatus = 'failed';
@@ -150,7 +150,7 @@ async function handleMessage(
       const target = (await store.listTargets()).find(
         (t) => normalizeEmail(t.contactEmail) === failed,
       );
-      if (target) await store.putTarget({ ...target, status: 'bounced' });
+      if (target) await store.updateTarget(target.id, (t) => ({ ...t, status: 'bounced' }));
     }
     report.bounced++;
     return;
@@ -194,10 +194,10 @@ async function handleMessage(
       report.extracted++;
 
       if (parsed.optOut) {
-        await store.putTarget({ ...target, status: 'excluded', result: parsed });
+        await store.updateTarget(target.id, (t) => ({ ...t, status: 'excluded', result: parsed }));
         await suppress(store, target.contactEmail, 'opt_out', clock);
       } else {
-        await store.putTarget({ ...target, status: 'replied', result: parsed });
+        await store.updateTarget(target.id, (t) => ({ ...t, status: 'replied', result: parsed }));
       }
     } catch (err) {
       reply.extractionStatus = 'failed';

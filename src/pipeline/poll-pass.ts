@@ -9,7 +9,14 @@ import {
   type AwaitingTargetRef,
   type SentOutreachRef,
 } from '../domain/reply-matching';
-import type { Niche, Reply, Suppression } from '../domain/types';
+import {
+  AWAITING_INTENTS,
+  type Niche,
+  type OutreachResult,
+  type Reply,
+  type Suppression,
+  type Target,
+} from '../domain/types';
 import type { Clock } from '../lib/clock';
 import { newId } from '../lib/ids';
 import { logger } from '../lib/logger';
@@ -106,22 +113,55 @@ async function retryFailedExtractions(deps: PollDeps, report: PollReport): Promi
     if (!target || !campaign) continue;
     try {
       const knownNiches = await store.listNiches();
-      const { result: parsed, discovered } = await extractor.extract(campaign, reply.text, knownNiches);
+      const { result: parsed, discovered, review } = await extractor.extract(
+        campaign,
+        reply.text,
+        knownNiches,
+        reply.attachments ?? [],
+      );
       await persistDiscovered(store, discovered, clock);
-      reply.parsed = parsed;
-      reply.extractionStatus = 'done';
+      await rollUp(store, target, reply, parsed, review, clock);
       report.extracted++;
       await store.putReply(reply);
-      if (parsed.optOut) {
-        await store.updateTarget(target.id, (t) => ({ ...t, status: 'excluded', result: parsed }));
-        await suppress(store, target.contactEmail, 'opt_out', clock);
-      } else {
-        await store.updateTarget(target.id, (t) => ({ ...t, status: 'replied', result: parsed }));
-      }
     } catch {
       reply.extractionStatus = 'failed';
       await store.putReply(reply);
     }
+  }
+}
+
+/**
+ * Set the reply's parsed result + review flags and roll the outcome up onto the
+ * target. Opt-out excludes; a substantive answer marks the target 'replied'. But
+ * a holding/auto reply is NOT a real answer — flag it and leave the target
+ * 'contacted' so follow-ups keep chasing the actual response.
+ */
+async function rollUp(
+  store: Store,
+  target: Target,
+  reply: Reply,
+  parsed: OutreachResult,
+  review: string[],
+  clock: Clock,
+): Promise<void> {
+  const awaiting = parsed.intent != null && AWAITING_INTENTS.includes(parsed.intent);
+  const reasons = [...review];
+  if (awaiting) {
+    const label = parsed.intent === 'auto_reply' ? 'auto-reply' : 'holding reply';
+    reasons.push(`No answer yet — ${label}; still awaiting a substantive response.`);
+  }
+  reply.parsed = parsed;
+  reply.review = reasons.length ? reasons : undefined;
+  reply.extractionStatus = 'done';
+
+  if (parsed.optOut) {
+    await store.updateTarget(target.id, (t) => ({ ...t, status: 'excluded', result: parsed }));
+    await suppress(store, target.contactEmail, 'opt_out', clock);
+  } else if (awaiting) {
+    // Leave the target 'contacted' — do not close it as answered; the real
+    // reply (or a follow-up) is still expected.
+  } else {
+    await store.updateTarget(target.id, (t) => ({ ...t, status: 'replied', result: parsed }));
   }
 }
 
@@ -182,6 +222,7 @@ async function handleMessage(
     matchMethod: match.method,
     receivedAt: msg.receivedAt,
     text: msg.text,
+    ...(msg.attachments?.length ? { attachments: msg.attachments } : {}),
     extractionStatus: 'pending',
   };
 
@@ -198,18 +239,15 @@ async function handleMessage(
   if (target && campaign) {
     try {
       const knownNiches = await store.listNiches();
-      const { result: parsed, discovered } = await extractor.extract(campaign, msg.text, knownNiches);
+      const { result: parsed, discovered, review } = await extractor.extract(
+        campaign,
+        msg.text,
+        knownNiches,
+        msg.attachments ?? [],
+      );
       await persistDiscovered(store, discovered, clock);
-      reply.parsed = parsed;
-      reply.extractionStatus = 'done';
+      await rollUp(store, target, reply, parsed, review, clock);
       report.extracted++;
-
-      if (parsed.optOut) {
-        await store.updateTarget(target.id, (t) => ({ ...t, status: 'excluded', result: parsed }));
-        await suppress(store, target.contactEmail, 'opt_out', clock);
-      } else {
-        await store.updateTarget(target.id, (t) => ({ ...t, status: 'replied', result: parsed }));
-      }
     } catch (err) {
       reply.extractionStatus = 'failed';
       report.extractionFailed++;

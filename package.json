@@ -17,6 +17,7 @@
     "verify:sends": "tsx src/scripts/verify-sends.ts",
     "fix:stuck-targets": "tsx src/scripts/fix-stuck-targets.ts",
     "reset:extractions": "tsx src/scripts/reset-extractions.ts",
+    "refetch:replies": "tsx src/scripts/refetch-replies.ts",
     "backfill:replies": "tsx src/scripts/backfill-missing-replies.ts",
     "serve": "tsx src/serve.ts",
     "dev": "tsx watch src/serve.ts",

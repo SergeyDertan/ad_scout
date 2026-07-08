@@ -10,12 +10,13 @@
 // Credentials are loaded automatically from client_secret.json (or via
 // GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET env vars).
 
-import type { Account } from '../../domain/types';
-import type {
-  EmailProvider,
-  IncomingEmail,
-  OutgoingEmail,
-  SendResult,
+import type { Account, EmailAttachment } from '../../domain/types';
+import {
+  MAX_ATTACHMENT_BYTES,
+  type EmailProvider,
+  type IncomingEmail,
+  type OutgoingEmail,
+  type SendResult,
 } from '../../ports/email-provider';
 import type { Store } from '../../ports/store';
 
@@ -200,10 +201,53 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
           account,
           `/messages/${id}?format=full`,
         );
-        const parsed = parseGmailMessage(msg);
-        if (parsed) out.push(parsed);
+        const parsed = await parseGmailMessage(msg);
+        if (parsed) {
+          const attachments = await this.fetchAttachments(account, msg);
+          if (attachments.length) parsed.attachments = attachments;
+          out.push(parsed);
+        }
       } catch {
         // Skip individual malformed messages rather than failing the whole pass.
+      }
+    }
+    return out;
+  }
+
+  /** Download each attachment part's bytes (Gmail returns them via a separate
+   *  endpoint, keyed by attachmentId) and return size-capped EmailAttachments. */
+  private async fetchAttachments(
+    account: Account,
+    msg: GmailMessage,
+  ): Promise<EmailAttachment[]> {
+    const refs: GmailPart[] = [];
+    collectAttachmentParts(msg.payload as GmailPart | undefined, refs);
+
+    const out: EmailAttachment[] = [];
+    for (const part of refs) {
+      const declaredSize = part.body?.size ?? 0;
+      if (declaredSize > MAX_ATTACHMENT_BYTES) continue; // skip huge files up front
+      try {
+        // Small parts may carry inline data; otherwise fetch by attachmentId.
+        let dataB64url = part.body?.data;
+        if (!dataB64url && part.body?.attachmentId) {
+          const att = await this.gmailFetch<{ data?: string; size?: number }>(
+            account,
+            `/messages/${msg.id}/attachments/${part.body.attachmentId}`,
+          );
+          dataB64url = att.data;
+        }
+        if (!dataB64url) continue;
+        const content = Buffer.from(dataB64url, 'base64url');
+        if (!content.length || content.length > MAX_ATTACHMENT_BYTES) continue;
+        out.push({
+          filename: part.filename || `attachment-${out.length + 1}`,
+          mimeType: part.mimeType || 'application/octet-stream',
+          size: content.length,
+          contentBase64: content.toString('base64'),
+        });
+      } catch {
+        // Skip an attachment we can't download rather than failing the message.
       }
     }
     return out;
@@ -254,7 +298,8 @@ interface GmailMessage {
 
 interface GmailPart {
   mimeType?: string;
-  body?: { data?: string };
+  filename?: string;
+  body?: { data?: string; attachmentId?: string; size?: number };
   parts?: GmailPart[];
 }
 
@@ -263,18 +308,42 @@ function header(msg: GmailMessage, name: string): string {
   return msg.payload?.headers?.find((h) => h.name.toLowerCase() === lower)?.value ?? '';
 }
 
-function extractText(part: GmailPart): string {
-  if (part.mimeType === 'text/plain' && part.body?.data) {
-    return Buffer.from(part.body.data, 'base64url').toString('utf8');
+// Walk the MIME tree collecting the first text/plain and first text/html part.
+// (Gmail nests parts arbitrarily deep for multipart/alternative + related.)
+function collectBodies(part: GmailPart, acc: { plain?: string; html?: string }): void {
+  const data = part.body?.data;
+  if (data) {
+    const decoded = Buffer.from(data, 'base64url').toString('utf8');
+    if (part.mimeType === 'text/plain' && acc.plain === undefined) acc.plain = decoded;
+    else if (part.mimeType === 'text/html' && acc.html === undefined) acc.html = decoded;
   }
-  for (const p of part.parts ?? []) {
-    const t = extractText(p);
-    if (t) return t;
+  for (const p of part.parts ?? []) collectBodies(p, acc);
+}
+
+// Prefer the HTML part (converted to markdown) over plain text — same policy as
+// the SMTP/IMAP provider, so extraction quality doesn't depend on auth type.
+async function extractText(payload: GmailMessage['payload']): Promise<string> {
+  if (!payload) return '';
+  const acc: { plain?: string; html?: string } = {};
+  collectBodies(payload as GmailPart, acc);
+  if (acc.html) {
+    const { NodeHtmlMarkdown } = await import('node-html-markdown' as string);
+    return NodeHtmlMarkdown.translate(acc.html);
   }
+  if (acc.plain !== undefined) return acc.plain;
+  // Single-part message whose top-level body is neither text/plain nor text/html.
+  if (payload.body?.data) return Buffer.from(payload.body.data, 'base64url').toString('utf8');
   return '';
 }
 
-function parseGmailMessage(msg: GmailMessage): IncomingEmail | undefined {
+// An attachment is any part carrying a filename (inline bodies have none).
+function collectAttachmentParts(part: GmailPart | undefined, acc: GmailPart[]): void {
+  if (!part) return;
+  if (part.filename && (part.body?.attachmentId || part.body?.data)) acc.push(part);
+  for (const p of part.parts ?? []) collectAttachmentParts(p, acc);
+}
+
+async function parseGmailMessage(msg: GmailMessage): Promise<IncomingEmail | undefined> {
   const from = header(msg, 'From');
   const subject = header(msg, 'Subject');
   const messageId = header(msg, 'Message-ID') || header(msg, 'Message-Id');
@@ -283,13 +352,7 @@ function parseGmailMessage(msg: GmailMessage): IncomingEmail | undefined {
   // "Name <addr>" → "addr"; bare address stays as-is.
   const fromAddress = from.replace(/^.*<(.+?)>\s*$/, '$1').trim() || from.trim();
 
-  let text = '';
-  const payload = msg.payload;
-  if (payload?.body?.data) {
-    text = Buffer.from(payload.body.data, 'base64url').toString('utf8');
-  } else if (payload) {
-    text = extractText(payload as GmailPart);
-  }
+  const text = await extractText(msg.payload);
 
   const receivedAt = msg.internalDate
     ? new Date(Number(msg.internalDate)).toISOString()

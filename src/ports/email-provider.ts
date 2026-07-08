@@ -1,7 +1,12 @@
 // Email port (overview.md §4). Reply-matching does NOT live here — it uses
 // fields the provider surfaces in a normalized way (threadId, emailId).
 
-import type { Account, ISO } from '../domain/types';
+import type { Account, EmailAttachment, ISO } from '../domain/types';
+
+// Attachments are persisted (base64) on the Reply document and later written to
+// disk for the extractor to read. Cap the per-file size so a rogue/huge file
+// can't bloat the store — publisher price lists (PDF/XLSX) are tens of KB.
+export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 
 export interface OutgoingEmail {
   to: string;
@@ -24,6 +29,7 @@ export interface IncomingEmail {
   subject: string;
   receivedAt: ISO;
   text: string;
+  attachments?: EmailAttachment[];
 }
 
 export interface EmailProvider {

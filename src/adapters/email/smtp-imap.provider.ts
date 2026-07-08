@@ -12,12 +12,13 @@
 // NOTE: body extraction below is intentionally minimal (split off headers). For
 // robust MIME handling, add `mailparser` and parse message.source.
 
-import type { Account } from '../../domain/types';
-import type {
-  EmailProvider,
-  IncomingEmail,
-  OutgoingEmail,
-  SendResult,
+import type { Account, EmailAttachment } from '../../domain/types';
+import {
+  MAX_ATTACHMENT_BYTES,
+  type EmailProvider,
+  type IncomingEmail,
+  type OutgoingEmail,
+  type SendResult,
 } from '../../ports/email-provider';
 
 interface Creds {
@@ -134,7 +135,7 @@ export class SmtpImapProvider implements EmailProvider {
             receivedAt: (env.date ?? new Date()).toISOString
               ? (env.date as Date).toISOString()
               : new Date().toISOString(),
-            text: await extractText(msg.source),
+            ...(await parseBody(msg.source)),
           });
         }
         return out;
@@ -145,16 +146,36 @@ export class SmtpImapProvider implements EmailProvider {
   }
 }
 
-/** Parse the raw MIME source, decode quoted-printable, and return clean text.
- *  Prefers the HTML part (converted to markdown) over plain text. */
-async function extractText(source: unknown): Promise<string> {
-  if (!source) return '';
+/** Parse the raw MIME source, decode quoted-printable, and return clean text
+ *  plus any attachments. Prefers the HTML part (converted to markdown) over
+ *  plain text. */
+async function parseBody(
+  source: unknown,
+): Promise<{ text: string; attachments?: EmailAttachment[] }> {
+  if (!source) return { text: '' };
   const raw = Buffer.isBuffer(source) ? source : Buffer.from(String(source), 'utf8');
   const { simpleParser } = await import('mailparser' as string);
   const parsed = await simpleParser(raw);
+
+  let text: string;
   if (parsed.html) {
     const { NodeHtmlMarkdown } = await import('node-html-markdown' as string);
-    return NodeHtmlMarkdown.translate(parsed.html);
+    text = NodeHtmlMarkdown.translate(parsed.html);
+  } else {
+    text = parsed.text ?? '';
   }
-  return parsed.text ?? '';
+
+  const attachments: EmailAttachment[] = [];
+  for (const att of parsed.attachments ?? []) {
+    const content: Buffer = att.content;
+    if (!content?.length || content.length > MAX_ATTACHMENT_BYTES) continue;
+    attachments.push({
+      filename: att.filename || `attachment-${attachments.length + 1}`,
+      mimeType: att.contentType || 'application/octet-stream',
+      size: content.length,
+      contentBase64: content.toString('base64'),
+    });
+  }
+
+  return attachments.length ? { text, attachments } : { text };
 }

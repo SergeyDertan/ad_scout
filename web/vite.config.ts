@@ -20,9 +20,13 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       output: {
-        manualChunks: {
-          'chakra': ['@chakra-ui/react'],
-          'react-window': ['react-window'],
+        // vite 8's rolldown bundler only accepts the function form of
+        // manualChunks (the object/array form throws "Expected Function").
+        manualChunks(id) {
+          if (id.includes('node_modules/@chakra-ui/') || id.includes('node_modules/@emotion/'))
+            return 'chakra';
+          if (id.includes('node_modules/react-window')) return 'react-window';
+          return undefined;
         },
       },
     },

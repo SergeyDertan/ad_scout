@@ -26,6 +26,7 @@ test('buildExtractionSchema lists universal + per-field requirements', () => {
   const schema = buildExtractionSchema(FIELDS) as any;
   assert.deepEqual(schema.required, [
     'optOut',
+    'intent',
     'offers',
     'reasoning',
     'conditions',

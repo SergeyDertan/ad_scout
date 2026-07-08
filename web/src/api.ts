@@ -69,6 +69,14 @@ export const api = {
 
   deleteReply: (id: string) => req<{ ok: boolean }>(`/replies/${id}`, { method: 'DELETE' }),
 
+  patchReply: (
+    id: string,
+    body: {
+      offers: { category: string; label?: string; sensitive?: boolean; canPost: string; priceRaw: string }[];
+      optOut?: boolean;
+    },
+  ) => req<ResponseRow>(`/replies/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+
   // read-only feeds
   listResponses: (campaignId?: string) =>
     req<ResponseRow[]>('/responses' + (campaignId ? `?campaignId=${encodeURIComponent(campaignId)}` : '')),

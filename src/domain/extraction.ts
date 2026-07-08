@@ -14,6 +14,7 @@ import type {
   OutreachResult,
   PostOffer,
   PriceValue,
+  ReplyIntent,
 } from './types';
 import { matchNiche, normalizeKey, resolveOffer } from './niches';
 
@@ -29,6 +30,8 @@ export interface RawOffer {
 /** The shape the LLM is asked to return. */
 export interface RawExtraction {
   optOut: boolean;
+  /** Reply intent: answer | holding | auto_reply | question | decline | other. */
+  intent?: string;
   /** One entry per post type the owner priced/addressed (regular + any sensitive). */
   offers: RawOffer[];
   /** One short line explaining the offer classification. */
@@ -36,6 +39,12 @@ export interface RawExtraction {
   conditions?: string;
   notes?: string;
   fields: Record<string, { raw: string }>;
+}
+
+const REPLY_INTENTS: ReplyIntent[] = ['answer', 'holding', 'auto_reply', 'question', 'decline', 'other'];
+
+function coerceIntent(raw: string | undefined): ReplyIntent {
+  return REPLY_INTENTS.includes(raw as ReplyIntent) ? (raw as ReplyIntent) : 'answer';
 }
 
 const OFFER_SCHEMA = {
@@ -84,9 +93,15 @@ export function buildExtractionSchema(fields: InquiryField[]): JsonSchema {
   return {
     type: 'object',
     additionalProperties: false,
-    required: ['optOut', 'offers', 'reasoning', 'conditions', 'notes', 'fields'],
+    required: ['optOut', 'intent', 'offers', 'reasoning', 'conditions', 'notes', 'fields'],
     properties: {
       optOut: { type: 'boolean' },
+      intent: {
+        type: 'string',
+        enum: ['answer', 'holding', 'auto_reply', 'question', 'decline', 'other'],
+        description:
+          'What kind of reply this is. "answer" = a substantive response (gives prices/willingness, or clearly declines). "holding" = an acknowledgement promising a later reply ("we\'ll get back to you", "received, will respond soon"). "auto_reply" = out-of-office/autoresponder. "question" = they ask US something without answering. "decline" = not interested. "other" = none of these.',
+      },
       offers: {
         type: 'array',
         description:
@@ -248,6 +263,7 @@ export function assembleResult(
   const result: OutreachResult = {
     canPost: summary?.canPost ?? 'maybe', // back-compat summary
     optOut: Boolean(raw.optOut),
+    intent: coerceIntent(raw.intent),
     ...(opts.requestedCategory ? { requestedCategory: opts.requestedCategory } : {}),
     offers,
     ...(raw.reasoning ? { reasoning: raw.reasoning } : {}),

@@ -26,12 +26,14 @@ import type { GmailOAuthHandler } from '../adapters/email/gmail-api.provider';
 import type {
   Account,
   AccountStatus,
+  CanPost,
   Campaign,
   ProviderType,
   Target,
   TargetStatus,
 } from '../domain/types';
-import { allNiches } from '../domain/niches';
+import { allNiches, categorizeTopic } from '../domain/niches';
+import { assembleResult, type RawExtraction, type RawOffer } from '../domain/extraction';
 import type { Clock } from '../lib/clock';
 import { newId } from '../lib/ids';
 import { draftEmail } from '../services/drafter';
@@ -414,6 +416,72 @@ async function handle(
     if (method === 'DELETE' && seg[1] === 'replies' && seg[2] && seg.length === 3) {
       await store.deleteReply(seg[2]);
       return sendJson(res, 200, { ok: true, id: seg[2] });
+    }
+
+    // PATCH /api/replies/:id — human correction of the AI extraction.
+    // Body: { offers: [{ category, label?, sensitive?, canPost, priceRaw }], optOut? }
+    // Rebuilt through assembleResult so price parsing / niche reconciliation /
+    // canPost summary match a normal extraction. Clears the `review` flag.
+    if (method === 'PATCH' && seg[1] === 'replies' && seg[2] && seg.length === 3) {
+      const id = seg[2];
+      const reply = (await store.listReplies()).find((r) => r.id === id);
+      if (!reply) return sendJson(res, 404, { error: 'reply not found' });
+
+      const body = (await readJsonBody(req)) as { offers?: unknown; optOut?: unknown };
+      const rawOffers: RawOffer[] = Array.isArray(body.offers)
+        ? body.offers.map((o) => {
+            const off = o as Record<string, unknown>;
+            // A newly-added offer may carry only a label; use it as the category
+            // seed (reconcileOffers normalizes it into a niche key).
+            const category = str(off.category) ?? str(off.label) ?? '';
+            return {
+              category,
+              label: str(off.label) ?? category,
+              sensitive: Boolean(off.sensitive),
+              canPost: (str(off.canPost) as CanPost) ?? 'maybe',
+              priceRaw: typeof off.priceRaw === 'string' ? off.priceRaw : '',
+            };
+          }).filter((o) => o.category)
+        : [];
+
+      const target = reply.targetId ? await store.getTarget(reply.targetId) : undefined;
+      const campaign = target ? await store.getCampaign(target.campaignId) : undefined;
+      const niches = allNiches(await store.listNiches());
+      // Preserve the AI's prose/field answers; only the offers + optOut are edited.
+      const raw: RawExtraction = {
+        optOut: Boolean(body.optOut),
+        offers: rawOffers,
+        reasoning: reply.parsed?.reasoning ?? 'Edited by hand.',
+        ...(reply.parsed?.conditions ? { conditions: reply.parsed.conditions } : {}),
+        ...(reply.parsed?.notes ? { notes: reply.parsed.notes } : {}),
+        fields: Object.fromEntries(
+          Object.entries(reply.parsed?.fields ?? {}).map(([k, v]) => [
+            k,
+            { raw: typeof (v as { raw?: unknown })?.raw === 'string' ? (v as { raw: string }).raw : '' },
+          ]),
+        ),
+      };
+      const requestedCategory = campaign ? categorizeTopic(campaign.topic, niches) : undefined;
+      const { result, discovered } = assembleResult(campaign?.inquiryFields ?? [], raw, {
+        niches,
+        ...(requestedCategory ? { requestedCategory } : {}),
+      });
+      for (const n of discovered) {
+        await store.putNiche({ ...n, createdAt: n.createdAt ?? deps.clock.now().toISOString() });
+      }
+
+      reply.parsed = result;
+      reply.review = undefined; // corrected by a human
+      reply.extractionStatus = 'done';
+      await store.putReply(reply);
+      if (target) {
+        await store.updateTarget(target.id, (t) => ({
+          ...t,
+          status: result.optOut ? 'excluded' : 'replied',
+          result,
+        }));
+      }
+      return sendJson(res, 200, reply);
     }
 
     // GET /api/responses?campaignId= — replies + parsed result, enriched with target website + campaign

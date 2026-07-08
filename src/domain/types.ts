@@ -127,6 +127,15 @@ export interface Outreach {
 export type MatchMethod = 'threadId' | 'fromAddress' | 'unmatched';
 export type ExtractionStatus = 'pending' | 'done' | 'failed';
 
+/** A file attached to an inbound email. Content is base64 so it serializes into
+ *  JSON (IncomingEmail transport + persisted Reply document) without a Buffer. */
+export interface EmailAttachment {
+  filename: string;
+  mimeType: string;
+  size: number; // decoded byte length
+  contentBase64: string;
+}
+
 export interface Reply {
   id: ID;
   emailId: string; // stable dedupe key
@@ -137,8 +146,13 @@ export interface Reply {
   matchMethod: MatchMethod;
   receivedAt: ISO;
   text: string;
+  attachments?: EmailAttachment[];
   parsed?: OutreachResult;
   extractionStatus: ExtractionStatus;
+  /** Human-readable reasons the AI could not fully process this reply (e.g. an
+   *  unreadable attachment type, an unreachable link). Present ⇒ needs a human
+   *  to review/correct it. Cleared when someone edits the result by hand. */
+  review?: string[];
 }
 
 // --- Suppression (persistent do-not-contact list) ---------------------------
@@ -185,10 +199,23 @@ export interface PostOffer {
   price?: PriceValue;
 }
 
+/**
+ * What kind of reply this is, so a holding/auto message isn't mistaken for a
+ * real answer. `answer` = substantive (prices/willingness/decline given);
+ * `holding` = "we'll get back to you"; `auto_reply` = OOO/autoresponder;
+ * `question` = they asked us something; `decline` = not interested; `other`.
+ */
+export type ReplyIntent = 'answer' | 'holding' | 'auto_reply' | 'question' | 'decline' | 'other';
+
+/** Intents that mean "no substantive answer yet" — keep chasing the real reply. */
+export const AWAITING_INTENTS: ReplyIntent[] = ['holding', 'auto_reply'];
+
 export interface OutreachResult {
   /** Summary for the niche we asked about (umbrella-resolved). Back-compat field. */
   canPost: CanPost;
   optOut: boolean;
+  /** Classified reply intent (answer vs holding/auto/…). Defaults to 'answer'. */
+  intent?: ReplyIntent;
   /** The niche key the campaign asked about, if we could map its topic. */
   requestedCategory?: string;
   /** Every priced post type found in the reply — the core of the extraction. */

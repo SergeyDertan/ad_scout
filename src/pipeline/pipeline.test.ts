@@ -148,6 +148,47 @@ test('poll-pass dedupes the same inbound emailId', async () => {
   assert.equal((await store.listReplies()).length, 1);
 });
 
+test('holding reply keeps the target contacted (follow-ups continue) and flags for review', async () => {
+  const store = new MemoryStore();
+  const email = new DummyEmailProvider();
+  const holdingLlm: LlmProvider = {
+    name: 'stub-holding',
+    async generateJson() {
+      return {
+        optOut: false,
+        intent: 'holding',
+        offers: [],
+        reasoning: 'acknowledgement only',
+        conditions: '',
+        notes: '',
+        fields: { price: { raw: '' }, categories: { raw: '' }, section: { raw: '' } },
+      };
+    },
+    async generateText() {
+      return '';
+    },
+  };
+  const extractor = new Extractor(holdingLlm);
+  await seed(store);
+  await runSendPass({ store, email, clock, config });
+  const outreach = (await store.listOutreaches({ targetId: 't1' }))[0];
+
+  email.injectReply({
+    threadId: outreach.threadId!,
+    fromAddress: 'info@t1.com',
+    text: 'Thanks for reaching out, we will get back to you soon.',
+  });
+  await runPollPass({ store, email, extractor, clock });
+
+  // NOT marked replied — still 'contacted' so follow-ups keep chasing the answer.
+  const t1 = await store.getTarget('t1');
+  assert.equal(t1?.status, 'contacted');
+  // The reply is recorded and flagged for review.
+  const reply = (await store.listReplies()).find((r) => r.targetId === 't1');
+  assert.equal(reply?.parsed?.intent, 'holding');
+  assert.ok((reply?.review ?? []).some((r) => /no answer yet/i.test(r)));
+});
+
 test('opt-out reply excludes the target and adds a persistent suppression', async () => {
   const store = new MemoryStore();
   const email = new DummyEmailProvider();

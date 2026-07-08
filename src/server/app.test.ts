@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { loadConfig } from '../config';
 import { MemoryStore } from '../adapters/store/memory.store';
-import type { Account, Campaign, Target } from '../domain/types';
+import type { Account, Campaign, Reply, Target } from '../domain/types';
 import { systemClock } from '../lib/clock';
 import { createApiServer, type ServerDeps } from './app';
 
@@ -262,6 +262,52 @@ test('DELETE /api/targets/:id removes a target', async () => {
     const r = await J(`${h.base}/api/targets/t1`, { method: 'DELETE' });
     assert.equal(r.ok, true);
     assert.equal(await h.store.getTarget('t1'), undefined);
+  } finally {
+    await h.close();
+  }
+});
+
+test('PATCH /api/replies/:id applies a human correction and clears review', async () => {
+  const h = await start();
+  try {
+    const reply: Reply = {
+      id: 'r1',
+      emailId: 'e1',
+      rfcMessageId: '<e1@x>',
+      fromAddress: 'a@site1.com',
+      targetId: 't1',
+      matchMethod: 'fromAddress',
+      receivedAt: '2026-06-02T00:00:00Z',
+      text: 'see attached price list',
+      extractionStatus: 'done',
+      review: ['Unsupported attachment type, read it manually: rates.xlsx (…)'],
+      parsed: { canPost: 'maybe', optOut: false, offers: [], fields: { price: { raw: '' } } as never },
+    };
+    await h.store.putReply(reply);
+
+    const updated = await J(`${h.base}/api/replies/r1`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        offers: [
+          { category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$50' },
+          { label: 'Casino', sensitive: true, canPost: 'yes', priceRaw: '$100' },
+        ],
+      }),
+    });
+
+    assert.equal(updated.review, undefined); // cleared
+    const offers = updated.parsed.offers as Array<{ category: string; sensitive?: boolean; price?: { amount?: number } }>;
+    assert.equal(offers.length, 2);
+    const regular = offers.find((o) => o.category === 'regular');
+    const casino = offers.find((o) => o.sensitive);
+    assert.equal(regular?.price?.amount, 50);
+    assert.equal(casino?.price?.amount, 100);
+
+    // Rolled up onto the target.
+    const t1 = await h.store.getTarget('t1');
+    assert.equal(t1?.status, 'replied');
+    assert.equal((t1?.result?.offers ?? []).length, 2);
   } finally {
     await h.close();
   }

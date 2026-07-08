@@ -9,10 +9,10 @@
 //   PATCH  /api/accounts/:id            { dailyLimitOverride?, maxDailyLimit?, senderName?, signature? }
 //   POST   /api/accounts/:id/pause | /resume
 //   DELETE /api/accounts/:id
-//   GET    /api/targets?status=
+//   GET    /api/targets?status=&campaignId=
 //   POST   /api/targets                 { websiteUrl, contactEmail, campaignId?, contactName?, notes? }
 //   DELETE /api/targets/:id
-//   GET    /api/responses
+//   GET    /api/responses?campaignId=
 //   GET    /api/suppressions
 //   POST   /api/run/send | /api/run/poll | /api/run/fetch
 //   GET    /api/stream                  (Server-Sent Events: store change feed)
@@ -415,14 +415,22 @@ async function handle(
       return sendJson(res, 200, { ok: true, id: seg[2] });
     }
 
-    // GET /api/responses — replies + parsed result, enriched with target website
+    // GET /api/responses?campaignId= — replies + parsed result, enriched with target website + campaign
     if (method === 'GET' && seg[1] === 'responses' && seg.length === 2) {
+      const campaignId = url.searchParams.get('campaignId') ?? undefined;
       const replies = await store.listReplies();
       const targets = new Map((await store.listTargets()).map((t) => [t.id, t]));
-      const out = replies.map((r) => ({
-        ...r,
-        website: r.targetId ? targets.get(r.targetId)?.websiteUrl : undefined,
-      }));
+      const campaigns = new Map((await store.listCampaigns()).map((c) => [c.id, c.name]));
+      let out = replies.map((r) => {
+        const target = r.targetId ? targets.get(r.targetId) : undefined;
+        return {
+          ...r,
+          website: target?.websiteUrl,
+          campaignId: target?.campaignId,
+          campaignName: target?.campaignId ? campaigns.get(target.campaignId) : undefined,
+        };
+      });
+      if (campaignId) out = out.filter((r) => r.campaignId === campaignId);
       return sendJson(res, 200, out);
     }
 

@@ -69,7 +69,8 @@ export const api = {
   deleteReply: (id: string) => req<{ ok: boolean }>(`/replies/${id}`, { method: 'DELETE' }),
 
   // read-only feeds
-  listResponses: () => req<ResponseRow[]>('/responses'),
+  listResponses: (campaignId?: string) =>
+    req<ResponseRow[]>('/responses' + (campaignId ? `?campaignId=${encodeURIComponent(campaignId)}` : '')),
   listSuppressions: () => req<Suppression[]>('/suppressions'),
 
   // manual passes

@@ -29,8 +29,8 @@ const STATUSES: (TargetStatus | '')[] = [
   '', 'pending', 'reserved', 'contacted', 'replied', 'bounced', 'needs_review', 'excluded',
 ];
 
-// px widths for the 6 columns: website | contact | status | followups | canpost | actions
-const COLS = '1fr 200px 110px 64px 70px 80px';
+// px widths for the 7 columns: website | campaign | contact | status | followups | canpost | actions
+const COLS = '1fr 140px 200px 110px 64px 70px 80px';
 const ROW_H = 52;
 const MAX_LIST_H = 600;
 
@@ -66,12 +66,13 @@ function StatChip({ label, value, active, onClick }: { label: string; value: num
 // Row renderer for react-window 2.x — extra props come from rowProps
 interface RowData {
   targets: Target[];
+  campaignNames: Record<string, string>;
   onRemove: (t: Target) => void;
   onThread: (t: Target) => void;
   threadId: string | null;
 }
 
-function VirtualRow({ index, style, targets, onRemove, onThread, threadId }: RowComponentProps<RowData>) {
+function VirtualRow({ index, style, targets, campaignNames, onRemove, onThread, threadId }: RowComponentProps<RowData>) {
   const t = targets[index]!;
   const isThreadOpen = threadId === t.id;
   return (
@@ -110,6 +111,9 @@ function VirtualRow({ index, style, targets, onRemove, onThread, threadId }: Row
           </Text>
         )}
       </Box>
+      <Text color="fg.muted" overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap" fontSize="xs">
+        {campaignNames[t.campaignId] ?? '—'}
+      </Text>
       <Text color="fg.muted" overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
         {t.contactEmail}
       </Text>
@@ -190,8 +194,14 @@ export function TargetsView({ tick }: { tick: number }) {
 
   const listHeight = Math.min(targets.length * ROW_H, MAX_LIST_H);
 
+  const campaignNames = (campaigns as Campaign[]).reduce<Record<string, string>>((acc, c) => {
+    acc[c.id] = c.name;
+    return acc;
+  }, {});
+
   const rowData: RowData = {
     targets,
+    campaignNames,
     onRemove: remove,
     onThread: handleThread,
     threadId: threadTarget?.id ?? null,
@@ -249,32 +259,30 @@ export function TargetsView({ tick }: { tick: number }) {
           </NativeSelect.Root>
         </HStack>
 
-        {campaigns.length > 1 && (
-          <HStack
-            gap={2}
-            bg="bg.panel"
-            borderWidth="1px"
-            borderColor="border"
-            rounded="lg"
-            pl={3}
-            pr={1.5}
-            py={1}
-          >
-            <NativeSelect.Root size="sm" width="40" variant="plain">
-              <NativeSelect.Field
-                value={campaignFilter}
-                onChange={(e) => setCampaignFilter(e.target.value)}
-                fontWeight="medium"
-              >
-                <option value="">all campaigns</option>
-                {(campaigns as Campaign[]).map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
-              </NativeSelect.Field>
-              <NativeSelect.Indicator />
-            </NativeSelect.Root>
-          </HStack>
-        )}
+        <HStack
+          gap={2}
+          bg="bg.panel"
+          borderWidth="1px"
+          borderColor="border"
+          rounded="lg"
+          pl={3}
+          pr={1.5}
+          py={1}
+        >
+          <NativeSelect.Root size="sm" width="40" variant="plain">
+            <NativeSelect.Field
+              value={campaignFilter}
+              onChange={(e) => setCampaignFilter(e.target.value)}
+              fontWeight="medium"
+            >
+              <option value="">all campaigns</option>
+              {(campaigns as Campaign[]).map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </NativeSelect.Field>
+            <NativeSelect.Indicator />
+          </NativeSelect.Root>
+        </HStack>
 
         <InputGroup startElement={<SearchIcon boxSize={3.5} color="fg.muted" />} maxW="64">
           <Input
@@ -363,6 +371,7 @@ export function TargetsView({ tick }: { tick: number }) {
             zIndex={1}
           >
             <Text>Website</Text>
+            <Text>Campaign</Text>
             <Text>Contact</Text>
             <Text>Status</Text>
             <Text textAlign="center">F/U</Text>

@@ -90,6 +90,8 @@ export interface ResponseRow {
   id: string;
   fromAddress: string;
   website?: string;
+  campaignId?: string;
+  campaignName?: string;
   matchMethod: 'threadId' | 'fromAddress' | 'unmatched';
   extractionStatus: 'pending' | 'done' | 'failed';
   parsed?: { canPost: string; fields: Record<string, unknown> };

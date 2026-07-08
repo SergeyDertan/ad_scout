@@ -1,6 +1,7 @@
-import { Box, Code, HStack, Input, InputGroup, Table, Text, Wrap } from '@chakra-ui/react';
+import { Box, Code, HStack, Input, InputGroup, NativeSelect, Table, Text, Wrap } from '@chakra-ui/react';
 import { useCallback, useState } from 'react';
 import { api } from '../api';
+import type { Campaign } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { DataPanel } from './DataPanel';
 import { Empty } from './Empty';
@@ -34,8 +35,10 @@ function Fields({ fields }: { fields: Record<string, unknown> }) {
 }
 
 export function ResponsesView({ tick }: { tick: number }) {
+  const [campaignFilter, setCampaignFilter] = useState('');
+  const { rows: campaigns } = useResource(useCallback(() => api.listCampaigns(), []), tick);
   const { rows: allRows, loading, error } = useResource(
-    useCallback(() => api.listResponses(), []),
+    useCallback(() => api.listResponses(campaignFilter || undefined), [campaignFilter]),
     tick,
   );
   const [search, setSearch] = useState('');
@@ -60,15 +63,42 @@ export function ResponsesView({ tick }: { tick: number }) {
       <Text color="fg.muted" fontSize="sm" mb={4}>
         Inbound replies matched back to a target, with the AI-extracted posting terms.
       </Text>
-      <InputGroup startElement={<SearchIcon boxSize={3.5} color="fg.muted" />} maxW="64" mb={3}>
-        <Input
-          size="sm"
-          placeholder="Search email or website…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
+      <HStack gap={2} mb={3} flexWrap="wrap">
+        <InputGroup startElement={<SearchIcon boxSize={3.5} color="fg.muted" />} maxW="64">
+          <Input
+            size="sm"
+            placeholder="Search email or website…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            bg="bg.panel"
+          />
+        </InputGroup>
+
+        <HStack
+          gap={2}
           bg="bg.panel"
-        />
-      </InputGroup>
+          borderWidth="1px"
+          borderColor="border"
+          rounded="lg"
+          pl={3}
+          pr={1.5}
+          py={1}
+        >
+          <NativeSelect.Root size="sm" width="40" variant="plain">
+            <NativeSelect.Field
+              value={campaignFilter}
+              onChange={(e) => setCampaignFilter(e.target.value)}
+              fontWeight="medium"
+            >
+              <option value="">all campaigns</option>
+              {(campaigns as Campaign[]).map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </NativeSelect.Field>
+            <NativeSelect.Indicator />
+          </NativeSelect.Root>
+        </HStack>
+      </HStack>
       <DataPanel
         loading={loading}
         isEmpty={rows.length === 0}
@@ -84,36 +114,40 @@ export function ResponsesView({ tick }: { tick: number }) {
           />
         }
       >
-        <Table.Root size="md" variant="line">
-          <Table.Header>
-            <Table.Row bg="bg.subtle">
-              <Table.ColumnHeader>From</Table.ColumnHeader>
-              <Table.ColumnHeader>Site</Table.ColumnHeader>
-              <Table.ColumnHeader>Match</Table.ColumnHeader>
-              <Table.ColumnHeader>Can post</Table.ColumnHeader>
-              <Table.ColumnHeader>Fields</Table.ColumnHeader>
-            </Table.Row>
-          </Table.Header>
-          <Table.Body>
-            {rows.map((r) => (
-              <Table.Row key={r.id}>
-                <Table.Cell fontWeight="medium">{r.fromAddress}</Table.Cell>
-                <Table.Cell color="fg.muted">{r.website ?? '—'}</Table.Cell>
-                <Table.Cell>
-                  <StatusBadge value={r.matchMethod} />
-                </Table.Cell>
-                <Table.Cell>
-                  {r.parsed ? (
-                    <StatusBadge value={r.parsed.canPost} />
-                  ) : (
-                    <StatusBadge value={r.extractionStatus} />
-                  )}
-                </Table.Cell>
-                <Table.Cell>{r.parsed && <Fields fields={r.parsed.fields} />}</Table.Cell>
+        <Box overflowX="auto">
+          <Table.Root size="md" variant="line" minW="900px">
+            <Table.Header>
+              <Table.Row bg="bg.subtle">
+                <Table.ColumnHeader>From</Table.ColumnHeader>
+                <Table.ColumnHeader>Site</Table.ColumnHeader>
+                <Table.ColumnHeader>Campaign</Table.ColumnHeader>
+                <Table.ColumnHeader>Match</Table.ColumnHeader>
+                <Table.ColumnHeader>Can post</Table.ColumnHeader>
+                <Table.ColumnHeader>Fields</Table.ColumnHeader>
               </Table.Row>
-            ))}
-          </Table.Body>
-        </Table.Root>
+            </Table.Header>
+            <Table.Body>
+              {rows.map((r) => (
+                <Table.Row key={r.id}>
+                  <Table.Cell fontWeight="medium">{r.fromAddress}</Table.Cell>
+                  <Table.Cell color="fg.muted">{r.website ?? '—'}</Table.Cell>
+                  <Table.Cell color="fg.muted">{r.campaignName ?? '—'}</Table.Cell>
+                  <Table.Cell>
+                    <StatusBadge value={r.matchMethod} />
+                  </Table.Cell>
+                  <Table.Cell>
+                    {r.parsed ? (
+                      <StatusBadge value={r.parsed.canPost} />
+                    ) : (
+                      <StatusBadge value={r.extractionStatus} />
+                    )}
+                  </Table.Cell>
+                  <Table.Cell minW="260px">{r.parsed && <Fields fields={r.parsed.fields} />}</Table.Cell>
+                </Table.Row>
+              ))}
+            </Table.Body>
+          </Table.Root>
+        </Box>
       </DataPanel>
     </Box>
   );

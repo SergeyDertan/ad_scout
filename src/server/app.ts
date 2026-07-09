@@ -152,7 +152,8 @@ async function handle(
   if (seg[0] === 'api') {
     // GET /api/status
     if (method === 'GET' && seg[1] === 'status' && seg.length === 2) {
-      const targets = await store.listTargets();
+      const campaignId = url.searchParams.get('campaignId') || undefined;
+      const targets = await store.listTargets(campaignId ? { campaignId } : undefined);
       const byStatus: Record<string, number> = {};
       for (const t of targets) byStatus[t.status] = (byStatus[t.status] ?? 0) + 1;
 
@@ -487,7 +488,7 @@ async function handle(
     }
 
     // PATCH /api/replies/:id — human correction of the AI extraction.
-    // Body: { offers: [{ category, label?, sensitive?, canPost, priceRaw }], optOut? }
+    // Body: { offers: [{ postType?, category, label?, sensitive?, canPost, priceRaw }], optOut? }
     // Rebuilt through assembleResult so price parsing / niche reconciliation /
     // canPost summary match a normal extraction. Clears the `review` flag.
     if (method === 'PATCH' && seg[1] === 'replies' && seg[2] && seg.length === 3) {
@@ -503,6 +504,7 @@ async function handle(
             // seed (reconcileOffers normalizes it into a niche key).
             const category = str(off.category) ?? str(off.label) ?? '';
             return {
+              ...(str(off.postType) ? { postType: str(off.postType) } : {}),
               category,
               label: str(off.label) ?? category,
               sensitive: Boolean(off.sensitive),

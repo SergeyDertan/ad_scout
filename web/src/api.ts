@@ -29,7 +29,8 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  status: () => req<Status>('/status'),
+  status: (campaignId?: string) =>
+    req<Status>('/status' + (campaignId ? `?campaignId=${encodeURIComponent(campaignId)}` : '')),
 
   // campaigns
   listCampaigns: () => req<Campaign[]>('/campaigns'),

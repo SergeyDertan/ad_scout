@@ -148,7 +148,7 @@ test('poll-pass dedupes the same inbound emailId', async () => {
   assert.equal((await store.listReplies()).length, 1);
 });
 
-test('holding reply keeps the target contacted (follow-ups continue) and flags for review', async () => {
+test('holding reply keeps the target contacted (follow-ups continue) without a spurious review flag', async () => {
   const store = new MemoryStore();
   const email = new DummyEmailProvider();
   const holdingLlm: LlmProvider = {
@@ -183,10 +183,11 @@ test('holding reply keeps the target contacted (follow-ups continue) and flags f
   // NOT marked replied — still 'contacted' so follow-ups keep chasing the answer.
   const t1 = await store.getTarget('t1');
   assert.equal(t1?.status, 'contacted');
-  // The reply is recorded and flagged for review.
+  // The reply is recorded with the holding intent, but a routine acknowledgement
+  // is NOT a review item — the awaiting state lives in parsed.intent, not review.
   const reply = (await store.listReplies()).find((r) => r.targetId === 't1');
   assert.equal(reply?.parsed?.intent, 'holding');
-  assert.ok((reply?.review ?? []).some((r) => /no answer yet/i.test(r)));
+  assert.equal(reply?.review, undefined);
 });
 
 test('opt-out reply excludes the target and adds a persistent suppression', async () => {

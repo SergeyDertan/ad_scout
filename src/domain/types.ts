@@ -190,8 +190,9 @@ export interface Niche {
   createdAt?: ISO; // set when learned (seed niches have none)
 }
 
-/** Willingness + price for ONE niche the owner addressed in the reply. */
+/** Willingness + price for ONE (post type × niche) the owner addressed. */
 export interface PostOffer {
+  postType: string; // product ladder: 'guest_post' | 'link_insertion' | 'banner' (fixed enum)
   category: string; // niche key
   label: string; // niche label at extraction time (display convenience)
   sensitive: boolean; // copied from the niche — lets the UI filter without the registry

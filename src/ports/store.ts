@@ -84,6 +84,7 @@ export interface Store {
   // niches (self-learning post-category registry; keyed by niche.key)
   listNiches(): Promise<Niche[]>;
   putNiche(n: Niche): Promise<Niche>;
+  deleteNiche(key: string): Promise<void>;
 
   // suppression (persistent do-not-contact)
   isSuppressed(email: string): Promise<boolean>;

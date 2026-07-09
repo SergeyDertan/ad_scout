@@ -35,11 +35,20 @@ test('buildExtractionSchema lists universal + per-field requirements', () => {
   ]);
   assert.equal(schema.properties.offers.type, 'array');
   assert.deepEqual(schema.properties.offers.items.required, [
+    'postType',
     'category',
     'label',
     'sensitive',
     'canPost',
     'priceRaw',
+    'priceKind',
+    'multiplier',
+    'relativeTo',
+  ]);
+  assert.deepEqual(schema.properties.offers.items.properties.postType.enum, [
+    'guest_post',
+    'link_insertion',
+    'banner',
   ]);
   assert.equal(schema.properties.offers.items.properties.canPost.enum.length, 3);
   assert.deepEqual(schema.properties.fields.required, [
@@ -173,6 +182,167 @@ test('reconcileOffers learns a new niche not in the registry', () => {
   assert.equal(discovered[0].sensitive, true);
   assert.equal(offers[0].category, 'short_term_loans');
   assert.deepEqual(offers[0].price, { amount: 99, currency: 'USD', raw: '$99' });
+});
+
+test('postType × niche: same niche in different products are distinct offers', () => {
+  const { offers } = reconcileOffers(
+    [
+      offer({ postType: 'guest_post', category: 'regular', priceRaw: '$250' }),
+      offer({ postType: 'link_insertion', category: 'regular', priceRaw: '$150' }),
+      offer({ postType: 'banner', category: 'regular', priceRaw: '$100/month' }),
+      offer({ postType: 'guest_post', category: 'casino', label: 'Casino', sensitive: true, priceRaw: '$400' }),
+    ],
+    NICHES,
+  );
+  assert.equal(offers.length, 4);
+  const cell = (pt: string, cat: string) => offers.find((o) => o.postType === pt && o.category === cat);
+  assert.equal(cell('guest_post', 'regular')?.price?.amount, 250);
+  assert.equal(cell('link_insertion', 'regular')?.price?.amount, 150);
+  assert.equal(cell('banner', 'regular')?.price?.amount, 100);
+  assert.equal(cell('guest_post', 'casino')?.price?.amount, 400);
+});
+
+test('postType defaults to guest_post and dedupes within a cell (richer wins)', () => {
+  const { offers } = reconcileOffers(
+    [
+      offer({ category: 'casino', label: 'Casino', sensitive: true, priceRaw: '' }), // no price
+      offer({ category: 'casino', label: 'Casino', sensitive: true, priceRaw: '$600' }), // priced → wins
+      offer({ postType: 'link_insertion', category: 'casino', label: 'Casino', sensitive: true, priceRaw: '$300' }),
+    ],
+    NICHES,
+  );
+  const guestCasino = offers.filter((o) => o.postType === 'guest_post' && o.category === 'casino');
+  assert.equal(guestCasino.length, 1); // deduped
+  assert.equal(guestCasino[0].price?.amount, 600);
+  assert.equal(offers.find((o) => o.postType === 'link_insertion' && o.category === 'casino')?.price?.amount, 300);
+});
+
+test('relative price resolves within the SAME post type', () => {
+  // regular guest post $250, regular link insertion $100; casino is "double" for
+  // BOTH products → casino guest post 500, casino link insertion 200.
+  const { offers } = reconcileOffers(
+    [
+      offer({ postType: 'guest_post', category: 'regular', priceRaw: '$250' }),
+      offer({ postType: 'link_insertion', category: 'regular', priceRaw: '$100' }),
+      offer({ postType: 'guest_post', category: 'casino', label: 'Casino', sensitive: true, priceRaw: 'double', priceKind: 'relative', multiplier: 2, relativeTo: 'regular' }),
+      offer({ postType: 'link_insertion', category: 'casino', label: 'Casino', sensitive: true, priceRaw: 'double', priceKind: 'relative', multiplier: 2, relativeTo: 'regular' }),
+    ],
+    NICHES,
+  );
+  const cell = (pt: string, cat: string) => offers.find((o) => o.postType === pt && o.category === cat);
+  assert.equal(cell('guest_post', 'casino')?.price?.amount, 500); // 250 × 2
+  assert.equal(cell('link_insertion', 'casino')?.price?.amount, 200); // 100 × 2, NOT 250 × 2
+});
+
+test('relative price: casino = 1.5x regular is computed from the base (japan-zone case)', () => {
+  const { offers } = reconcileOffers(
+    [
+      offer({ category: 'regular', canPost: 'yes', priceRaw: '$250/year (feature article)' }),
+      offer({
+        category: 'casino',
+        label: 'Casino',
+        sensitive: true,
+        canPost: 'yes',
+        priceRaw: 'additional 50% premium (1.5x standard rates)',
+        priceKind: 'relative',
+        multiplier: 1.5,
+        relativeTo: 'regular',
+      }),
+    ],
+    NICHES,
+  );
+  const casino = offers.find((o) => o.category === 'casino');
+  // 250 * 1.5 = 375, currency inherited from the base, raw kept verbatim.
+  assert.deepEqual(casino?.price, {
+    amount: 375,
+    currency: 'USD',
+    raw: 'additional 50% premium (1.5x standard rates)',
+  });
+  // NOT inverted anymore: casino (375) > regular (250).
+  assert.ok(casino!.price!.amount! > offers.find((o) => o.category === 'regular')!.price!.amount!);
+});
+
+test('relative price: a range multiplier uses its lower bound (devopsschool 3-5x case)', () => {
+  const { offers } = reconcileOffers(
+    [
+      offer({ category: 'regular', canPost: 'yes', priceRaw: '$50-$150' }),
+      offer({
+        category: 'casino',
+        label: 'Casino',
+        sensitive: true,
+        canPost: 'yes',
+        priceRaw: '3-5 times of the price listed',
+        priceKind: 'relative',
+        multiplier: 3,
+        relativeTo: 'regular',
+      }),
+    ],
+    NICHES,
+  );
+  const casino = offers.find((o) => o.category === 'casino');
+  // base parses to its low end 50; 50 * 3 = 150 (was a bogus $3 before the fix).
+  assert.deepEqual(casino?.price, { amount: 150, currency: 'USD', raw: '3-5 times of the price listed' });
+});
+
+test('relative price: "doubled" with a clean base (incomera case)', () => {
+  const { offers } = reconcileOffers(
+    [
+      offer({ category: 'regular', canPost: 'yes', priceRaw: '$350 per link' }),
+      offer({
+        category: 'casino',
+        label: 'Casino',
+        sensitive: true,
+        canPost: 'yes',
+        priceRaw: 'grey niches price is doubled',
+        priceKind: 'relative',
+        multiplier: 2,
+        relativeTo: 'regular',
+      }),
+    ],
+    NICHES,
+  );
+  const casino = offers.find((o) => o.category === 'casino');
+  assert.deepEqual(casino?.price, { amount: 700, currency: 'USD', raw: 'grey niches price is doubled' });
+});
+
+test('relative price with no resolvable base keeps the verbatim phrase, no amount', () => {
+  const { offers } = reconcileOffers(
+    [
+      offer({
+        category: 'casino',
+        label: 'Casino',
+        sensitive: true,
+        canPost: 'yes',
+        priceRaw: '2x our normal rate',
+        priceKind: 'relative',
+        multiplier: 2,
+        relativeTo: 'regular',
+      }),
+    ],
+    NICHES,
+  );
+  const casino = offers.find((o) => o.category === 'casino');
+  assert.deepEqual(casino?.price, { raw: '2x our normal rate' }); // no base → no fabricated amount
+});
+
+test('a relative offer never parses a bogus absolute from its premium phrase', () => {
+  // "50% premium" must NOT become $50 when there is no base to multiply.
+  const { offers } = reconcileOffers(
+    [
+      offer({
+        category: 'casino',
+        label: 'Casino',
+        sensitive: true,
+        canPost: 'yes',
+        priceRaw: 'additional 50% premium',
+        priceKind: 'relative',
+        multiplier: 1.5,
+        relativeTo: 'regular',
+      }),
+    ],
+    NICHES,
+  );
+  assert.equal(offers[0].price?.amount, undefined);
 });
 
 test('reconcileOffers matches an existing niche by alias without re-learning', () => {

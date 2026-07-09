@@ -23,6 +23,9 @@ export interface Config {
   claudeCode: { model: string; timeoutMs: number };
   googleOAuth: { clientId: string; clientSecret: string };
   sendWindow: { startHour: number; endHour: number };
+  /** No-reply follow-up bumps. Disabled for now — set FOLLOW_UPS_ENABLED=true to
+   *  re-enable. The follow-up code stays intact; this only gates the queue. */
+  followUpsEnabled: boolean;
   reconcileGraceMs: number;
   warmup: WarmupConfig;
   health: HealthConfig;
@@ -32,6 +35,12 @@ function envInt(name: string, fallback: number): number {
   const v = process.env[name];
   const n = v == null ? NaN : Number(v);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function envBool(env: NodeJS.ProcessEnv, name: string, fallback: boolean): boolean {
+  const v = env[name];
+  if (v == null) return fallback;
+  return /^(1|true|yes|on)$/i.test(v.trim());
 }
 
 function loadGoogleOAuth(env: NodeJS.ProcessEnv): { clientId: string; clientSecret: string } {
@@ -83,6 +92,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       startHour: envInt('SEND_WINDOW_START_HOUR', 9),
       endHour: envInt('SEND_WINDOW_END_HOUR', 18),
     },
+    followUpsEnabled: envBool(env, 'FOLLOW_UPS_ENABLED', false),
     reconcileGraceMs: envInt('RECONCILE_GRACE_MS', 15 * 60_000),
     warmup: DEFAULT_WARMUP,
     health: DEFAULT_HEALTH,

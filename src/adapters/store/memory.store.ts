@@ -161,6 +161,9 @@ export class MemoryStore implements Store {
     this.emit('niche', 'put', n.key);
     return clone(n);
   }
+  async deleteNiche(key: string) {
+    if (this.niches.delete(key)) this.emit('niche', 'delete', key);
+  }
 
   // suppression
   async isSuppressed(email: string) {

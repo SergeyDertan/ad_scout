@@ -28,9 +28,11 @@ import { logger } from '../../lib/logger';
 
 const execFileAsync = promisify(execFile);
 
-// When the model may use tools (Read/WebFetch) it can take several turns, so
-// give it more headroom than a pure completion.
-const TOOL_TIMEOUT_MS = 300_000;
+// Structured JSON extraction can be slow even without tools — a large price
+// matrix (many postType×niche cells) is a lot of constrained output — and slower
+// still when the model may use tools (Read/WebFetch) across several turns. Give
+// every generateJson call this headroom; pure text completions keep the short default.
+const JSON_TIMEOUT_MS = 300_000;
 
 interface ClaudeCodeOptions {
   /** Model alias ("sonnet" | "opus" | "haiku") or a full model id. */
@@ -65,14 +67,22 @@ export class ClaudeCodeLlmProvider implements LlmProvider {
         maxBuffer: 16 * 1024 * 1024,
       }));
     } catch (err) {
-      const e = err as NodeJS.ErrnoException & { stderr?: string };
+      const e = err as NodeJS.ErrnoException & { stderr?: string; stdout?: string; killed?: boolean; signal?: string };
+      // `claude -p --output-format json` writes its error payload to STDOUT, not
+      // stderr — capture both so a non-zero exit is diagnosable (and surface a
+      // timeout/kill explicitly rather than as an opaque "Command failed").
       logger.warn('claude-code exec failed', {
         label,
         elapsedMs: Date.now() - t0,
+        code: e.code,
+        killed: e.killed,
+        signal: e.signal,
         error: e.message,
         stderr: e.stderr?.slice(0, 2000),
+        stdout: e.stdout?.slice(0, 2000),
       });
-      throw new Error(`claude CLI failed (${label}): ${e.message}`);
+      const detail = e.killed ? `timed out/killed (signal ${e.signal})` : (e.stdout?.trim() || e.stderr?.trim() || e.message);
+      throw new Error(`claude CLI failed (${label}): ${detail.slice(0, 500)}`);
     }
     const elapsedMs = Date.now() - t0;
 
@@ -97,7 +107,6 @@ export class ClaudeCodeLlmProvider implements LlmProvider {
 
   async generateJson(req: LlmJsonRequest): Promise<unknown> {
     const hasAttachments = !!req.attachments?.length;
-    const useTools = hasAttachments || !!req.allowWebFetch;
 
     // allowedTools stays '' when no tools are requested — identical to the old
     // pure text-in/JSON-out behavior. Only opt in per-call when the extractor
@@ -135,7 +144,7 @@ export class ClaudeCodeLlmProvider implements LlmProvider {
         ...extraArgs,
         ...(req.system ? ['--append-system-prompt', req.system] : []),
       ];
-      const result = await this.run(args, 'generateJson', useTools ? TOOL_TIMEOUT_MS : undefined);
+      const result = await this.run(args, 'generateJson', JSON_TIMEOUT_MS);
       if (result.structured_output !== undefined) return result.structured_output;
       return JSON.parse(result.result);
     } finally {

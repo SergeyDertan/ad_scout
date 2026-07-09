@@ -16,15 +16,34 @@ import type {
   PriceValue,
   ReplyIntent,
 } from './types';
-import { matchNiche, normalizeKey, resolveOffer } from './niches';
+import {
+  DEFAULT_POST_TYPE,
+  matchNiche,
+  matchPostType,
+  normalizeKey,
+  POST_TYPE_KEYS,
+  REGULAR_KEY,
+  resolveOffer,
+} from './niches';
 
 /** One offer as the LLM returns it: a niche tag + willingness + a verbatim price. */
 export interface RawOffer {
+  /** Product ladder this price is for: guest_post | link_insertion | banner.
+   *  Defaults to guest_post when the publisher doesn't distinguish. */
+  postType?: string;
   category: string; // an existing niche key/label, or a NEW snake_case key
   label: string; // human-readable niche name (used when it's a new niche)
   sensitive: boolean; // is this a grey/sensitive niche?
   canPost: CanPost;
   priceRaw: string;
+  /** How to read priceRaw. 'relative' = priced only as a multiple of another
+   *  niche's rate (e.g. casino = "+50% premium"); 'absolute' (default) = a real
+   *  figure. Keeps the LLM out of arithmetic — it names the multiplier, we compute. */
+  priceKind?: 'absolute' | 'relative';
+  /** For relative pricing: the factor (1.5 for "+50%", 2 for "double"). */
+  multiplier?: number;
+  /** For relative pricing: the base niche key it multiplies (usually 'regular'). */
+  relativeTo?: string;
 }
 
 /** The shape the LLM is asked to return. */
@@ -50,8 +69,14 @@ function coerceIntent(raw: string | undefined): ReplyIntent {
 const OFFER_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['category', 'label', 'sensitive', 'canPost', 'priceRaw'],
+  required: ['postType', 'category', 'label', 'sensitive', 'canPost', 'priceRaw', 'priceKind', 'multiplier', 'relativeTo'],
   properties: {
+    postType: {
+      type: 'string',
+      enum: POST_TYPE_KEYS,
+      description:
+        'Which PRODUCT this price is for (separate from the niche): guest_post = a written article/sponsored post; link_insertion = adding a link into an existing post (a.k.a. niche edit); banner = a display/banner ad. Use guest_post when the publisher does not distinguish.',
+    },
     category: {
       type: 'string',
       description:
@@ -70,6 +95,22 @@ const OFFER_SCHEMA = {
     priceRaw: {
       type: 'string',
       description: 'Price for this type EXACTLY as written (e.g. "$150", "150 EUR/post"). "" if not stated.',
+    },
+    priceKind: {
+      type: 'string',
+      enum: ['absolute', 'relative'],
+      description:
+        'absolute = priceRaw is a real figure ($150). relative = this niche has NO figure of its own and is priced only as a multiple of another rate (e.g. "casino +50% premium", "sensitive = 3-5x the listed price"). Use relative ONLY then.',
+    },
+    multiplier: {
+      type: 'number',
+      description:
+        'When priceKind=relative, the factor to multiply the base rate by: "+50% premium" → 1.5, "double" → 2, "3-5x" → use the lower bound 3. 0 when absolute.',
+    },
+    relativeTo: {
+      type: 'string',
+      description:
+        'When priceKind=relative, the niche key whose rate this multiplies — usually "regular" (the standard/listed rate). "" when absolute.',
     },
   },
 } as const;
@@ -105,7 +146,7 @@ export function buildExtractionSchema(fields: InquiryField[]): JsonSchema {
       offers: {
         type: 'array',
         description:
-          'One entry per post type the owner priced or addressed. ALWAYS include a "regular" entry when a standard/normal post price is mentioned, plus any sensitive niches (casino, vpn, ...). Do not invent entries the owner did not mention.',
+          'One entry per (postType × niche) cell the owner priced or addressed — e.g. a regular guest post, a casino guest post, a regular link insertion, a banner. ALWAYS include the regular (standard) price of each product the owner mentions (guest post, link insertion, banner), plus any grey-niche pricing (casino, vpn, or the generic "sensitive"). Do NOT invent cells the owner did not mention, and do NOT turn a product (link insertion/banner) into a niche — that is what postType is for.',
         items: OFFER_SCHEMA,
       },
       reasoning: {
@@ -214,7 +255,11 @@ export function reconcileOffers(
 ): { offers: PostOffer[]; discovered: Niche[] } {
   const known = [...knownNiches];
   const discovered: Niche[] = [];
-  const byCategory = new Map<string, PostOffer>();
+  // Keyed by "postType|nicheKey" — the two axes together identify a cell, so a
+  // casino guest post and a casino link insertion are distinct offers.
+  const byCell = new Map<string, PostOffer>();
+  // Relative-pricing spec for the offer currently held in byCell, same key.
+  const relByCell = new Map<string, RelativeSpec>();
 
   for (const raw of rawOffers ?? []) {
     let niche = matchNiche(raw.category, known) ?? matchNiche(raw.label, known);
@@ -226,19 +271,107 @@ export function reconcileOffers(
       known.push(niche);
       discovered.push(niche);
     }
-    const price = parsePrice(raw.priceRaw ?? '');
+    const postType = matchPostType(raw.postType ?? '');
+    const cellKey = `${postType}|${niche.key}`;
+    const relBase = relativeSpec(raw);
+    // Stamp with the RESOLVED keys so the second-pass write-back targets the same
+    // cell (raw.category "online casino" resolves to niche.key "casino").
+    const rel = relBase ? { ...relBase, postType, nicheKey: niche.key } : undefined;
+    // A relative offer's priceRaw is a premium phrase ("+50%", "3-5x listed"),
+    // NOT a figure — parsing it as absolute grabbed a bogus leading number. Defer:
+    // its amount is computed from the base offer in the second pass.
+    const price = rel ? undefined : parsePrice(raw.priceRaw ?? '');
     const offer: PostOffer = {
+      postType,
       category: niche.key,
       label: niche.label,
       sensitive: niche.sensitive,
       canPost: raw.canPost ?? 'maybe',
       ...(price ? { price } : {}),
     };
-    const existing = byCategory.get(niche.key);
-    // Keep the richer entry if the LLM emitted the same niche twice.
-    if (!existing || (!existing.price && offer.price)) byCategory.set(niche.key, offer);
+    const existing = byCell.get(cellKey);
+    // Keep the richer entry if the LLM emitted the same cell twice.
+    if (!existing || (!existing.price && offer.price)) {
+      byCell.set(cellKey, offer);
+      if (rel) relByCell.set(cellKey, rel);
+      else relByCell.delete(cellKey);
+    }
   }
-  return { offers: [...byCategory.values()], discovered };
+
+  // Second pass: casino = 1.5 × regular. The LLM only named the multiplier and
+  // the base niche; the arithmetic stays here, in tested code, so nothing is
+  // hallucinated and every amount traces back to a base figure + a stated factor.
+  // The base is resolved WITHIN the same post type (a casino link-insertion
+  // premium multiplies the regular link-insertion, not the guest-post rate).
+  for (const [, rel] of relByCell) {
+    const offer = byCell.get(`${rel.postType}|${rel.nicheKey}`)!;
+    const base = findBaseOffer(byCell, rel.postType, rel.relativeTo, known);
+    if (base?.price?.amount != null) {
+      offer.price = {
+        amount: Math.round(base.price.amount * rel.multiplier * 100) / 100,
+        ...(base.price.currency ? { currency: base.price.currency } : {}),
+        raw: rel.raw,
+      };
+    } else if (rel.raw) {
+      // Base rate unknown — keep the verbatim premium so provenance survives even
+      // though we can't compute a figure.
+      offer.price = { raw: rel.raw };
+    }
+  }
+
+  return { offers: [...byCell.values()], discovered };
+}
+
+/** A niche priced as a multiple of another (casino = 1.5× regular). */
+interface RelativeSpec {
+  postType: string; // the cell's post type (for base lookup + write-back)
+  nicheKey: string; // the cell's niche key (for write-back)
+  multiplier: number;
+  relativeTo: string; // base niche wording/key; '' → default to 'regular'
+  raw: string; // verbatim premium phrase, kept for provenance
+}
+
+// Guards a plausibly-real factor: "3-5x" or "+50%" land in (0, 100]; anything
+// outside is treated as absent (fall back to whatever priceRaw parsing found).
+const MAX_MULTIPLIER = 100;
+
+/** The multiplier/base/raw parts of a relative price. The caller stamps postType
+ *  + the resolved nicheKey (so write-back hits the same cell). */
+function relativeSpec(raw: RawOffer): Omit<RelativeSpec, 'postType' | 'nicheKey'> | undefined {
+  if (raw.priceKind !== 'relative') return undefined;
+  const m = Number(raw.multiplier);
+  if (!Number.isFinite(m) || m <= 0 || m > MAX_MULTIPLIER) return undefined;
+  return {
+    multiplier: m,
+    relativeTo: (raw.relativeTo ?? '').trim(),
+    raw: (raw.priceRaw ?? '').trim(),
+  };
+}
+
+/** The base offer a relative price multiplies, resolved WITHIN the given post
+ *  type: the named niche if priced, else that type's 'regular' rate, else the
+ *  default post type's 'regular', else any absolutely-priced offer. */
+function findBaseOffer(
+  byCell: Map<string, PostOffer>,
+  postType: string,
+  relativeTo: string,
+  known: Niche[],
+): PostOffer | undefined {
+  const priced = (o: PostOffer | undefined) => (o && o.price?.amount != null ? o : undefined);
+  if (relativeTo) {
+    const rn = matchNiche(relativeTo, known);
+    const named = rn ? priced(byCell.get(`${postType}|${rn.key}`)) : undefined;
+    if (named) return named;
+  }
+  const sameType = priced(byCell.get(`${postType}|${REGULAR_KEY}`));
+  if (sameType) return sameType;
+  const defaultType = priced(byCell.get(`${DEFAULT_POST_TYPE}|${REGULAR_KEY}`));
+  if (defaultType) return defaultType;
+  for (const o of byCell.values()) {
+    const p = priced(o);
+    if (p) return p;
+  }
+  return undefined;
 }
 
 /**
@@ -257,8 +390,13 @@ export function assembleResult(
   }
   const { offers, discovered } = reconcileOffers(raw.offers ?? [], opts.niches);
   const knownWithDiscovered = [...opts.niches, ...discovered];
+  // The summary canPost is about the requested niche as a guest post (what the
+  // outreach asked about) — resolve within guest_post first, then any post type.
+  const guestOffers = offers.filter((o) => o.postType === DEFAULT_POST_TYPE);
   const summary =
+    resolveOffer(guestOffers, opts.requestedCategory, knownWithDiscovered) ??
     resolveOffer(offers, opts.requestedCategory, knownWithDiscovered) ??
+    guestOffers.find((o) => o.category === 'regular') ??
     offers.find((o) => o.category === 'regular');
   const result: OutreachResult = {
     canPost: summary?.canPost ?? 'maybe', // back-compat summary

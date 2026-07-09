@@ -13,6 +13,62 @@ import type { Niche, PostOffer } from './types';
 export const SENSITIVE_KEY = 'sensitive';
 export const REGULAR_KEY = 'regular';
 
+/**
+ * Post TYPE — the product being priced — is a SEPARATE axis from niche (topic).
+ * A publisher prices e.g. a guest post, a link insertion, and a banner as three
+ * ladders, and each ladder can carry a grey-niche premium. So an offer is
+ * (postType × niche): "casino link insertion", "regular banner", etc. Unlike
+ * niches, post types are a FIXED code enum — never self-learned — so link
+ * insertions/banners can't leak into the niche registry as fake niches.
+ */
+export interface PostType {
+  key: string;
+  label: string;
+  aliases: string[];
+}
+
+export const DEFAULT_POST_TYPE = 'guest_post';
+
+export const POST_TYPES: PostType[] = [
+  {
+    key: 'guest_post',
+    label: 'Guest post',
+    aliases: ['guest post', 'article', 'sponsored post', 'sponsored article', 'post', 'publication', 'content', 'placement'],
+  },
+  {
+    key: 'link_insertion',
+    label: 'Link insertion',
+    aliases: ['link insertion', 'link insert', 'link placement', 'niche edit', 'existing post', 'existing article', 'insert link', 'link in existing', 'link building'],
+  },
+  {
+    key: 'banner',
+    label: 'Banner',
+    aliases: ['banner', 'banner ad', 'banner ads', 'display ad', 'display ads', 'banner placement', 'banner advertising'],
+  },
+];
+
+export const POST_TYPE_KEYS = POST_TYPES.map((p) => p.key);
+
+/** Resolve free text (a key or the owner's wording) to a post type; defaults to
+ *  guest_post when nothing matches, since that's the baseline product. */
+export function matchPostType(text: string): string {
+  const key = normalizeKey(text);
+  const phrase = norm(text);
+  if (!key && !phrase) return DEFAULT_POST_TYPE;
+  const byKey = POST_TYPES.find((p) => p.key === key);
+  if (byKey) return byKey.key;
+  for (const p of POST_TYPES) {
+    if (norm(p.label) === phrase) return p.key;
+    if (p.aliases.some((a) => norm(a) === phrase || normalizeKey(a) === key)) return p.key;
+  }
+  // Loose contains-match on the phrase (e.g. "casino link insertion price").
+  for (const p of POST_TYPES) {
+    if (p.key === DEFAULT_POST_TYPE) continue;
+    if (p.aliases.some((a) => a.length > 3 && phrase.includes(norm(a)))) return p.key;
+  }
+  return DEFAULT_POST_TYPE;
+}
+
 /** Seed niches — always available to the prompt even before anything is learned. */
 export const DEFAULT_NICHES: Niche[] = [
   { key: 'regular', label: 'Regular', sensitive: false, aliases: ['standard', 'normal', 'ordinary', 'guest post', 'general', 'usual'] },

@@ -110,18 +110,40 @@ function ReceivedItem({ r, onDeleted }: { r: ThreadReply; onDeleted: () => void 
   );
 }
 
-export function ThreadPanel({ target, onClose }: { target: Target; onClose: () => void }) {
+/** Fetches and renders the full send + reply timeline for a target. Reused by
+ *  the Targets thread panel and the Responses detail modal. */
+export function ThreadTimeline({ targetId }: { targetId: string }) {
   const [items, setItems] = useState<ThreadItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = () => {
-    api.getTargetThread(target.id)
+    api.getTargetThread(targetId)
       .then(({ outreaches, replies }) => setItems(buildThread(outreaches, replies)))
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   };
 
-  useEffect(() => { load(); }, [target.id]);
+  useEffect(() => { load(); }, [targetId]);
 
+  if (error) return <Text color="red.fg" fontSize="sm">{error}</Text>;
+
+  if (items === null)
+    return <Box py={6} display="flex" justifyContent="center"><Spinner color="brand.solid" /></Box>;
+
+  if (items.length === 0)
+    return <Text color="fg.muted" fontSize="sm">No emails sent or received yet.</Text>;
+
+  return (
+    <VStack gap={3} align="stretch">
+      {items.map((item) =>
+        item.kind === 'sent'
+          ? <SentItem key={item.data.id} o={item.data} />
+          : <ReceivedItem key={item.data.id} r={item.data} onDeleted={load} />
+      )}
+    </VStack>
+  );
+}
+
+export function ThreadPanel({ target, onClose }: { target: Target; onClose: () => void }) {
   return (
     <Box
       bg="bg.panel"
@@ -140,25 +162,7 @@ export function ThreadPanel({ target, onClose }: { target: Target; onClose: () =
         <Button size="xs" variant="ghost" onClick={onClose}>Close</Button>
       </HStack>
 
-      {error && <Text color="red.fg" fontSize="sm">{error}</Text>}
-
-      {items === null && !error && (
-        <Box py={6} display="flex" justifyContent="center"><Spinner color="brand.solid" /></Box>
-      )}
-
-      {items?.length === 0 && (
-        <Text color="fg.muted" fontSize="sm">No emails sent or received yet.</Text>
-      )}
-
-      {items && items.length > 0 && (
-        <VStack gap={3} align="stretch">
-          {items.map((item) =>
-            item.kind === 'sent'
-              ? <SentItem key={item.data.id} o={item.data} />
-              : <ReceivedItem key={item.data.id} r={item.data} onDeleted={load} />
-          )}
-        </VStack>
-      )}
+      <ThreadTimeline targetId={target.id} />
     </Box>
   );
 }

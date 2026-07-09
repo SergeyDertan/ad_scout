@@ -133,6 +133,7 @@ test('GET /api/status engagement funnel splits replies by intent', async () => {
         intent === 'answer'
           ? [
               {
+                postType: 'guest_post',
                 category: 'casino',
                 label: 'Casino',
                 sensitive: false,
@@ -140,7 +141,7 @@ test('GET /api/status engagement funnel splits replies by intent', async () => {
                 price: { amount: 120, currency: 'USD', raw: '$120' },
               },
             ]
-          : [{ category: 'casino', label: 'Casino', sensitive: false, canPost: 'no' }],
+          : [{ postType: 'guest_post', category: 'casino', label: 'Casino', sensitive: false, canPost: 'no' }],
       fields: {},
     });
     const reply = (id: string, targetId: string): Reply => ({

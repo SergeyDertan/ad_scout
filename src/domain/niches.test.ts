@@ -4,6 +4,7 @@ import {
   allNiches,
   categorizeTopic,
   matchNiche,
+  matchPostType,
   normalizeKey,
   offerMatchesFilter,
   resolveOffer,
@@ -13,6 +14,7 @@ import type { Niche, PostOffer } from './types';
 const NICHES = allNiches();
 
 const mkOffer = (o: Partial<PostOffer>): PostOffer => ({
+  postType: 'guest_post',
   category: 'regular',
   label: 'Regular',
   sensitive: false,
@@ -33,6 +35,17 @@ test('allNiches merges learned entries over the seed set by key', () => {
   // and a brand-new learned niche shows up too
   const withNew = allNiches([{ key: 'pharma', label: 'Pharma', sensitive: true, aliases: ['pharma'] }]);
   assert.ok(withNew.some((n) => n.key === 'pharma'));
+});
+
+test('matchPostType resolves the fixed product enum, defaulting to guest_post', () => {
+  assert.equal(matchPostType('guest_post'), 'guest_post');
+  assert.equal(matchPostType('sponsored article'), 'guest_post');
+  assert.equal(matchPostType('link insertion'), 'link_insertion');
+  assert.equal(matchPostType('niche edit'), 'link_insertion');
+  assert.equal(matchPostType('casino link insertion price'), 'link_insertion'); // loose contains
+  assert.equal(matchPostType('banner ad'), 'banner');
+  assert.equal(matchPostType(''), 'guest_post'); // default
+  assert.equal(matchPostType('something unrelated'), 'guest_post'); // default
 });
 
 test('matchNiche resolves by key, label, and alias', () => {

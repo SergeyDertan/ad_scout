@@ -103,14 +103,42 @@ async function persistDiscovered(store: Store, discovered: Niche[], clock: Clock
 }
 
 async function retryFailedExtractions(deps: PollDeps, report: PollReport): Promise<void> {
+  const { extracted, failed } = await extractPendingReplies(deps);
+  report.extracted += extracted;
+  report.extractionFailed += failed;
+}
+
+export interface ExtractOptions {
+  /** Progress sink (defaults to no-op). The re-extract script passes console.log. */
+  log?: (msg: string) => void;
+}
+
+/**
+ * Re-extract every reply whose extraction is `pending`/`failed` (and is matched
+ * to a target), WITHOUT fetching the mailbox. Same extract → persist niches →
+ * roll-up path a normal poll uses, so target status/result are re-derived
+ * identically. Used by the poll pass's retry step and by the re-extract script.
+ */
+export async function extractPendingReplies(
+  deps: PollDeps,
+  opts: ExtractOptions = {},
+): Promise<{ extracted: number; failed: number }> {
   const { store, extractor, clock } = deps;
-  const failed = (await store.listReplies()).filter(
+  const log = opts.log ?? (() => {});
+  const pending = (await store.listReplies()).filter(
     (r) => (r.extractionStatus === 'failed' || r.extractionStatus === 'pending') && r.targetId,
   );
-  for (const reply of failed) {
+  let extracted = 0;
+  let failed = 0;
+  let i = 0;
+  for (const reply of pending) {
+    i++;
     const target = await store.getTarget(reply.targetId!);
     const campaign = target ? await store.getCampaign(target.campaignId) : undefined;
-    if (!target || !campaign) continue;
+    if (!target || !campaign) {
+      log(`[${i}/${pending.length}] skip ${reply.fromAddress} — no target/campaign`);
+      continue;
+    }
     try {
       const knownNiches = await store.listNiches();
       const { result: parsed, discovered, review } = await extractor.extract(
@@ -121,20 +149,31 @@ async function retryFailedExtractions(deps: PollDeps, report: PollReport): Promi
       );
       await persistDiscovered(store, discovered, clock);
       await rollUp(store, target, reply, parsed, review, clock);
-      report.extracted++;
+      extracted++;
       await store.putReply(reply);
-    } catch {
+      const offers = parsed.offers?.length ?? 0;
+      log(`[${i}/${pending.length}] ok   ${target.websiteUrl} — intent=${parsed.intent ?? 'answer'}, ${offers} offer(s)`);
+    } catch (err) {
       reply.extractionStatus = 'failed';
       await store.putReply(reply);
+      failed++;
+      log(`[${i}/${pending.length}] FAIL ${target.websiteUrl} — ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+  return { extracted, failed };
 }
 
 /**
  * Set the reply's parsed result + review flags and roll the outcome up onto the
  * target. Opt-out excludes; a substantive answer marks the target 'replied'. But
- * a holding/auto reply is NOT a real answer — flag it and leave the target
- * 'contacted' so follow-ups keep chasing the actual response.
+ * a holding/auto reply is NOT a real answer — leave the target 'contacted' so
+ * follow-ups keep chasing the actual response.
+ *
+ * `review` carries ONLY genuine "the system couldn't process this — a human must
+ * act" reasons (unreadable file, unreachable link, no provider access). The
+ * benign "no answer yet" state is NOT a review reason: it is fully captured in
+ * `parsed.intent` (holding/auto_reply) and surfaced separately in the UI. Mixing
+ * the two turned every routine autoresponder into a false "needs review".
  */
 async function rollUp(
   store: Store,
@@ -145,13 +184,8 @@ async function rollUp(
   clock: Clock,
 ): Promise<void> {
   const awaiting = parsed.intent != null && AWAITING_INTENTS.includes(parsed.intent);
-  const reasons = [...review];
-  if (awaiting) {
-    const label = parsed.intent === 'auto_reply' ? 'auto-reply' : 'holding reply';
-    reasons.push(`No answer yet — ${label}; still awaiting a substantive response.`);
-  }
   reply.parsed = parsed;
-  reply.review = reasons.length ? reasons : undefined;
+  reply.review = review.length ? review : undefined;
   reply.extractionStatus = 'done';
 
   if (parsed.optOut) {

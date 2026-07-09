@@ -221,6 +221,9 @@ export class PouchDbStore implements Store {
     const list = await this.listByType<Niche & { id?: string }>('niche');
     return list.map(({ id, ...n }) => n as Niche);
   }
+  deleteNiche(key: string) {
+    return this.delete('niche', key);
+  }
   async putNiche(n: Niche) {
     await this.put('niche', { ...n, id: n.key });
     return n;

@@ -95,7 +95,7 @@ export async function runSendPass(deps: SendDeps, opts: SendOpts = {}): Promise<
     const campaign = campaignById.get(t.campaignId);
     if (!campaign) continue;
     if (await store.isSuppressed(t.contactEmail)) continue;
-    if (isFollowUpDue(t, campaign, now)) {
+    if (config.followUpsEnabled && isFollowUpDue(t, campaign, now)) {
       followUps.push({ target: t, campaign, kind: 'followup', sequenceNo: t.followUpCount + 1 });
     } else if (t.status === 'pending') {
       initials.push({ target: t, campaign, kind: 'initial', sequenceNo: 0 });

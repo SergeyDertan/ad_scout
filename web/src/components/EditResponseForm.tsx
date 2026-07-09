@@ -12,12 +12,13 @@ import {
 } from '@chakra-ui/react';
 import { useState } from 'react';
 import { api } from '../api';
-import type { ResponseRow } from '../types';
+import { POST_TYPE_LABELS, type ResponseRow } from '../types';
 import { Panel } from './Panel';
 import { toaster, toastError } from './Toaster';
 import { PlusIcon, TrashIcon } from './icons';
 
 interface OfferRow {
+  postType: string; // product ladder: guest_post | link_insertion | banner
   category: string; // '' for a new offer — server derives it from the label
   label: string;
   sensitive: boolean;
@@ -27,6 +28,7 @@ interface OfferRow {
 
 function toRows(row: ResponseRow): OfferRow[] {
   return (row.parsed?.offers ?? []).map((o) => ({
+    postType: o.postType || 'guest_post',
     category: o.category,
     label: o.label,
     sensitive: o.sensitive,
@@ -54,7 +56,10 @@ export function EditResponseForm({
     setOffers((prev) => prev.map((o, j) => (j === i ? { ...o, ...patch } : o)));
   const remove = (i: number) => setOffers((prev) => prev.filter((_, j) => j !== i));
   const add = () =>
-    setOffers((prev) => [...prev, { category: '', label: '', sensitive: false, canPost: 'yes', priceRaw: '' }]);
+    setOffers((prev) => [
+      ...prev,
+      { postType: 'guest_post', category: '', label: '', sensitive: false, canPost: 'yes', priceRaw: '' },
+    ]);
 
   const valid = offers.every((o) => o.label.trim() !== '');
 
@@ -65,6 +70,7 @@ export function EditResponseForm({
       await api.patchReply(row.id, {
         optOut,
         offers: offers.map((o) => ({
+          postType: o.postType,
           category: o.category,
           label: o.label.trim(),
           sensitive: o.sensitive,
@@ -102,6 +108,7 @@ export function EditResponseForm({
 
       <VStack align="stretch" gap={2} mt={3}>
         <HStack fontSize="xs" color="fg.muted" fontWeight="medium" px={1}>
+          <Box w="36">Product</Box>
           <Box flex="1">Niche</Box>
           <Box w="20">Sensitive</Box>
           <Box w="28">Willing</Box>
@@ -111,6 +118,14 @@ export function EditResponseForm({
 
         {offers.map((o, i) => (
           <HStack key={i} gap={2}>
+            <NativeSelect.Root size="sm" w="36">
+              <NativeSelect.Field value={o.postType} onChange={(e) => update(i, { postType: e.target.value })}>
+                {Object.entries(POST_TYPE_LABELS).map(([key, label]) => (
+                  <option key={key} value={key}>{label}</option>
+                ))}
+              </NativeSelect.Field>
+              <NativeSelect.Indicator />
+            </NativeSelect.Root>
             <Input
               flex="1"
               size="sm"

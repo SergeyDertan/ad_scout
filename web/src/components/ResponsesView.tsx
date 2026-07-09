@@ -26,8 +26,9 @@ import { DataPanel } from './DataPanel';
 import { Empty } from './Empty';
 import { EditResponseForm } from './EditResponseForm';
 import { ResponseDetailModal } from './ResponseDetailModal';
+import { ExportDialog } from './ExportDialog';
 import { useResource } from '../hooks/useResource';
-import { AlertTriangleIcon, InboxIcon, SearchIcon } from './icons';
+import { AlertTriangleIcon, DownloadIcon, InboxIcon, SearchIcon } from './icons';
 
 // From | Site | Campaign | Match | Answer | Niches | Actions
 const COLS = '1.2fr 1.2fr 130px 96px 96px 120px 150px';
@@ -140,6 +141,7 @@ export function ResponsesView({ tick }: { tick: number }) {
   const [reviewFilter, setReviewFilter] = useState('');
   const [editId, setEditId] = useState<string | null>(null);
   const [showId, setShowId] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
   const { rows: campaigns } = useResource(useCallback(() => api.listCampaigns(), []), tick);
   const { rows: niches } = useResource(useCallback(() => api.listNiches(), []), tick);
   const { rows: allRows, loading, error, reload } = useResource(
@@ -249,6 +251,19 @@ export function ResponsesView({ tick }: { tick: number }) {
             <NativeSelect.Indicator />
           </NativeSelect.Root>
         </HStack>
+
+        <Box flex="1" minW="2" />
+
+        <Button
+          size="sm"
+          variant="outline"
+          colorPalette="brand"
+          onClick={() => setExporting(true)}
+          disabled={rows.length === 0}
+          title="Export the filtered responses to XLSX or a self-contained HTML page"
+        >
+          <DownloadIcon /> Export
+        </Button>
       </HStack>
 
       {editingRow && (
@@ -267,6 +282,15 @@ export function ResponsesView({ tick }: { tick: number }) {
             setShowId(null);
             setEditId(showingRow.id);
           }}
+        />
+      )}
+
+      {exporting && (
+        <ExportDialog
+          rows={rows}
+          niches={niches as Niche[]}
+          campaignName={(campaigns as Campaign[]).find((c) => c.id === campaignFilter)?.name}
+          onClose={() => setExporting(false)}
         />
       )}
 

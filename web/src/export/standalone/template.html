@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AdScout responses export</title>
+<style>
+  :root {
+    --bg: #f7f8fa; --panel: #ffffff; --muted: #667085; --subtle: #98a2b3;
+    --border: #e4e7ec; --fg: #101828; --brand: #4f46e5; --brand-fg: #ffffff;
+    --accent: #f4f3ff; --shadow: 0 1px 2px rgba(16,24,40,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --panel: #171a21; --muted: #98a2b3; --subtle: #667085;
+      --border: #262b36; --fg: #e6e8ec; --brand: #7c74ff; --brand-fg: #0f1115;
+      --accent: #1e1b3a; --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 28px 20px 64px; }
+  header { margin-bottom: 20px; }
+  .title-input {
+    width: 100%; font-size: 20px; font-weight: 700; color: var(--fg);
+    background: transparent; border: 1px solid transparent; border-radius: 8px;
+    padding: 6px 8px; margin: -6px -8px 4px;
+  }
+  .title-input:hover { border-color: var(--border); }
+  .title-input:focus { outline: none; border-color: var(--brand); background: var(--panel); }
+  .sub { color: var(--muted); font-size: 12px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: var(--shadow); padding: 14px 16px; margin-bottom: 16px;
+  }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .toolbar input, .toolbar select, .ghost, .primary {
+    font: inherit; color: var(--fg); background: var(--panel);
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px;
+  }
+  .toolbar input { min-width: 200px; }
+  select { cursor: pointer; }
+  summary { cursor: pointer; font-weight: 600; user-select: none; }
+  .col-group { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 12px 0; }
+  .col-group.combos { border-top: 1px dashed var(--border); padding-top: 12px; }
+  label.chk, label.opt { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  label.opt { color: var(--muted); margin-right: 18px; }
+  .group-actions { margin: 8px 0 0; }
+  .link { background: none; border: none; color: var(--brand); cursor: pointer; font: inherit; padding: 0 8px 0 0; }
+  .actions { display: flex; align-items: center; gap: 14px; margin: 4px 0 18px; }
+  .count { color: var(--muted); font-size: 13px; }
+  .primary { background: var(--brand); color: var(--brand-fg); border-color: var(--brand); font-weight: 600; cursor: pointer; padding: 9px 18px; }
+  .primary:disabled { opacity: .5; cursor: not-allowed; }
+  .ghost { cursor: pointer; color: var(--muted); }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { position: sticky; top: 0; background: var(--accent); font-weight: 600; }
+  tbody tr:nth-child(even) { background: color-mix(in srgb, var(--panel) 92%, var(--muted)); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.empty { color: var(--subtle); }
+  .truncnote { color: var(--subtle); font-size: 12px; padding: 8px 12px; }
+  .foot { color: var(--subtle); font-size: 12px; margin-top: 24px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <input id="title" class="title-input" aria-label="Export title" />
+    <div class="sub" id="meta"></div>
+  </header>
+
+  <div class="panel toolbar">
+    <input id="search" type="search" placeholder="Search website or email…" />
+    <select id="campaign"></select>
+    <select id="niche"></select>
+    <select id="canpost"></select>
+    <button id="reset" class="ghost" type="button">Reset filters</button>
+  </div>
+
+  <details class="panel" open>
+    <summary>Columns to export</summary>
+    <div class="col-group" id="metaCols"></div>
+    <div class="col-group combos" id="comboCols"></div>
+    <div class="group-actions">
+      <button class="link" id="allCombos" type="button">Select all niches</button>
+      <button class="link" id="noCombos" type="button">Clear niches</button>
+    </div>
+    <div style="margin-top:12px">
+      <label class="opt"><input type="checkbox" id="optCanPost" /> Add a “can post” column beside each price</label>
+      <label class="opt"><input type="checkbox" id="optNumeric" checked /> Prices as numbers when possible</label>
+    </div>
+  </details>
+
+  <div class="actions">
+    <div class="count" id="count"></div>
+    <button class="primary" id="export" type="button">Export XLSX</button>
+  </div>
+
+  <div class="tablewrap">
+    <table id="preview"></table>
+    <div class="truncnote" id="trunc" hidden></div>
+  </div>
+
+  <div class="foot" id="foot"></div>
+</div>
+
+<script>/*__SHEETJS__*/</script>
+<script>window.__EXPORT__=/*__EXPORT_DATA__*/;</script>
+<script>/*__APP__*/</script>
+</body>
+</html>

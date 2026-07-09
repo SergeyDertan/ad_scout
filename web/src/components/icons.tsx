@@ -119,6 +119,15 @@ export const MegaphoneIcon = make(
   </>,
 );
 
+export const ChevronDownIcon = make(<polyline points="6 9 12 15 18 9" />);
+
+export const TagIcon = make(
+  <>
+    <path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
+    <line x1="7" y1="7" x2="7.01" y2="7" />
+  </>,
+);
+
 export const AlertTriangleIcon = make(
   <>
     <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />

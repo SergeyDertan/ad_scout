@@ -111,6 +111,85 @@ test('GET /api/status returns ok with counts', async () => {
   }
 });
 
+test('GET /api/status engagement funnel splits replies by intent', async () => {
+  const h = await start(); // seeds t1 (pending) + t2 (contacted, no reply)
+  try {
+    const target = (id: string, status: Target['status'], result?: Target['result']): Target => ({
+      id,
+      campaignId: 'c1',
+      websiteUrl: `${id}.com`,
+      contactEmail: `${id}@x.com`,
+      status,
+      followUpCount: 0,
+      createdAt: '2026-06-01T00:00:00Z',
+      ...(result ? { result } : {}),
+    });
+    const answer = (intent: 'answer' | 'decline'): NonNullable<Target['result']> => ({
+      canPost: intent === 'answer' ? 'yes' : 'no',
+      optOut: false,
+      intent,
+      // The 'answer' target quotes a price; 'decline' addresses posting with a no.
+      offers:
+        intent === 'answer'
+          ? [
+              {
+                category: 'casino',
+                label: 'Casino',
+                sensitive: false,
+                canPost: 'yes',
+                price: { amount: 120, currency: 'USD', raw: '$120' },
+              },
+            ]
+          : [{ category: 'casino', label: 'Casino', sensitive: false, canPost: 'no' }],
+      fields: {},
+    });
+    const reply = (id: string, targetId: string): Reply => ({
+      id,
+      emailId: `e-${id}`,
+      rfcMessageId: `<${id}@x>`,
+      fromAddress: `${targetId}@x.com`,
+      targetId,
+      matchMethod: 'fromAddress',
+      receivedAt: '2026-06-19T10:00:00Z',
+      text: 'hi',
+      extractionStatus: 'done',
+    });
+
+    // t3: contacted + holding reply (acknowledged); t4: answered; t5: declined;
+    // t6: excluded + reply (opted-out).
+    await h.store.putTarget(target('t3', 'contacted'));
+    await h.store.putTarget(target('t4', 'replied', answer('answer')));
+    await h.store.putTarget(target('t5', 'replied', answer('decline')));
+    await h.store.putTarget(target('t6', 'excluded'));
+    await h.store.putReply(reply('r3', 't3'));
+    await h.store.putReply(reply('r4', 't4'));
+    await h.store.putReply(reply('r5', 't5'));
+    await h.store.putReply(reply('r6', 't6'));
+
+    const s = await J(`${h.base}/api/status`);
+    assert.deepEqual(s.engagement, {
+      queued: 1, // t1
+      contacted: 1, // t2 (silent)
+      acknowledged: 1, // t3 (holding reply)
+      answered: 1, // t4
+      declined: 1, // t5
+      other: 0,
+      optedOut: 1, // t6
+      excluded: 0,
+      bounced: 0,
+      replied: 4, // t3 + t4 + t5 + t6
+    });
+    assert.deepEqual(s.outcomes, {
+      informative: 2, // t4 (priced offer) + t5 (posting=no offer)
+      priced: 1, // t4 quoted $120
+      postingYes: 1, // t4 can post
+      postingNo: 1, // t5 declined to post
+    });
+  } finally {
+    await h.close();
+  }
+});
+
 test('GET /api/accounts lists accounts', async () => {
   const h = await start();
   try {

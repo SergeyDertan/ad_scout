@@ -203,11 +203,33 @@ export interface Suppression {
   at: string;
 }
 
+export interface Engagement {
+  queued: number;
+  contacted: number;
+  acknowledged: number;
+  answered: number;
+  declined: number;
+  other: number;
+  optedOut: number;
+  excluded: number;
+  bounced: number;
+  replied: number;
+}
+
+export interface Outcomes {
+  informative: number; // replied with a price and/or a posting yes/no
+  priced: number; // quoted at least one price
+  postingYes: number; // will post for ≥1 niche
+  postingNo: number; // declined to post
+}
+
 export interface Status {
   ok: boolean;
   time: string;
   accounts: number;
   targets: { total: number; byStatus: Record<string, number> };
+  engagement?: Engagement;
+  outcomes?: Outcomes;
   providers: { llm: string; email: string; store: string } | null;
   sendWindow: { startHour: number; endHour: number };
   windowActive: boolean;

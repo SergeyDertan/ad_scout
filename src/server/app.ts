@@ -155,12 +155,80 @@ async function handle(
       const targets = await store.listTargets();
       const byStatus: Record<string, number> = {};
       for (const t of targets) byStatus[t.status] = (byStatus[t.status] ?? 0) + 1;
+
+      // Engagement funnel: byStatus alone can't tell a silent 'contacted' target
+      // from one that sent a holding/auto reply (those leave the target
+      // 'contacted'), so join in the replies. Each target lands in exactly one
+      // bucket; `replied` is everyone who wrote back (incl. holding/auto/opt-out).
+      const repliedTargetIds = new Set(
+        (await store.listReplies()).map((r) => r.targetId).filter(Boolean),
+      );
+      const engagement = {
+        queued: 0, // pending + reserved (not yet contacted)
+        contacted: 0, // contacted, no reply back yet (truly silent)
+        acknowledged: 0, // replied, but only a holding/auto message — no info yet
+        answered: 0, // replied with a substantive answer
+        declined: 0, // replied to decline
+        other: 0, // replied, other/question intent
+        optedOut: 0, // replied to opt out (→ excluded + suppressed)
+        excluded: 0, // excluded without a reply (manual suppression)
+        bounced: 0,
+      };
+      for (const t of targets) {
+        const hasReply = repliedTargetIds.has(t.id);
+        switch (t.status) {
+          case 'pending':
+          case 'reserved':
+            engagement.queued++;
+            break;
+          case 'bounced':
+            engagement.bounced++;
+            break;
+          case 'excluded':
+            hasReply ? engagement.optedOut++ : engagement.excluded++;
+            break;
+          case 'replied': {
+            const intent = t.result?.intent ?? 'answer';
+            if (intent === 'decline') engagement.declined++;
+            else if (intent === 'answer') engagement.answered++;
+            else engagement.other++;
+            break;
+          }
+          default: // 'contacted', 'needs_review'
+            hasReply ? engagement.acknowledged++ : engagement.contacted++;
+        }
+      }
+      const replied =
+        engagement.acknowledged +
+        engagement.answered +
+        engagement.declined +
+        engagement.other +
+        engagement.optedOut;
+
+      // Commercial outcomes: of the targets that replied, which gave us usable
+      // info — a quoted price, and/or a yes/no on whether they'll post at all.
+      const outcomes = { informative: 0, priced: 0, postingYes: 0, postingNo: 0 };
+      for (const t of targets) {
+        const r = t.result;
+        if (!r) continue;
+        const offers = r.offers ?? [];
+        const hasPrice =
+          offers.some((o) => o.price?.amount != null) ||
+          Object.values(r.fields ?? {}).some((f) => f?.type === 'price' && f.amount != null);
+        if (hasPrice) outcomes.priced++;
+        if (hasPrice || offers.length > 0) outcomes.informative++;
+        if (r.canPost === 'yes' || offers.some((o) => o.canPost === 'yes')) outcomes.postingYes++;
+        else if (offers.length > 0 && offers.every((o) => o.canPost === 'no')) outcomes.postingNo++;
+      }
+
       const now = deps.clock.now();
       return sendJson(res, 200, {
         ok: true,
         time: now.toISOString(),
         accounts: (await store.listAccounts()).length,
         targets: { total: targets.length, byStatus },
+        engagement: { ...engagement, replied },
+        outcomes,
         providers: deps.providers ?? null,
         sendWindow: deps.config.sendWindow,
         windowActive: isWithinSendWindow(now, deps.config.sendWindow),

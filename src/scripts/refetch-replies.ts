@@ -12,7 +12,8 @@
 //   --dry-run           report what would change; touch nothing.
 //   --since <ISO>       only replies received on/after this date (also the cursor
 //                       rollback point). Default: all replies; cursor rolled back
-//                       to just before the earliest one.
+//                       to just before our earliest OUTBOUND email, then the
+//                       mailbox is re-polled from there and re-matched to targets.
 //   --include-excluded  also process opt-out targets (default: skip them — a
 //                       re-fetch re-excludes them anyway, and it's safer to leave
 //                       suppressions alone).
@@ -53,7 +54,7 @@ export interface RefetchResult {
  * poll pass to re-ingest the messages under the current parser + prompt.
  */
 export async function refetchReplies(deps: PollDeps, opts: RefetchOptions = {}): Promise<RefetchResult> {
-  const { store, clock } = deps;
+  const { store } = deps;
   const log = opts.log ?? (() => {});
   const targetsById = new Map((await store.listTargets()).map((t) => [t.id, t]));
 
@@ -66,32 +67,74 @@ export async function refetchReplies(deps: PollDeps, opts: RefetchOptions = {}):
     });
   }
 
-  if (replies.length === 0) {
-    log('No replies match — nothing to re-fetch.');
+  // Cursor rollback point: the caller's --since, else just before our earliest
+  // OUTBOUND email (a 60s buffer keeps the boundary inclusive). A re-fetch re-polls
+  // the mailbox from the first send and re-matches every inbound to a target — just
+  // like a normal poll — so replies the old parser dropped and never stored are
+  // re-pulled too, not only the ones currently in the DB. Anchoring on outbound
+  // (rather than on stored replies) is what makes that independent of DB state, and
+  // nothing legitimate can predate the first send, so this never scans pre-app mail.
+  // Each account polls its OWN mailbox, so each gets its own floor: the earliest
+  // email THAT account sent. Rolling one account back to another's first send would
+  // make it rescan its inbox from before it ever sent — extra cost, no benefit.
+  const earliestSendByAccount = new Map<string, number>();
+  for (const o of await store.listOutreaches()) {
+    const at = o.sentAt ?? o.reservedAt;
+    if (!at || !o.accountId) continue;
+    const ms = new Date(at).getTime();
+    const prev = earliestSendByAccount.get(o.accountId);
+    if (prev === undefined || ms < prev) earliestSendByAccount.set(o.accountId, ms);
+  }
+  const earliestSend = Math.min(Number.POSITIVE_INFINITY, ...earliestSendByAccount.values());
+  // Degenerate fallback (no outbound on record at all): anchor on the earliest
+  // reply we're deleting so we can still re-pull it.
+  const earliestReply = replies.reduce(
+    (min, r) => Math.min(min, new Date(r.receivedAt).getTime()),
+    Number.POSITIVE_INFINITY,
+  );
+  if (!opts.since && !Number.isFinite(earliestSend) && !Number.isFinite(earliestReply)) {
+    log('No outreach or replies on record — nothing to re-fetch.');
     return { removed: 0, targetsReset: 0 };
   }
 
-  // Targets to roll back to 'contacted' so they re-enter the awaiting set and the
-  // pipeline re-derives status on re-ingest.
+  // Per-account rollback target: --since wins; else that account's own earliest
+  // send; else (account never sent) leave its cursor alone — unless nothing on
+  // record sent at all, the degenerate case where we fall back to the earliest reply.
+  const rollbackFor = (accountId: string): Date | undefined => {
+    if (opts.since) return opts.since;
+    const own = earliestSendByAccount.get(accountId);
+    if (own !== undefined) return new Date(own - 60_000);
+    if (!Number.isFinite(earliestSend) && Number.isFinite(earliestReply)) {
+      return new Date(earliestReply - 60_000);
+    }
+    return undefined;
+  };
+
+  // Stored replies to delete + their targets to roll back to 'contacted' so they
+  // re-enter the awaiting set and the pipeline re-derives status on re-ingest. May
+  // be empty — the re-poll still re-pulls and re-matches straight from the mailbox.
   const affectedTargets = [
     ...new Set(replies.map((r) => r.targetId).filter((id): id is string => Boolean(id))),
   ]
     .map((id) => targetsById.get(id))
     .filter((t): t is Target => Boolean(t) && (opts.includeExcluded || t!.status !== 'excluded'));
 
-  // Cursor rollback point: the caller's --since, else just before the earliest
-  // reply we're removing (a 60s buffer keeps the boundary message inclusive).
-  const earliest = replies.reduce(
-    (min, r) => Math.min(min, new Date(r.receivedAt).getTime()),
-    Number.POSITIVE_INFINITY,
-  );
-  const rollbackTo = opts.since ?? new Date(earliest - 60_000);
   const accounts = await store.listAccounts();
+  const rollbacks = new Map<string, Date>();
+  for (const a of accounts) {
+    const rb = rollbackFor(a.id);
+    if (rb) rollbacks.set(a.id, rb);
+  }
+  // Representative for the report/log: the earliest cursor we roll any account to.
+  const earliestRollback = rollbacks.size
+    ? new Date(Math.min(...[...rollbacks.values()].map((d) => d.getTime())))
+    : undefined;
 
   log(
     `${opts.dryRun ? '[dry-run] ' : ''}removing ${replies.length} repl(y/ies) + extraction(s), ` +
       `resetting ${affectedTargets.length} target(s) to 'contacted', ` +
-      `rolling ${accounts.length} account cursor(s) back to ${rollbackTo.toISOString()}` +
+      `rolling ${rollbacks.size} of ${accounts.length} account cursor(s) back` +
+      (earliestRollback ? ` (earliest ${earliestRollback.toISOString()})` : '') +
       (opts.noFetch ? '' : ', then re-fetching'),
   );
 
@@ -99,7 +142,7 @@ export async function refetchReplies(deps: PollDeps, opts: RefetchOptions = {}):
     return {
       removed: replies.length,
       targetsReset: affectedTargets.length,
-      cursorRolledBackTo: rollbackTo.toISOString(),
+      cursorRolledBackTo: earliestRollback?.toISOString(),
     };
   }
 
@@ -113,18 +156,20 @@ export async function refetchReplies(deps: PollDeps, opts: RefetchOptions = {}):
   }
 
   for (const a of accounts) {
+    const rb = rollbacks.get(a.id);
+    if (!rb) continue; // account never sent — nothing of ours to re-pull; leave it.
     await store.updateAccount(a.id, (current) => ({
       ...current,
-      pollCursor: { mailbox: 'INBOX', lastPolledAt: rollbackTo.toISOString() },
+      pollCursor: { mailbox: 'INBOX', lastPolledAt: rb.toISOString() },
     }));
   }
 
-  log(`removed ${replies.length} reply(ies); cursors rolled back.`);
+  log(`removed ${replies.length} reply(ies); ${rollbacks.size} cursor(s) rolled back.`);
 
   const result: RefetchResult = {
     removed: replies.length,
     targetsReset: affectedTargets.length,
-    cursorRolledBackTo: rollbackTo.toISOString(),
+    cursorRolledBackTo: earliestRollback?.toISOString(),
   };
 
   if (opts.noFetch) {

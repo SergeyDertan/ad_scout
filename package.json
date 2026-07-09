@@ -16,6 +16,7 @@
     "verify:replies": "tsx src/scripts/verify-replies.ts",
     "verify:sends": "tsx src/scripts/verify-sends.ts",
     "fix:stuck-targets": "tsx src/scripts/fix-stuck-targets.ts",
+    "assign:batch-ids": "tsx src/scripts/assign-batch-ids.ts",
     "reset:extractions": "tsx src/scripts/reset-extractions.ts",
     "reextract:stored": "tsx src/scripts/reextract-stored.ts",
     "refetch:replies": "tsx src/scripts/refetch-replies.ts",

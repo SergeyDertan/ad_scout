@@ -14,6 +14,7 @@ import { api } from '../api';
 import {
   invertedPriceOffers,
   isAwaiting,
+  isLateMessage,
   needsReview,
   offerMatchesFilter,
   type Campaign,
@@ -65,6 +66,7 @@ function VirtualRow({ index, style, rows, onShow, onEdit }: RowComponentProps<Ro
   const r = rows[index]!;
   const review = needsReview(r);
   const awaiting = isAwaiting(r);
+  const late = isLateMessage(r);
   return (
     <Box
       style={style}
@@ -108,6 +110,16 @@ function VirtualRow({ index, style, rows, onShow, onEdit }: RowComponentProps<Ro
             {r.parsed?.intent === 'auto_reply' ? 'auto-reply' : 'awaiting'}
           </Badge>
         )}
+        {late && (
+          <Badge
+            size="sm"
+            colorPalette="purple"
+            variant="subtle"
+            title="Arrived after this target was already answered — saved without re-extraction. Open to read it; it may need a human."
+          >
+            new after answer
+          </Badge>
+        )}
       </HStack>
       <HStack justify="flex-end" gap={1}>
         <Button size="xs" variant="solid" colorPalette="brand" onClick={() => onShow(r)}>
@@ -142,7 +154,8 @@ export function ResponsesView({ tick }: { tick: number }) {
       return false;
     if (reviewFilter === 'review' && !needsReview(r)) return false;
     if (reviewFilter === 'awaiting' && !isAwaiting(r)) return false;
-    if (reviewFilter === 'ok' && (needsReview(r) || isAwaiting(r))) return false;
+    if (reviewFilter === 'late' && !isLateMessage(r)) return false;
+    if (reviewFilter === 'ok' && (needsReview(r) || isAwaiting(r) || isLateMessage(r))) return false;
     if (nicheFilter || canPostFilter) {
       const offers = r.parsed?.offers ?? [];
       const match = offers.some(
@@ -156,6 +169,7 @@ export function ResponsesView({ tick }: { tick: number }) {
   });
   const reviewCount = allRows.filter(needsReview).length;
   const awaitingCount = allRows.filter(isAwaiting).length;
+  const lateCount = allRows.filter(isLateMessage).length;
   const editingRow = editId ? allRows.find((r) => r.id === editId) : undefined;
   const showingRow = showId ? allRows.find((r) => r.id === showId) : undefined;
 
@@ -229,6 +243,7 @@ export function ResponsesView({ tick }: { tick: number }) {
               <option value="">any state</option>
               <option value="review">needs review{reviewCount ? ` (${reviewCount})` : ''}</option>
               <option value="awaiting">awaiting reply{awaitingCount ? ` (${awaitingCount})` : ''}</option>
+              <option value="late">new after answer{lateCount ? ` (${lateCount})` : ''}</option>
               <option value="ok">no issues</option>
             </NativeSelect.Field>
             <NativeSelect.Indicator />
@@ -263,7 +278,7 @@ export function ResponsesView({ tick }: { tick: number }) {
             icon={InboxIcon}
             title={q ? `No responses match "${search.trim()}"` : 'No responses yet'}
             description={
-              q || nicheFilter || canPostFilter
+              q || nicheFilter || canPostFilter || reviewFilter
                 ? 'Try a different search or filter.'
                 : 'Replies from contacted targets will show up here as they arrive.'
             }

@@ -10,6 +10,7 @@
 import { normalizeEmail } from '../../domain/reply-matching';
 import type {
   Account,
+  Batch,
   Campaign,
   Niche,
   Outreach,
@@ -185,6 +186,17 @@ export class PouchDbStore implements Store {
   }
   deleteTarget(id: string) {
     return this.delete('target', id);
+  }
+
+  // batches
+  getBatch(id: string) {
+    return this.get<Batch>('batch', id);
+  }
+  putBatch(b: Batch) {
+    return this.put('batch', b);
+  }
+  listBatches() {
+    return this.listByType<Batch>('batch');
   }
 
   // outreaches

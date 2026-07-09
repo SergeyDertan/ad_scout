@@ -26,6 +26,7 @@ const PALETTE: Record<string, string> = {
   fromAddress: 'blue',
   // neutral
   pending: 'gray',
+  skipped: 'gray',
   manual: 'gray',
 };
 

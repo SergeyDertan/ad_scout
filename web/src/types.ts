@@ -154,6 +154,7 @@ export type TargetStatus =
 export interface Target {
   id: string;
   campaignId: string;
+  batchId?: string;
   websiteUrl: string;
   contactEmail: string;
   contactName?: string;
@@ -228,7 +229,7 @@ export interface ResponseRow {
   campaignId?: string;
   campaignName?: string;
   matchMethod: 'threadId' | 'fromAddress' | 'unmatched';
-  extractionStatus: 'pending' | 'done' | 'failed';
+  extractionStatus: 'pending' | 'done' | 'failed' | 'skipped';
   review?: string[];
   // Present on every reply the server returns (spread from the stored Reply).
   targetId?: string;
@@ -265,6 +266,13 @@ export const AWAITING_INTENTS = ['holding', 'auto_reply'];
 export function isAwaiting(row: { parsed?: { intent?: string } }): boolean {
   const intent = row.parsed?.intent;
   return intent != null && AWAITING_INTENTS.includes(intent);
+}
+
+/** True when this reply landed AFTER the target was already answered (price/opt-out
+ *  known). We deliberately saved it without re-extracting ('skipped'), so it may
+ *  carry something new a human should read — a renegotiation, a correction, a stop. */
+export function isLateMessage(row: { extractionStatus?: string }): boolean {
+  return row.extractionStatus === 'skipped';
 }
 
 export interface Suppression {
@@ -321,6 +329,23 @@ export interface NewTarget {
   campaignId?: string;
   contactName?: string;
   notes?: string;
+  /** Shared across a bulk import so all its rows land in one batch. Omit for a
+   *  single add — the server mints a fresh single-row batch. */
+  batchId?: string;
+}
+
+export interface Batch {
+  id: string;
+  campaignId: string;
+  name?: string;
+  source: 'import' | 'manual';
+  createdAt: string;
+}
+
+/** A batch enriched by GET /api/batches with its live target rollup. */
+export interface BatchRow extends Batch {
+  count: number;
+  byStatus: Record<string, number>;
 }
 
 export interface NewCampaign {

@@ -2,7 +2,7 @@
 // Match order: threadId  →  exact fromAddress (awaiting targets)  →  unmatched.
 // We NEVER parse Re:/References headers — the server already computed threading.
 
-import type { MatchMethod } from './types';
+import type { MatchMethod, Target } from './types';
 
 export interface SentOutreachRef {
   targetId: string;
@@ -26,6 +26,17 @@ export interface MatchResult {
 
 export function normalizeEmail(addr: string): string {
   return addr.trim().toLowerCase();
+}
+
+/**
+ * True once we already have a substantive outcome for this target (a parsed
+ * result — price/canPost, or an opt-out). Further inbound in the same thread is
+ * saved for the record but NOT re-extracted, so the known result isn't clobbered
+ * and we don't spend AI calls on later chatter. Keyed on `result` (not status)
+ * because the fetch-only pass marks a target 'replied' BEFORE extraction runs.
+ */
+export function isTargetResolved(target: Pick<Target, 'result'> | undefined): boolean {
+  return target?.result != null;
 }
 
 /**

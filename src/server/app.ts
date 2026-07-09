@@ -10,8 +10,10 @@
 //   POST   /api/accounts/:id/pause | /resume
 //   DELETE /api/accounts/:id
 //   GET    /api/targets?status=&campaignId=
-//   POST   /api/targets                 { websiteUrl, contactEmail, campaignId?, contactName?, notes? }
+//   POST   /api/targets                 { websiteUrl, contactEmail, campaignId?, contactName?, notes?, batchId? }
 //   DELETE /api/targets/:id
+//   GET    /api/batches                 → batches + live { count, byStatus }
+//   POST   /api/batches                 { campaignId, name? } → creates an import batch
 //   GET    /api/responses?campaignId=
 //   GET    /api/suppressions
 //   POST   /api/run/send | /api/run/poll | /api/run/fetch
@@ -26,6 +28,7 @@ import type { GmailOAuthHandler } from '../adapters/email/gmail-api.provider';
 import type {
   Account,
   AccountStatus,
+  Batch,
   CanPost,
   Campaign,
   ProviderType,
@@ -445,9 +448,23 @@ async function handle(
           return sendJson(res, 400, { error: 'no campaign exists — create one first' });
         }
       }
+      // A bulk import creates its batch up front (POST /api/batches) and passes
+      // the id on every row. A lone add omits it → mint a one-off 'manual' batch.
+      let batchId = str(body.batchId);
+      if (!batchId) {
+        const batch: Batch = {
+          id: newId('batch'),
+          campaignId,
+          source: 'manual',
+          createdAt: deps.clock.now().toISOString(),
+        };
+        await store.putBatch(batch);
+        batchId = batch.id;
+      }
       const target: Target = {
         id: newId('target'),
         campaignId,
+        batchId,
         websiteUrl,
         contactEmail,
         contactName: str(body.contactName),
@@ -479,6 +496,46 @@ async function handle(
       if (!target) return sendJson(res, 404, { error: 'target not found' });
       await store.deleteTarget(target.id);
       return sendJson(res, 200, { ok: true, id: target.id });
+    }
+
+    // GET /api/batches — batches, each enriched with a live target count + status
+    // breakdown derived from the targets (never stored, so it can't drift).
+    if (method === 'GET' && seg[1] === 'batches' && seg.length === 2) {
+      const batches = await store.listBatches();
+      const targets = await store.listTargets();
+      const roll = new Map<string, { count: number; byStatus: Record<string, number> }>();
+      for (const t of targets) {
+        if (!t.batchId) continue;
+        let e = roll.get(t.batchId);
+        if (!e) {
+          e = { count: 0, byStatus: {} };
+          roll.set(t.batchId, e);
+        }
+        e.count++;
+        e.byStatus[t.status] = (e.byStatus[t.status] ?? 0) + 1;
+      }
+      const out = batches
+        .map((b) => ({ ...b, count: roll.get(b.id)?.count ?? 0, byStatus: roll.get(b.id)?.byStatus ?? {} }))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      return sendJson(res, 200, out);
+    }
+
+    // POST /api/batches — create a named import batch; the bulk-import client
+    // calls this first, then posts each target with the returned id.
+    if (method === 'POST' && seg[1] === 'batches' && seg.length === 2) {
+      const body = (await readJsonBody(req)) as Record<string, unknown>;
+      const campaignId = str(body.campaignId);
+      if (!campaignId || !(await store.getCampaign(campaignId))) {
+        return sendJson(res, 400, { error: 'valid campaignId is required' });
+      }
+      const batch: Batch = {
+        id: newId('batch'),
+        campaignId,
+        ...(str(body.name) ? { name: str(body.name) } : {}),
+        source: 'import',
+        createdAt: deps.clock.now().toISOString(),
+      };
+      return sendJson(res, 201, await store.putBatch(batch));
     }
 
     // DELETE /api/replies/:id

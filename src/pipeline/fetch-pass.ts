@@ -4,6 +4,7 @@
 
 import {
   detectBounce,
+  isTargetResolved,
   matchReply,
   normalizeEmail,
   type AwaitingTargetRef,
@@ -28,6 +29,8 @@ export interface FetchReport {
   bounced: number;
   matched: number;
   unmatched: number;
+  /** Matched replies stored 'skipped' because the target was already answered. */
+  skipped: number;
 }
 
 export async function runFetchPass(deps: FetchDeps): Promise<FetchReport> {
@@ -38,6 +41,7 @@ export async function runFetchPass(deps: FetchDeps): Promise<FetchReport> {
     bounced: 0,
     matched: 0,
     unmatched: 0,
+    skipped: 0,
   };
 
   const sentRefs: SentOutreachRef[] = (await store.listOutreaches())
@@ -122,6 +126,11 @@ async function handleMessage(
     awaiting,
   );
 
+  // A later reply on an already-answered target is saved for the record but must
+  // never enter the extraction queue (store 'skipped', not 'pending').
+  const target = match.targetId ? await store.getTarget(match.targetId) : undefined;
+  const alreadyAnswered = isTargetResolved(target);
+
   const reply: Reply = {
     id: newId('reply'),
     emailId: msg.emailId,
@@ -132,20 +141,22 @@ async function handleMessage(
     matchMethod: match.method,
     receivedAt: msg.receivedAt,
     text: msg.text,
-    extractionStatus: 'pending',
+    extractionStatus: alreadyAnswered ? 'skipped' : 'pending',
   };
 
   await store.putReply(reply);
 
-  if (match.targetId) {
-    report.matched++;
-    const target = await store.getTarget(match.targetId);
-    if (target) {
-      await store.updateTarget(target.id, (t) =>
-        t.status === 'bounced' || t.status === 'excluded' ? t : { ...t, status: 'replied' },
-      );
-    }
-  } else {
+  if (!match.targetId) {
     report.unmatched++;
+    return;
+  }
+  report.matched++;
+  if (alreadyAnswered) {
+    // Leave the resolved target untouched — preserve its known result.
+    report.skipped++;
+  } else if (target) {
+    await store.updateTarget(target.id, (t) =>
+      t.status === 'bounced' || t.status === 'excluded' ? t : { ...t, status: 'replied' },
+    );
   }
 }

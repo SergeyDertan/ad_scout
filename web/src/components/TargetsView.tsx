@@ -11,7 +11,7 @@ import {
   SimpleGrid,
   Text,
 } from '@chakra-ui/react';
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { List, type RowComponentProps } from 'react-window';
 import { api } from '../api';
 import type { Campaign, Target, TargetStatus } from '../types';
@@ -35,6 +35,28 @@ const ROW_H = 52;
 const MAX_LIST_H = 600;
 
 type Mode = 'add' | 'import' | null;
+
+// Sentinel batch-filter value for targets that carry no batchId (pre-backfill).
+const NO_BATCH = '__none__';
+
+/** One import's worth of targets, summarized for the batch filter dropdown. */
+interface BatchInfo {
+  id: string;
+  count: number;
+  firstAt: string; // earliest createdAt in the batch
+}
+
+/** Human label for a batch option — date/time of the import + row count. The raw
+ *  id (a uuid) is unhelpful on its own, so it goes in the option's title tooltip. */
+function batchLabel(b: BatchInfo): string {
+  const when = new Date(b.firstAt).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  return `${when} · ${b.count}`;
+}
 
 // Stat chip for status breakdown
 function StatChip({ label, value, active, onClick }: { label: string; value: number; active: boolean; onClick: () => void }) {
@@ -141,6 +163,7 @@ function VirtualRow({ index, style, targets, campaignNames, onRemove, onThread, 
 export function TargetsView({ tick }: { tick: number }) {
   const [statusFilter, setStatusFilter] = useState<TargetStatus | ''>('');
   const [campaignFilter, setCampaignFilter] = useState('');
+  const [batchFilter, setBatchFilter] = useState('');
   const [search, setSearch] = useState('');
   const [mode, setMode] = useState<Mode>(null);
   const [threadTarget, setThreadTarget] = useState<Target | null>(null);
@@ -157,12 +180,31 @@ export function TargetsView({ tick }: { tick: number }) {
     tick,
   );
 
+  // Batches present in the loaded set, newest first — drives the filter dropdown.
+  const batches = useMemo(() => {
+    const map = new Map<string, BatchInfo>();
+    for (const t of allTargets) {
+      if (!t.batchId) continue;
+      const cur = map.get(t.batchId);
+      if (cur) {
+        cur.count++;
+        if (t.createdAt < cur.firstAt) cur.firstAt = t.createdAt;
+      } else {
+        map.set(t.batchId, { id: t.batchId, count: 1, firstAt: t.createdAt });
+      }
+    }
+    return [...map.values()].sort((a, b) => b.firstAt.localeCompare(a.firstAt));
+  }, [allTargets]);
+  const hasUnbatched = useMemo(() => allTargets.some((t) => !t.batchId), [allTargets]);
+
   const q = search.trim().toLowerCase();
-  const targets = q
-    ? allTargets.filter(
-        (t) => t.websiteUrl.toLowerCase().includes(q) || t.contactEmail.toLowerCase().includes(q),
-      )
-    : allTargets;
+  const targets = allTargets.filter((t) => {
+    if (q && !t.websiteUrl.toLowerCase().includes(q) && !t.contactEmail.toLowerCase().includes(q))
+      return false;
+    if (batchFilter === NO_BATCH) return !t.batchId;
+    if (batchFilter && t.batchId !== batchFilter) return false;
+    return true;
+  });
 
   // Status breakdown from loaded targets
   const byStatus = targets.reduce<Record<string, number>>((acc, t) => {
@@ -284,6 +326,34 @@ export function TargetsView({ tick }: { tick: number }) {
           </NativeSelect.Root>
         </HStack>
 
+        {(batches.length > 0 || hasUnbatched) && (
+          <HStack
+            gap={2}
+            bg="bg.panel"
+            borderWidth="1px"
+            borderColor="border"
+            rounded="lg"
+            pl={3}
+            pr={1.5}
+            py={1}
+          >
+            <NativeSelect.Root size="sm" width="44" variant="plain">
+              <NativeSelect.Field
+                value={batchFilter}
+                onChange={(e) => setBatchFilter(e.target.value)}
+                fontWeight="medium"
+              >
+                <option value="">all batches</option>
+                {batches.map((b) => (
+                  <option key={b.id} value={b.id} title={b.id}>{batchLabel(b)}</option>
+                ))}
+                {hasUnbatched && <option value={NO_BATCH}>— no batch —</option>}
+              </NativeSelect.Field>
+              <NativeSelect.Indicator />
+            </NativeSelect.Root>
+          </HStack>
+        )}
+
         <InputGroup startElement={<SearchIcon boxSize={3.5} color="fg.muted" />} maxW="64">
           <Input
             size="sm"
@@ -333,7 +403,9 @@ export function TargetsView({ tick }: { tick: number }) {
                 : 'No targets queued'
           }
           description={
-            q || statusFilter ? 'Try a different filter.' : 'Add a website to the outreach queue to begin.'
+            q || statusFilter || batchFilter
+              ? 'Try a different filter.'
+              : 'Add a website to the outreach queue to begin.'
           }
         >
           {!statusFilter && !q && (

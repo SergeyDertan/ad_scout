@@ -19,6 +19,7 @@ import { useStream, type LiveState } from './hooks/useStream';
 import { AccountsView } from './components/AccountsView';
 import { CampaignsView } from './components/CampaignsView';
 import { TargetsView } from './components/TargetsView';
+import { BatchesView } from './components/BatchesView';
 import { ResponsesView } from './components/ResponsesView';
 import { SuppressionsView } from './components/SuppressionsView';
 import { RunView } from './components/RunView';
@@ -28,6 +29,7 @@ import {
   MegaphoneIcon,
   PlayIcon,
   ShieldIcon,
+  TagIcon,
   TargetIcon,
   UsersIcon,
 } from './components/icons';
@@ -43,6 +45,7 @@ const TABS: {
   { id: 'campaigns', label: 'Campaigns', icon: MegaphoneIcon },
   { id: 'accounts', label: 'Accounts', icon: UsersIcon, count: (s) => s?.accounts },
   { id: 'targets', label: 'Targets', icon: TargetIcon, count: (s) => s?.targets.total },
+  { id: 'batches', label: 'Batches', icon: TagIcon },
   { id: 'responses', label: 'Responses', icon: InboxIcon },
   { id: 'suppressions', label: 'Suppressions', icon: ShieldIcon },
   { id: 'run', label: 'Run', icon: PlayIcon },
@@ -281,6 +284,9 @@ export function App() {
           </Tabs.Content>
           <Tabs.Content value="targets">
             <TargetsView tick={ticks.target} />
+          </Tabs.Content>
+          <Tabs.Content value="batches">
+            <BatchesView tick={ticks.target} />
           </Tabs.Content>
           <Tabs.Content value="responses">
             <ResponsesView tick={ticks.reply} />

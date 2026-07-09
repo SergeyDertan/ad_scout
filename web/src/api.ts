@@ -1,5 +1,7 @@
 import type {
   Account,
+  Batch,
+  BatchRow,
   Campaign,
   InquiryField,
   NewAccount,
@@ -67,6 +69,11 @@ export const api = {
   createTarget: (body: NewTarget) =>
     req<Target>('/targets', { method: 'POST', body: JSON.stringify(body) }),
   deleteTarget: (id: string) => req<{ ok: boolean }>(`/targets/${id}`, { method: 'DELETE' }),
+
+  // batches
+  listBatches: () => req<BatchRow[]>('/batches'),
+  createBatch: (body: { campaignId: string; name?: string }) =>
+    req<Batch>('/batches', { method: 'POST', body: JSON.stringify(body) }),
 
   deleteReply: (id: string) => req<{ ok: boolean }>(`/replies/${id}`, { method: 'DELETE' }),
 

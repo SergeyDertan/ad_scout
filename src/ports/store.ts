@@ -4,6 +4,7 @@
 
 import type {
   Account,
+  Batch,
   Campaign,
   Niche,
   Outreach,
@@ -17,6 +18,7 @@ export type DocType =
   | 'campaign'
   | 'account'
   | 'target'
+  | 'batch'
   | 'outreach'
   | 'reply'
   | 'suppression'
@@ -69,6 +71,11 @@ export interface Store {
   updateTarget(id: string, mutate: (current: Target) => Target): Promise<Target>;
   listTargets(filter?: TargetFilter): Promise<Target[]>;
   deleteTarget(id: string): Promise<void>;
+
+  // batches (a group of targets added together; targets FK via target.batchId)
+  getBatch(id: string): Promise<Batch | undefined>;
+  putBatch(b: Batch): Promise<Batch>;
+  listBatches(): Promise<Batch[]>;
 
   // outreaches (append-only log)
   getOutreach(id: string): Promise<Outreach | undefined>;

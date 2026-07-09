@@ -4,6 +4,7 @@
 
 import {
   detectBounce,
+  isTargetResolved,
   matchReply,
   normalizeEmail,
   type AwaitingTargetRef,
@@ -39,6 +40,8 @@ export interface PollReport {
   unmatched: number;
   extracted: number;
   extractionFailed: number;
+  /** Matched replies saved without extraction because the target was already answered. */
+  skipped: number;
 }
 
 export async function runPollPass(deps: PollDeps): Promise<PollReport> {
@@ -51,6 +54,7 @@ export async function runPollPass(deps: PollDeps): Promise<PollReport> {
     unmatched: 0,
     extracted: 0,
     extractionFailed: 0,
+    skipped: 0,
   };
 
   // Matching refs computed once for the pass.
@@ -137,6 +141,13 @@ export async function extractPendingReplies(
     const campaign = target ? await store.getCampaign(target.campaignId) : undefined;
     if (!target || !campaign) {
       log(`[${i}/${pending.length}] skip ${reply.fromAddress} — no target/campaign`);
+      continue;
+    }
+    // Already answered — save the reply as-is, never invoke the AI on it.
+    if (isTargetResolved(target)) {
+      reply.extractionStatus = 'skipped';
+      await store.putReply(reply);
+      log(`[${i}/${pending.length}] skip ${target.websiteUrl} — target already answered`);
       continue;
     }
     try {
@@ -270,7 +281,11 @@ async function handleMessage(
   // Extract + roll up onto the target.
   const target = await store.getTarget(match.targetId);
   const campaign = target ? await store.getCampaign(target.campaignId) : undefined;
-  if (target && campaign) {
+  if (isTargetResolved(target)) {
+    // Already answered — save the later reply for the record, don't re-extract.
+    reply.extractionStatus = 'skipped';
+    report.skipped++;
+  } else if (target && campaign) {
     try {
       const knownNiches = await store.listNiches();
       const { result: parsed, discovered, review } = await extractor.extract(

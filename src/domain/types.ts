@@ -87,6 +87,9 @@ export type TargetStatus =
 export interface Target {
   id: ID;
   campaignId: ID;
+  /** Groups targets added together — one bulk import, or a single manual add.
+   *  Assigned at creation and shared across every row of the same import. */
+  batchId?: ID;
   websiteUrl: string;
   contactEmail: string;
   contactName?: string;
@@ -96,6 +99,25 @@ export interface Target {
   lastOutreachAt?: ISO;
   followUpCount: number;
   result?: OutreachResult;
+  createdAt: ISO;
+}
+
+// --- Batch (a group of targets added together) ------------------------------
+
+/** How a batch came to be: a bulk import, or a single manual "Add target". */
+export type BatchSource = 'import' | 'manual';
+
+/**
+ * A batch is created once when targets are added — a bulk import (named by the
+ * user), or a lone manual add (unnamed, source 'manual'). Every Target carries
+ * this record's id in `batchId`. Live target count/status is derived from the
+ * targets at read time, so it's never stored here (it can't drift).
+ */
+export interface Batch {
+  id: ID;
+  campaignId: ID;
+  name?: string; // user-given label for an import; absent for manual adds
+  source: BatchSource;
   createdAt: ISO;
 }
 
@@ -125,7 +147,9 @@ export interface Outreach {
 // --- Reply (inbound) --------------------------------------------------------
 
 export type MatchMethod = 'threadId' | 'fromAddress' | 'unmatched';
-export type ExtractionStatus = 'pending' | 'done' | 'failed';
+// 'skipped' = deliberately not AI-extracted (the target was already answered);
+// the reply is saved for the record but never enters the extraction queue.
+export type ExtractionStatus = 'pending' | 'done' | 'failed' | 'skipped';
 
 /** A file attached to an inbound email. Content is base64 so it serializes into
  *  JSON (IncomingEmail transport + persisted Reply document) without a Buffer. */

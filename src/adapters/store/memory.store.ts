@@ -4,6 +4,7 @@
 
 import type {
   Account,
+  Batch,
   Campaign,
   Niche,
   Outreach,
@@ -29,6 +30,7 @@ export class MemoryStore implements Store {
   private campaigns = new Map<string, Campaign>();
   private accounts = new Map<string, Account>();
   private targets = new Map<string, Target>();
+  private batches = new Map<string, Batch>();
   private outreaches = new Map<string, Outreach>();
   private replies = new Map<string, Reply>(); // keyed by id
   private repliesByEmailId = new Map<string, string>(); // emailId -> reply id
@@ -108,6 +110,20 @@ export class MemoryStore implements Store {
   }
   async deleteTarget(id: string) {
     if (this.targets.delete(id)) this.emit('target', 'delete', id);
+  }
+
+  // batches
+  async getBatch(id: string) {
+    const b = this.batches.get(id);
+    return b ? clone(b) : undefined;
+  }
+  async putBatch(b: Batch) {
+    this.batches.set(b.id, clone(b));
+    this.emit('batch', 'put', b.id);
+    return clone(b);
+  }
+  async listBatches() {
+    return [...this.batches.values()].map(clone);
   }
 
   // outreaches

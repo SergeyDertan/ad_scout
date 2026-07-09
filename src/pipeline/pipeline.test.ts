@@ -126,6 +126,68 @@ test('poll-pass matches a reply by threadId, extracts, and marks target replied'
   assert.equal(replies[0].extractionStatus, 'done');
 });
 
+test('a later reply on an already-answered target is saved but not re-extracted', async () => {
+  const store = new MemoryStore();
+  const email = new DummyEmailProvider();
+  // Count how many times the LLM is invoked so we can prove the second reply is
+  // saved without an extraction call.
+  let calls = 0;
+  const dummy = new DummyLlmProvider();
+  const countingLlm: LlmProvider = {
+    name: 'counting',
+    generateJson(req) {
+      calls++;
+      return dummy.generateJson(req);
+    },
+    generateText: (req) => dummy.generateText(req),
+  };
+  const extractor = new Extractor(countingLlm);
+  await seed(store);
+
+  await runSendPass({ store, email, clock, config });
+  const outreach = (await store.listOutreaches({ targetId: 't1' }))[0];
+
+  // First reply — a real answer. Extracts and resolves the target.
+  email.injectReply({
+    threadId: outreach.threadId!,
+    fromAddress: 'info@t1.com',
+    text: 'Yes we can publish. $300. Categories: esports. Section: News.',
+    receivedAt: new Date('2026-06-19T12:30:00Z'),
+  });
+  const first = await runPollPass({ store, email, extractor, clock });
+  assert.equal(first.extracted, 1);
+  assert.equal(calls, 1);
+  const resolved = await store.getTarget('t1');
+  assert.equal(resolved?.status, 'replied');
+  const firstResult = resolved?.result;
+  assert.ok(firstResult);
+
+  // Second reply in the SAME thread — must be saved, but NOT extracted, and must
+  // leave the known result untouched.
+  email.injectReply({
+    threadId: outreach.threadId!,
+    fromAddress: 'info@t1.com',
+    text: 'Actually never mind, disregard.',
+    receivedAt: new Date('2026-06-19T13:00:00Z'),
+  });
+  const second = await runPollPass({ store, email, extractor, clock });
+  assert.equal(second.matched, 1);
+  assert.equal(second.skipped, 1);
+  assert.equal(second.extracted, 0);
+  assert.equal(calls, 1, 'the AI must not be invoked on the later reply');
+
+  const replies = (await store.listReplies()).sort((a, b) =>
+    a.receivedAt.localeCompare(b.receivedAt),
+  );
+  assert.equal(replies.length, 2);
+  assert.equal(replies[1].extractionStatus, 'skipped');
+  assert.equal(replies[1].parsed, undefined);
+
+  const after = await store.getTarget('t1');
+  assert.equal(after?.status, 'replied');
+  assert.deepEqual(after?.result, firstResult, 'the known result must be preserved');
+});
+
 test('poll-pass dedupes the same inbound emailId', async () => {
   const store = new MemoryStore();
   const email = new DummyEmailProvider();

@@ -4,6 +4,7 @@ import {
   Field,
   Heading,
   HStack,
+  Input,
   NativeSelect,
   Text,
   Textarea,
@@ -100,6 +101,7 @@ export function BulkImportForm({
   onCreated: () => void;
 }) {
   const [text, setText] = useState('');
+  const [name, setName] = useState('');
   const [fileRows, setFileRows] = useState<ParsedRow[] | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -128,6 +130,9 @@ export function BulkImportForm({
       const parsed = await parseWorkbook(file);
       setFileRows(parsed);
       setFileName(file.name);
+      // Prefill the batch name from the filename (minus extension) unless the
+      // user already typed one.
+      setName((n) => n.trim() || file.name.replace(/\.[^.]+$/, ''));
       setText('');
     } catch (err) {
       toastError('Could not read file', err);
@@ -145,11 +150,22 @@ export function BulkImportForm({
     if (rows.length === 0 || !campaignId) return;
     setBusy(true);
     setProgress({ done: 0, total: rows.length });
+    // Create the batch record first, then stamp every row with its id.
+    let batchId: string;
+    try {
+      const batch = await api.createBatch({ campaignId, name: name.trim() || undefined });
+      batchId = batch.id;
+    } catch (err) {
+      setBusy(false);
+      setProgress(null);
+      toastError('Could not create the batch', err);
+      return;
+    }
     let ok = 0;
     let fail = 0;
     for (const row of rows) {
       try {
-        await api.createTarget({ ...row, campaignId });
+        await api.createTarget({ ...row, campaignId, batchId });
         ok++;
       } catch {
         fail++;
@@ -180,19 +196,31 @@ export function BulkImportForm({
         Upload an Excel or CSV file, or paste rows directly.
       </Text>
 
-      <Field.Root mb={4}>
-        <Field.Label>Campaign</Field.Label>
-        <NativeSelect.Root maxW="xs">
-          <NativeSelect.Field value={campaignId} onChange={(e) => setCampaignId(e.target.value)}>
-            {campaigns.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </NativeSelect.Field>
-          <NativeSelect.Indicator />
-        </NativeSelect.Root>
-      </Field.Root>
+      <HStack gap={4} mb={4} align="flex-start" flexWrap="wrap">
+        <Field.Root maxW="xs">
+          <Field.Label>Campaign</Field.Label>
+          <NativeSelect.Root>
+            <NativeSelect.Field value={campaignId} onChange={(e) => setCampaignId(e.target.value)}>
+              {campaigns.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </NativeSelect.Field>
+            <NativeSelect.Indicator />
+          </NativeSelect.Root>
+        </Field.Root>
+
+        <Field.Root maxW="xs">
+          <Field.Label>Batch name</Field.Label>
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Casino sites — July"
+          />
+          <Field.HelperText>Labels this import in the Batches tab.</Field.HelperText>
+        </Field.Root>
+      </HStack>
 
       {/* File upload zone */}
       <Box

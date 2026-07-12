@@ -19,6 +19,7 @@ import {
   type Target,
 } from '../domain/types';
 import type { Clock } from '../lib/clock';
+import { describeError } from '../lib/errors';
 import { newId } from '../lib/ids';
 import { logger } from '../lib/logger';
 import type { EmailProvider, IncomingEmail } from '../ports/email-provider';
@@ -77,7 +78,8 @@ export async function runPollPass(deps: PollDeps): Promise<PollReport> {
     } catch (err) {
       logger.warn('fetchReplies failed', {
         account: account.id,
-        error: err instanceof Error ? err.message : String(err),
+        email: account.email,
+        ...describeError(err),
       });
       continue;
     }
@@ -300,11 +302,9 @@ async function handleMessage(
     } catch (err) {
       reply.extractionStatus = 'failed';
       report.extractionFailed++;
-      const cause = err instanceof Error ? (err as NodeJS.ErrnoException & { cause?: unknown }).cause : undefined;
       logger.warn('extraction failed', {
         reply: reply.id,
-        error: err instanceof Error ? err.message : String(err),
-        ...(cause ? { cause: cause instanceof Error ? cause.message : String(cause) } : {}),
+        ...describeError(err),
       });
     }
   }

@@ -24,6 +24,12 @@ const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 
+// Bound every Gmail/OAuth HTTP call. Without this, a request that's mid-flight
+// when the machine sleeps hangs on a dead socket until the OS tears it down —
+// no error, no log, just a stalled pass. On timeout `fetch` rejects with a
+// TimeoutError, which describeError surfaces as a clear, bounded failure.
+const HTTP_TIMEOUT_MS = 30_000;
+
 export interface GmailOAuthHandler {
   getAuthUrl(accountId: string, redirectUri: string): string;
   handleCallback(code: string, accountId: string, redirectUri: string): Promise<void>;
@@ -60,6 +66,7 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
   async handleCallback(code: string, accountId: string, redirectUri: string): Promise<void> {
     const resp = await fetch(TOKEN_URL, {
       method: 'POST',
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         code,
@@ -112,6 +119,7 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
     // Refresh the access token.
     const resp = await fetch(TOKEN_URL, {
       method: 'POST',
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         client_id: this.clientId,
@@ -145,6 +153,7 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
   ): Promise<T> {
     const token = await this.getAccessToken(account);
     const resp = await fetch(`${GMAIL_API}/users/me${path}`, {
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
       ...opts,
       headers: {
         Authorization: `Bearer ${token}`,

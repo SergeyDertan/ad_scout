@@ -5,6 +5,8 @@
 
 import type { Clock } from '../lib/clock';
 import { logger } from '../lib/logger';
+import type { Reachable } from '../lib/reachability';
+import { LivenessMonitor } from './liveness';
 import {
   DEFAULT_DRIP,
   planSendTick,
@@ -44,6 +46,17 @@ export interface SchedulerDeps {
   random?: () => number;
   timers?: Timers;
   onError?: (where: string, err: unknown) => void;
+  /**
+   * Network reachability probe. When provided, the scheduler tracks online/sleep
+   * state: passes are skipped (not attempted) while offline, and each outage
+   * logs one pause/resume pair instead of per-account "fetch failed" noise.
+   * Omit it (as the tests do) to keep the plain always-on behavior.
+   */
+  reachable?: Reachable;
+  /** Liveness heartbeat cadence; also the recheck delay while offline. Default 15s. */
+  heartbeatMs?: number;
+  /** Drift beyond the heartbeat that counts as a suspend. Default 20s. */
+  sleepThresholdMs?: number;
 }
 
 export class DripScheduler {
@@ -54,6 +67,8 @@ export class DripScheduler {
   private readonly random: () => number;
   private readonly timers: Timers;
   private readonly onError: (where: string, err: unknown) => void;
+  private readonly liveness: LivenessMonitor | null;
+  private readonly offlineRecheckMs: number;
 
   private sendHandle: TimerHandle | null = null;
   private pollHandle: TimerHandle | null = null;
@@ -68,11 +83,27 @@ export class DripScheduler {
     this.timers = deps.timers ?? realTimers;
     this.onError =
       deps.onError ?? ((where, err) => logger.warn(`scheduler ${where} error`, { err: String(err) }));
+    this.offlineRecheckMs = deps.heartbeatMs ?? 15_000;
+    this.liveness = deps.reachable
+      ? new LivenessMonitor({
+          clock: this.clock,
+          reachable: deps.reachable,
+          timers: this.timers,
+          ...(deps.heartbeatMs != null ? { heartbeatMs: deps.heartbeatMs } : {}),
+          ...(deps.sleepThresholdMs != null ? { sleepThresholdMs: deps.sleepThresholdMs } : {}),
+        })
+      : null;
+  }
+
+  /** Skip a pass when the liveness monitor knows we're offline. */
+  private offline(): boolean {
+    return this.liveness != null && !this.liveness.isOnline();
   }
 
   start(): void {
     if (!this.stopped) return;
     this.stopped = false;
+    this.liveness?.start();
     this.sendHandle = this.timers.set(() => this.sendLoop(), 0);
     if (this.pollIntervalMs > 0) {
       this.pollHandle = this.timers.set(() => this.pollLoop(), this.pollIntervalMs);
@@ -81,6 +112,7 @@ export class DripScheduler {
 
   stop(): void {
     this.stopped = true;
+    this.liveness?.stop();
     if (this.sendHandle !== null) this.timers.clear(this.sendHandle);
     if (this.pollHandle !== null) this.timers.clear(this.pollHandle);
     this.sendHandle = null;
@@ -110,11 +142,16 @@ export class DripScheduler {
   private async sendLoop(): Promise<void> {
     if (this.stopped) return;
     let delayMs = this.drip.noQuotaDelayMs;
-    try {
-      const plan = await this.sendStep();
-      delayMs = plan.delayMs;
-    } catch (err) {
-      this.onError('send', err);
+    if (this.offline()) {
+      // Don't burn a send attempt while offline; recheck once the monitor flips.
+      delayMs = this.offlineRecheckMs;
+    } else {
+      try {
+        const plan = await this.sendStep();
+        delayMs = plan.delayMs;
+      } catch (err) {
+        this.onError('send', err);
+      }
     }
     if (!this.stopped) {
       this.sendHandle = this.timers.set(() => this.sendLoop(), delayMs);
@@ -123,13 +160,16 @@ export class DripScheduler {
 
   private async pollLoop(): Promise<void> {
     if (this.stopped) return;
-    try {
-      await this.pollStep();
-    } catch (err) {
-      this.onError('poll', err);
+    if (!this.offline()) {
+      try {
+        await this.pollStep();
+      } catch (err) {
+        this.onError('poll', err);
+      }
     }
     if (!this.stopped) {
-      this.pollHandle = this.timers.set(() => this.pollLoop(), this.pollIntervalMs);
+      const delayMs = this.offline() ? this.offlineRecheckMs : this.pollIntervalMs;
+      this.pollHandle = this.timers.set(() => this.pollLoop(), delayMs);
     }
   }
 }

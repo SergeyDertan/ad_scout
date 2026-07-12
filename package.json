@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@11.10.0+sha256.620b6605ea4f62fc56a6d0a98733f479071d0321e03e486b522c7e9a74617431",
+  "packageManager": "pnpm@11.11.0",
   "engines": {
     "node": ">=26",
     "pnpm": ">=11"
@@ -31,7 +31,7 @@
   },
   "dependencies": {
     "dotenv": "^17.4.2",
-    "imapflow": "^1.4.6",
+    "imapflow": "^1.4.7",
     "mailparser": "^3.9.14",
     "node-html-markdown": "^2.0.0",
     "nodemailer": "^9.0.3",

@@ -19,7 +19,6 @@ const PALETTE: Record<string, string> = {
   maybe: 'orange',
   contacted: 'blue',
   reserved: 'orange',
-  warming: 'orange',
   cooldown: 'orange',
   needs_review: 'orange',
   opt_out: 'orange',

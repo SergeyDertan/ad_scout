@@ -124,7 +124,7 @@ export function invertedPriceOffers(offers?: PostOffer[]): Set<string> {
   return flagged;
 }
 
-export type AccountStatus = 'warming' | 'active' | 'paused' | 'cooldown';
+export type AccountStatus = 'active' | 'paused' | 'cooldown';
 export type ProviderType = 'smtp-imap' | 'gmail-api';
 
 export interface Account {

@@ -41,7 +41,7 @@ export interface InquiryField {
 
 // --- Account ----------------------------------------------------------------
 
-export type AccountStatus = 'warming' | 'active' | 'paused' | 'cooldown';
+export type AccountStatus = 'active' | 'paused' | 'cooldown';
 export type ProviderType = 'smtp-imap' | 'gmail-api';
 
 export interface OAuthTokens {

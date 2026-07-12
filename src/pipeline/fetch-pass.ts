@@ -12,6 +12,7 @@ import {
 } from '../domain/reply-matching';
 import type { Reply, Suppression } from '../domain/types';
 import type { Clock } from '../lib/clock';
+import { describeError } from '../lib/errors';
 import { newId } from '../lib/ids';
 import { logger } from '../lib/logger';
 import type { EmailProvider, IncomingEmail } from '../ports/email-provider';
@@ -63,7 +64,8 @@ export async function runFetchPass(deps: FetchDeps): Promise<FetchReport> {
     } catch (err) {
       logger.warn('fetchReplies failed', {
         account: account.id,
-        error: err instanceof Error ? err.message : String(err),
+        email: account.email,
+        ...describeError(err),
       });
       continue;
     }

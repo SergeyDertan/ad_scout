@@ -272,7 +272,7 @@ test('POST /api/accounts creates a Gmail account with derived credentialRef', as
     });
     assert.equal(acc.email, 'sales.team@gmail.com');
     assert.equal(acc.providerType, 'gmail-api');
-    assert.equal(acc.status, 'warming');
+    assert.equal(acc.status, 'paused');
     assert.equal(acc.credentialRef, 'GMAIL_SALES_TEAM');
     assert.equal((await h.store.listAccounts()).length, 2);
   } finally {

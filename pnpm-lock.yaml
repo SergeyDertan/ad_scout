@@ -12,8 +12,8 @@ importers:
         specifier: ^17.4.2
         version: 17.4.2
       imapflow:
-        specifier: ^1.4.6
-        version: 1.4.6
+        specifier: ^1.4.7
+        version: 1.4.7
       mailparser:
         specifier: ^3.9.14
         version: 3.9.14
@@ -1083,8 +1083,8 @@ packages:
   ieee754@1.2.1:
     resolution: {integrity: sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA==}
 
-  imapflow@1.4.6:
-    resolution: {integrity: sha512-rStOxV2g1WKKSkctKluUHSJB99mRT2l8Dr0W67owCHsCjqYSMY+AnvzXbaG3NGSpRziu6PWNik1/nVwL0Zlycg==}
+  imapflow@1.4.7:
+    resolution: {integrity: sha512-nK03WfN16inwm0//0Q70T21G0g4H9ArMVyzKDRjAshOVV8iw71PP9HTpAXNmWB9giZWfPiS+ltHByi37cqwSgg==}
 
   immediate@3.3.0:
     resolution: {integrity: sha512-HR7EVodfFUdQCTIeySw+WDRFJlPcLOJbXfwwZ7Oom6tjsvZ3bOkCDJHehQC3nxJrv7+f9XecwazynjU8e4Vw3Q==}
@@ -3076,7 +3076,7 @@ snapshots:
 
   ieee754@1.2.1: {}
 
-  imapflow@1.4.6:
+  imapflow@1.4.7:
     dependencies:
       '@zone-eu/mailsplit': 5.4.14
       encoding-japanese: 2.2.0

@@ -7,7 +7,8 @@ import { loadConfig } from './config';
 import { buildAgent } from './lib/factory';
 import { acquireLock, LockHeldError } from './lib/lock';
 import { systemClock } from './lib/clock';
-import { logger } from './lib/logger';
+import { enableFileLogging, logger } from './lib/logger';
+import { makeTcpProbe } from './lib/reachability';
 import { runReconcile } from './pipeline/reconcile';
 import { runSendPass } from './pipeline/send-pass';
 import { runPollPass } from './pipeline/poll-pass';
@@ -20,6 +21,11 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const clock = systemClock;
   const port = Number(process.env.PORT ?? 8787);
+
+  // Tee all logs to a daily JSONL file so failures that happen while unattended
+  // (laptop asleep overnight) survive a closed terminal. LOG_DIR=off disables.
+  const logDir = process.env.LOG_DIR === 'off' ? null : enableFileLogging();
+  if (logDir) logger.info('file logging enabled', { dir: logDir });
 
   let lock;
   try {
@@ -62,6 +68,10 @@ async function main(): Promise<void> {
     runSend: () => runSendPass(sendDeps, { maxPerAccount: 1 }),
     runPoll: () => runFetchPass(fetchDeps),
     quotaRemaining: () => totalRemainingToday(store, config, clock.now()),
+    // Pause the drip loops (and log one line per outage) when the mail host is
+    // unreachable — e.g. Wi-Fi down or the laptop was asleep. Dummy-email runs
+    // have no real host to reach, so only enable it for real providers.
+    ...(config.dummyEmail ? {} : { reachable: makeTcpProbe() }),
   });
 
   server.listen(port, () => {

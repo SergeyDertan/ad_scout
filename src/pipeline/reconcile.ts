@@ -29,6 +29,15 @@ export async function runReconcile(deps: ReconcileDeps): Promise<ReconcileReport
   const now = clock.now();
   const report: ReconcileReport = { recoveredSent: 0, needsReview: 0, threadIdsResolved: 0 };
 
+  // Migrate legacy 'warming' accounts (status removed in favour of 'paused').
+  // A warming account never sent, so pausing it preserves the intent (off until
+  // the user activates it).
+  for (const a of await store.listAccounts()) {
+    if ((a.status as string) === 'warming') {
+      await store.updateAccount(a.id, (c) => ({ ...c, status: 'paused' }));
+    }
+  }
+
   const accounts = new Map((await store.listAccounts()).map((a) => [a.id, a] as const));
   const outreaches = await store.listOutreaches();
 

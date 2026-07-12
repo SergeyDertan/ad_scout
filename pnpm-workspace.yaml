@@ -10,6 +10,7 @@ allowBuilds:
 
 minimumReleaseAgeExclude:
   - '@types/node@26.1.1'
+  - imapflow@1.4.7
 
 # Native/binary deps whose install scripts we allow to run (pnpm v10 blocks
 # build scripts by default).

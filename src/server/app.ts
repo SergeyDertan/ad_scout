@@ -347,7 +347,7 @@ async function handle(
         credentialRef: str(body.credentialRef) ?? deriveCredentialRef(email),
         senderName,
         signature: str(body.signature),
-        status: (str(body.status) as AccountStatus) ?? 'warming',
+        status: (str(body.status) as AccountStatus) ?? 'paused',
         createdAt: deps.clock.now().toISOString(),
         maxDailyLimit,
       };
@@ -361,6 +361,8 @@ async function handle(
 
       if (method === 'PATCH' && seg.length === 3) {
         const body = (await readJsonBody(req)) as Partial<Account>;
+        const newEmail =
+          typeof body.email === 'string' && body.email.trim() ? body.email.trim() : undefined;
         const updated = await store.updateAccount(account.id, (current) => {
           const next: Account = { ...current };
           if (typeof body.dailyLimitOverride === 'number')
@@ -370,6 +372,20 @@ async function handle(
           if (typeof body.signature === 'string') next.signature = body.signature;
           if (body.providerType === 'gmail-api' || body.providerType === 'smtp-imap')
             next.providerType = body.providerType;
+          // Changing the address rebinds the account to a (possibly different)
+          // mailbox: re-derive the credential ref unless one is given explicitly,
+          // and drop the OAuth tokens + poll cursor so the old mailbox's grant
+          // can't send under the new address. The user must re-run OAuth after.
+          if (newEmail && newEmail !== current.email) {
+            next.email = newEmail;
+            next.credentialRef =
+              (typeof body.credentialRef === 'string' && body.credentialRef) ||
+              deriveCredentialRef(newEmail);
+            delete next.oauthTokens;
+            delete next.pollCursor;
+          } else if (typeof body.credentialRef === 'string' && body.credentialRef) {
+            next.credentialRef = body.credentialRef;
+          }
           return next;
         });
         return sendJson(res, 200, sanitizeAccount(updated));

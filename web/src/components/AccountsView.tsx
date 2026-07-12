@@ -21,7 +21,7 @@ export function AccountsView({ tick }: { tick: number }) {
     reload: load,
   } = useResource(useCallback(() => api.listAccounts(), []), tick);
 
-  // Only `active` accounts send. Anything else (warming / paused / cooldown)
+  // Only `active` accounts send. Anything else (paused / cooldown)
   // gets a one-click "Activate"; an active account gets "Pause".
   const setActive = async (a: Account, active: boolean) => {
     try {
@@ -146,7 +146,7 @@ export function AccountsView({ tick }: { tick: number }) {
           <Empty
             icon={UsersIcon}
             title="No sending accounts yet"
-            description="Add a Gmail account to start warming up and sending outreach."
+            description="Add a Gmail account, then activate it to start sending outreach."
           >
             <Button size="sm" colorPalette="brand" mt={2} onClick={() => setAdding(true)}>
               <PlusIcon />

@@ -12,6 +12,7 @@ import type {
   Target,
 } from '../domain/types';
 import type { Clock } from '../lib/clock';
+import { describeError } from '../lib/errors';
 import { newId, newMessageId } from '../lib/ids';
 import { logger } from '../lib/logger';
 import type { EmailProvider } from '../ports/email-provider';
@@ -201,13 +202,19 @@ async function sendOne(
     }
     report.sent++;
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    logger.warn('send failed', { target: target.id, error: message });
+    const detail = describeError(err);
+    logger.warn('send failed', {
+      target: target.id,
+      account: account.id,
+      to: target.contactEmail,
+      kind,
+      ...detail,
+    });
     await store.putOutreach({
       ...outreach,
       status: 'failed',
       attempts: outreach.attempts + 1,
-      error: message,
+      error: detail.error,
     });
     // Initial sends revert the target to 'pending' for retry on a later pass.
     if (kind === 'initial') {

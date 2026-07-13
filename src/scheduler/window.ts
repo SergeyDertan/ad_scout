@@ -4,7 +4,16 @@
 
 export interface SendWindow {
   startHour: number; // local hour, inclusive (0-23)
-  endHour: number; // local hour, exclusive
+  endHour: number; // local hour, exclusive — hard cutoff, never send past it
+  /** Soft target the drip paces toward (local hour). Sends are spread so the
+   *  last one lands ~here, leaving [paceEndHour, endHour) as a tail buffer.
+   *  Defaults to endHour (no buffer). Must satisfy startHour < paceEndHour <= endHour. */
+  paceEndHour?: number;
+}
+
+/** The hour the drip paces toward. Falls back to the hard close when unset. */
+export function paceEndHourOf(w: SendWindow): number {
+  return w.paceEndHour ?? w.endHour;
 }
 
 export interface DripConfig {
@@ -28,12 +37,26 @@ export function isWithinSendWindow(now: Date, w: SendWindow): boolean {
   return h >= w.startHour && h < w.endHour;
 }
 
-/** ms from `now` until the window closes today (0 if already closed). */
+/** ms from `now` until local `hour` today (0 if that hour has already passed). */
+function msUntilHour(now: Date, hour: number): number {
+  const t = new Date(now);
+  t.setHours(hour, 0, 0, 0);
+  return Math.max(0, t.getTime() - now.getTime());
+}
+
+/** ms from `now` until the hard close today (0 if already closed). */
 export function msUntilWindowClose(now: Date, w: SendWindow): number {
   if (!isWithinSendWindow(now, w)) return 0;
-  const close = new Date(now);
-  close.setHours(w.endHour, 0, 0, 0);
-  return Math.max(0, close.getTime() - now.getTime());
+  return msUntilHour(now, w.endHour);
+}
+
+/** ms from `now` until the soft pace target today (0 once in the tail buffer or
+ *  closed). Feeding this to the drip makes sends aim to finish by paceEndHour;
+ *  in the tail zone it returns 0, so the drip falls to its floor delay and
+ *  drains any leftover quota quickly before the hard close. */
+export function msUntilPaceEnd(now: Date, w: SendWindow): number {
+  if (!isWithinSendWindow(now, w)) return 0;
+  return msUntilHour(now, paceEndHourOf(w));
 }
 
 /** The next Date at which the window opens (today if still ahead, else tomorrow). */
@@ -90,6 +113,6 @@ export function planSendTick(
   if (remaining <= 0) {
     return { action: 'idle_no_quota', delayMs: cfg.noQuotaDelayMs };
   }
-  const base = dripBaseDelayMs(remaining, msUntilWindowClose(now, w), cfg);
+  const base = dripBaseDelayMs(remaining, msUntilPaceEnd(now, w), cfg);
   return { action: 'send', delayMs: applyJitter(base, cfg.jitterFrac, rnd) };
 }

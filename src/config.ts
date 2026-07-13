@@ -22,7 +22,7 @@ export interface Config {
   claude: { apiKey: string; model: string };
   claudeCode: { model: string; timeoutMs: number };
   googleOAuth: { clientId: string; clientSecret: string };
-  sendWindow: { startHour: number; endHour: number };
+  sendWindow: { startHour: number; endHour: number; paceEndHour: number };
   /** No-reply follow-up bumps. Disabled for now — set FOLLOW_UPS_ENABLED=true to
    *  re-enable. The follow-up code stays intact; this only gates the queue. */
   followUpsEnabled: boolean;
@@ -35,6 +35,10 @@ function envInt(name: string, fallback: number): number {
   const v = process.env[name];
   const n = v == null ? NaN : Number(v);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function clampInt(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
 }
 
 function envBool(env: NodeJS.ProcessEnv, name: string, fallback: boolean): boolean {
@@ -88,10 +92,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       timeoutMs: envInt('CLAUDE_CODE_TIMEOUT_MS', 120_000),
     },
     googleOAuth: loadGoogleOAuth(env),
-    sendWindow: {
-      startHour: envInt('SEND_WINDOW_START_HOUR', 9),
-      endHour: envInt('SEND_WINDOW_END_HOUR', 18),
-    },
+    sendWindow: (() => {
+      const startHour = envInt('SEND_WINDOW_START_HOUR', 9);
+      const endHour = envInt('SEND_WINDOW_END_HOUR', 18);
+      // Soft pacing target: aim to finish ~1h before the hard close, leaving a
+      // tail buffer. Clamped to (startHour, endHour] so it's always sane.
+      const paceEndHour = clampInt(
+        envInt('SEND_WINDOW_PACE_END_HOUR', endHour - 1),
+        startHour + 1,
+        endHour,
+      );
+      return { startHour, endHour, paceEndHour };
+    })(),
     followUpsEnabled: envBool(env, 'FOLLOW_UPS_ENABLED', false),
     reconcileGraceMs: envInt('RECONCILE_GRACE_MS', 15 * 60_000),
     warmup: DEFAULT_WARMUP,

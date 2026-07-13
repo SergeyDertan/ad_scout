@@ -4,19 +4,25 @@
 import type { Account, Outreach } from './types';
 import { ageDays, warmupRamp, type WarmupConfig, DEFAULT_WARMUP } from './warmup';
 
-const DAY_MS = 86_400_000;
-
 /**
- * Outbound sends (initial + follow-up) reserved within the last 24h for an account.
- * `reserved` counts too, so an in-flight reservation still holds the cap.
+ * Outbound sends (initial + follow-up) reserved so far *today* for an account,
+ * where "today" is the local calendar day (resets at local midnight). `reserved`
+ * counts too, so an in-flight reservation still holds the cap.
+ *
+ * Calendar-day (not rolling-24h): every account starts each day with a fresh
+ * quota, so a late-running day can't shadow the next morning. The trade-off is
+ * that sends can bunch across a midnight boundary (end of one day + start of the
+ * next), which rolling-24h would have spread out.
  */
-export function sentInLast24h(outreaches: Outreach[], accountId: string, now: Date): number {
-  const cutoff = now.getTime() - DAY_MS;
+export function sentToday(outreaches: Outreach[], accountId: string, now: Date): number {
+  const midnight = new Date(now);
+  midnight.setHours(0, 0, 0, 0);
+  const cutoff = midnight.getTime();
   let n = 0;
   for (const o of outreaches) {
     if (o.accountId !== accountId) continue;
     if (o.status !== 'reserved' && o.status !== 'sent') continue;
-    if (new Date(o.reservedAt).getTime() > cutoff) n++;
+    if (new Date(o.reservedAt).getTime() >= cutoff) n++;
   }
   return n;
 }
@@ -38,7 +44,7 @@ export function remainingToday(
   now: Date,
   cfg: WarmupConfig = DEFAULT_WARMUP,
 ): number {
-  return Math.max(0, currentLimit(account, now, cfg) - sentInLast24h(outreaches, account.id, now));
+  return Math.max(0, currentLimit(account, now, cfg) - sentToday(outreaches, account.id, now));
 }
 
 export function canSend(

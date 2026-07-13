@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { currentLimit, remainingToday, sentInLast24h } from './limits';
+import { currentLimit, remainingToday, sentToday } from './limits';
 import type { Account, Outreach } from './types';
 
-const NOW = new Date('2026-06-19T12:00:00Z');
+// Local-time constructor so the calendar-day boundary is TZ-deterministic.
+const NOW = new Date(2026, 5, 19, 12, 0, 0);
+const at = (h: number, m = 0) => new Date(2026, 5, 19, h, m, 0);
 
 function account(partial: Partial<Account> = {}): Account {
   return {
@@ -36,15 +38,15 @@ function outreach(partial: Partial<Outreach>): Outreach {
   };
 }
 
-test('sentInLast24h counts reserved + sent within window only', () => {
+test('sentToday counts reserved + sent since local midnight only', () => {
   const list: Outreach[] = [
-    outreach({ id: '1', status: 'sent', reservedAt: NOW.toISOString() }),
+    outreach({ id: '1', status: 'sent', reservedAt: at(9).toISOString() }), // earlier today
     outreach({ id: '2', status: 'reserved', reservedAt: NOW.toISOString() }),
-    outreach({ id: '3', status: 'failed', reservedAt: NOW.toISOString() }), // excluded
-    outreach({ id: '4', status: 'sent', reservedAt: '2026-06-17T00:00:00Z' }), // > 24h ago
+    outreach({ id: '3', status: 'failed', reservedAt: NOW.toISOString() }), // excluded (status)
+    outreach({ id: '4', status: 'sent', reservedAt: at(-4).toISOString() }), // yesterday 20:00
     outreach({ id: '5', status: 'sent', accountId: 'other', reservedAt: NOW.toISOString() }), // other acct
   ];
-  assert.equal(sentInLast24h(list, 'acc1', NOW), 2);
+  assert.equal(sentToday(list, 'acc1', NOW), 2);
 });
 
 test('currentLimit clamps ramp to maxDailyLimit and honors override', () => {

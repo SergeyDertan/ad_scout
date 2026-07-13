@@ -36,6 +36,7 @@ import type {
   TargetStatus,
 } from '../domain/types';
 import { allNiches, categorizeTopic } from '../domain/niches';
+import { accountSendState } from '../domain/account-state';
 import { assembleResult, type RawExtraction, type RawOffer } from '../domain/extraction';
 import type { Clock } from '../lib/clock';
 import { newId } from '../lib/ids';
@@ -324,9 +325,21 @@ async function handle(
       return sendJson(res, 201, await store.putCampaign(campaign));
     }
 
-    // GET /api/accounts
+    // GET /api/accounts — each account enriched with live send state (sent
+    // today, current cap, remaining, drip rate, projected-today). All derived
+    // from the Outreach log + config, so it can't drift.
     if (method === 'GET' && seg[1] === 'accounts' && seg.length === 2) {
-      return sendJson(res, 200, (await store.listAccounts()).map(sanitizeAccount));
+      const now = deps.clock.now();
+      const accounts = await store.listAccounts();
+      const outreaches = await store.listOutreaches();
+      return sendJson(
+        res,
+        200,
+        accounts.map((a) => ({
+          ...sanitizeAccount(a),
+          state: accountSendState(a, outreaches, now, deps.config.sendWindow, deps.config.warmup),
+        })),
+      );
     }
 
     // POST /api/accounts — add a (Gmail) sending account

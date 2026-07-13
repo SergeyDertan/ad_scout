@@ -140,6 +140,23 @@ export interface Account {
   dailyLimitOverride?: number;
   lastError?: string;
   oauthConnected?: boolean; // gmail-api accounts: true after OAuth flow completes
+  state?: AccountSendState; // live, server-derived send state (GET /api/accounts)
+}
+
+/** Live per-account send state derived on the server from the Outreach log +
+ *  config. Mirrors src/domain/account-state.ts. */
+export interface AccountSendState {
+  sentToday: number; // sends today (local calendar day) — what the limiter uses
+  limit: number; // effective daily cap right now
+  remaining: number; // how many more may send right now
+  warming: boolean; // still climbing the warmup ramp
+  overridden: boolean; // a manual dailyLimitOverride is in force
+  rampTarget: number; // warmup target (maxDailyLimit)
+  ageDays: number; // account age in whole days
+  windowActive: boolean; // send window open now?
+  gapMs: number | null; // current drip gap between sends (null when idle)
+  perHour: number | null; // same rate as sends/hour (null when idle)
+  projectedToday: number; // total sends expected today given time left in window
 }
 
 export type TargetStatus =
@@ -310,7 +327,7 @@ export interface Status {
   engagement?: Engagement;
   outcomes?: Outcomes;
   providers: { llm: string; email: string; store: string } | null;
-  sendWindow: { startHour: number; endHour: number };
+  sendWindow: { startHour: number; endHour: number; paceEndHour?: number };
   windowActive: boolean;
 }
 

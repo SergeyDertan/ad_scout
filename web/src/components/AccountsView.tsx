@@ -1,7 +1,7 @@
 import { Badge, Box, Button, Flex, HStack, Input, Table, Text } from '@chakra-ui/react';
 import { useCallback, useState } from 'react';
 import { api } from '../api';
-import type { Account } from '../types';
+import type { Account, AccountSendState } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { AddAccountForm } from './AddAccountForm';
 import { DataPanel } from './DataPanel';
@@ -10,6 +10,91 @@ import { useConfirm } from './Confirm';
 import { toaster, toastError } from './Toaster';
 import { useResource } from '../hooks/useResource';
 import { ClockIcon, PauseIcon, PlayIcon, PlusIcon, TrashIcon, UsersIcon } from './icons';
+
+function fmtGap(ms: number): string {
+  if (ms < 90_000) return `${Math.round(ms / 1000)}s`;
+  return `${Math.round(ms / 60_000)} min`;
+}
+
+/** Slim usage bar: `used` of `total`, tinted amber past 80%. */
+function UsageBar({ used, total }: { used: number; total: number }) {
+  const pct = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0;
+  return (
+    <Box mt={1} h="4px" w="100%" maxW="120px" bg="bg.muted" borderRadius="full" overflow="hidden">
+      <Box h="100%" w={`${pct}%`} bg={pct >= 80 ? 'orange.solid' : 'brand.solid'} />
+    </Box>
+  );
+}
+
+/** "Today" cell: sent-so-far, the cap it's counting against, and how much is left. */
+function TodayCell({ s }: { s: AccountSendState }) {
+  return (
+    <Box>
+      <Text fontWeight="semibold">
+        {s.sentToday} <Text as="span" color="fg.muted" fontWeight="normal">sent today</Text>
+      </Text>
+      <UsageBar used={s.sentToday} total={s.limit} />
+      <Text color="fg.muted" fontSize="xs" mt={1}>
+        {s.remaining} of {s.limit} left today
+      </Text>
+    </Box>
+  );
+}
+
+/** "Rate" cell: the live drip pacing + how many will realistically go out today. */
+function RateCell({ s, active }: { s: AccountSendState; active: boolean }) {
+  if (!s.windowActive) {
+    return <Text color="fg.muted" fontSize="sm">window closed</Text>;
+  }
+  if (!active) {
+    return <Text color="fg.muted" fontSize="sm">paused</Text>;
+  }
+  if (s.remaining <= 0) {
+    return <Badge colorPalette="green" size="sm">daily limit reached</Badge>;
+  }
+  const short = s.projectedToday < s.sentToday + s.remaining;
+  return (
+    <Box>
+      {s.gapMs != null && (
+        <Text fontWeight="medium" fontSize="sm">
+          ≈1 / {fmtGap(s.gapMs)}
+          {s.perHour != null && (
+            <Text as="span" color="fg.muted" fontWeight="normal"> · {s.perHour}/h</Text>
+          )}
+        </Text>
+      )}
+      <Text color={short ? 'orange.fg' : 'fg.muted'} fontSize="xs" mt={1}>
+        {short ? `only ~${s.projectedToday} will send today` : `on track for ${s.projectedToday} today`}
+      </Text>
+    </Box>
+  );
+}
+
+/** Explains the daily-limit cap in words: warming ramp, override, or maxed. */
+function LimitHint({ s }: { s: AccountSendState }) {
+  if (s.overridden) {
+    return (
+      <Text color="fg.muted" fontSize="xs" mt={1}>
+        manual override · {s.limit}/day
+      </Text>
+    );
+  }
+  if (s.warming) {
+    return (
+      <HStack gap={1.5} mt={1}>
+        <Badge colorPalette="orange" size="sm">warming</Badge>
+        <Text color="fg.muted" fontSize="xs">
+          day {s.ageDays}: {s.limit} → {s.rampTarget}
+        </Text>
+      </HStack>
+    );
+  }
+  return (
+    <Text color="fg.muted" fontSize="xs" mt={1}>
+      at max · {s.limit}/day
+    </Text>
+  );
+}
 
 export function AccountsView({ tick }: { tick: number }) {
   const [adding, setAdding] = useState(false);
@@ -161,6 +246,8 @@ export function AccountsView({ tick }: { tick: number }) {
               <Table.ColumnHeader>Account</Table.ColumnHeader>
               <Table.ColumnHeader>Status</Table.ColumnHeader>
               <Table.ColumnHeader>Provider</Table.ColumnHeader>
+              <Table.ColumnHeader>Today</Table.ColumnHeader>
+              <Table.ColumnHeader>Rate</Table.ColumnHeader>
               <Table.ColumnHeader>Daily limit</Table.ColumnHeader>
               <Table.ColumnHeader textAlign="end">Actions</Table.ColumnHeader>
             </Table.Row>
@@ -199,11 +286,15 @@ export function AccountsView({ tick }: { tick: number }) {
                     <Text color="fg.muted" fontSize="sm">imap</Text>
                   )}
                 </Table.Cell>
+                <Table.Cell>{a.state ? <TodayCell s={a.state} /> : null}</Table.Cell>
+                <Table.Cell>
+                  {a.state ? <RateCell s={a.state} active={a.status === 'active'} /> : null}
+                </Table.Cell>
                 <Table.Cell>
                   <Input
                     size="sm"
                     type="number"
-                    width="32"
+                    width="28"
                     defaultValue={a.dailyLimitOverride ?? ''}
                     placeholder={`ramp → ${a.maxDailyLimit}`}
                     onBlur={(e) => saveLimit(a, e.target.value)}
@@ -211,6 +302,7 @@ export function AccountsView({ tick }: { tick: number }) {
                       if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
                     }}
                   />
+                  {a.state ? <LimitHint s={a.state} /> : null}
                 </Table.Cell>
                 <Table.Cell>
                   <HStack justify="flex-end" gap={2}>

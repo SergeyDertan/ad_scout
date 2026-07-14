@@ -35,6 +35,19 @@ export interface GmailOAuthHandler {
   handleCallback(code: string, accountId: string, redirectUri: string): Promise<void>;
 }
 
+// Carries the HTTP status so callers can branch on it — notably a 404 from
+// users.history means startHistoryId is older than Gmail's ~1-week retention and
+// we must fall back to a full search-based resync.
+class GmailHttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'GmailHttpError';
+  }
+}
+
 export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
   readonly name = 'gmail-api';
   readonly supportsThreadId = true;
@@ -163,7 +176,7 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
     });
     if (!resp.ok) {
       const body = await resp.text();
-      throw new Error(`Gmail API ${path}: HTTP ${resp.status} ${body}`);
+      throw new GmailHttpError(resp.status, `Gmail API ${path}: HTTP ${resp.status} ${body}`);
     }
     return resp.json() as Promise<T>;
   }
@@ -190,7 +203,71 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
     return result.messages?.[0]?.threadId;
   }
 
+  // Incremental sync via users.history: from the stored historyId cursor we ask
+  // Gmail only for messages ADDED to INBOX since that mailbox position. An idle
+  // pass costs one small call and returns nothing; a message only gets fetched
+  // (messages.get) when it's genuinely new. The first pass (no cursor yet) and a
+  // cursor that outlived Gmail's ~1-week history retention both fall back to a
+  // search-based full pull, which reseeds the cursor for next time.
   async fetchReplies(account: Account, since?: Date): Promise<IncomingEmail[]> {
+    const startHistoryId = account.pollCursor?.historyId;
+    if (startHistoryId) {
+      try {
+        return await this.fetchViaHistory(account, startHistoryId);
+      } catch (err) {
+        if (!(err instanceof GmailHttpError && err.status === 404)) throw err;
+        // Cursor too old — fall through to a full resync that reseeds it.
+      }
+    }
+    return this.fetchViaSearch(account, since);
+  }
+
+  /** Steady state: pull only INBOX additions since the stored historyId. */
+  private async fetchViaHistory(
+    account: Account,
+    startHistoryId: string,
+  ): Promise<IncomingEmail[]> {
+    const addedIds = new Set<string>();
+    let latestHistoryId = startHistoryId;
+    let pageToken: string | undefined;
+
+    do {
+      const params = new URLSearchParams({
+        startHistoryId,
+        historyTypes: 'messageAdded',
+        labelId: 'INBOX',
+      });
+      if (pageToken) params.set('pageToken', pageToken);
+
+      const page = await this.gmailFetch<GmailHistoryResponse>(
+        account,
+        `/history?${params}`,
+      );
+      // Advances even when nothing changed, keeping the cursor from going stale.
+      if (page.historyId) latestHistoryId = page.historyId;
+
+      for (const record of page.history ?? []) {
+        for (const added of record.messagesAdded ?? []) {
+          const m = added.message;
+          // labelId=INBOX filters the records; double-check the message itself.
+          if (m?.id && (m.labelIds?.includes('INBOX') ?? true)) addedIds.add(m.id);
+        }
+      }
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+
+    const out = await this.hydrate(account, [...addedIds]);
+    await this.writeHistoryId(account, latestHistoryId);
+    return out;
+  }
+
+  /** Bootstrap / fallback: search INBOX by time, then (re)seed the cursor. */
+  private async fetchViaSearch(account: Account, since?: Date): Promise<IncomingEmail[]> {
+    // Seed the cursor BEFORE listing: if a message lands mid-pass it will be
+    // re-reported by the next incremental pass (dedupe absorbs the overlap),
+    // whereas seeding afterward could skip past it and lose the reply.
+    await this.seedHistoryId(account);
+
     let q = 'in:inbox';
     if (since) {
       // Gmail 'after:' takes Unix timestamp in seconds.
@@ -201,10 +278,13 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
       account,
       `/messages?labelIds=INBOX&q=${encodeURIComponent(q)}&maxResults=500`,
     );
-    if (!list.messages?.length) return [];
+    return this.hydrate(account, (list.messages ?? []).map((m) => m.id));
+  }
 
+  /** messages.get + parse + attachments for each id; skips malformed ones. */
+  private async hydrate(account: Account, ids: string[]): Promise<IncomingEmail[]> {
     const out: IncomingEmail[] = [];
-    for (const { id } of list.messages) {
+    for (const id of ids) {
       try {
         const msg = await this.gmailFetch<GmailMessage>(
           account,
@@ -221,6 +301,28 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
       }
     }
     return out;
+  }
+
+  /** Capture the mailbox's current historyId (via getProfile) as the cursor. */
+  private async seedHistoryId(account: Account): Promise<void> {
+    try {
+      const profile = await this.gmailFetch<{ historyId?: string }>(account, '/profile');
+      if (profile.historyId) await this.writeHistoryId(account, profile.historyId);
+    } catch {
+      // Non-fatal: without a seed the next pass just searches by time again.
+    }
+  }
+
+  /** Persist the historyId cursor, merging into any existing pollCursor. */
+  private async writeHistoryId(account: Account, historyId: string): Promise<void> {
+    await this.store.updateAccount(account.id, (current) => ({
+      ...current,
+      pollCursor: {
+        mailbox: 'INBOX',
+        ...current.pollCursor,
+        historyId,
+      },
+    }));
   }
 
   /** Download each attachment part's bytes (Gmail returns them via a separate
@@ -310,6 +412,15 @@ interface GmailPart {
   filename?: string;
   body?: { data?: string; attachmentId?: string; size?: number };
   parts?: GmailPart[];
+}
+
+interface GmailHistoryResponse {
+  history?: Array<{
+    messagesAdded?: Array<{ message?: { id?: string; labelIds?: string[] } }>;
+  }>;
+  nextPageToken?: string;
+  // Current mailbox historyId; present even when `history` is empty.
+  historyId?: string;
 }
 
 function header(msg: GmailMessage, name: string): string {

@@ -67,6 +67,10 @@ async function main(): Promise<void> {
     window: config.sendWindow,
     runSend: () => runSendPass(sendDeps, { maxPerAccount: 1 }),
     runPoll: () => runFetchPass(fetchDeps),
+    // Gmail incremental history sync makes each idle poll cheap, so we don't need
+    // a tight cadence — 5 min keeps reply latency low without busy-looping.
+    // Override with POLL_INTERVAL_MS.
+    pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? 5 * 60_000),
     quotaRemaining: () => totalRemainingToday(store, config, clock.now()),
     // Pause the drip loops (and log one line per outage) when the mail host is
     // unreachable — e.g. Wi-Fi down or the laptop was asleep. Dummy-email runs

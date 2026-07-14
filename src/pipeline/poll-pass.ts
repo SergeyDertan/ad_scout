@@ -89,10 +89,15 @@ export async function runPollPass(deps: PollDeps): Promise<PollReport> {
       await handleMessage(deps, msg, sentRefs, awaiting, report);
     }
 
-    // Advance the cursor.
+    // Advance the cursor. Merge (don't overwrite): the gmail-api provider may
+    // have written a fresh historyId into pollCursor during fetchReplies.
     await store.updateAccount(account.id, (current) => ({
       ...current,
-      pollCursor: { mailbox: 'INBOX', lastPolledAt: clock.now().toISOString() },
+      pollCursor: {
+        ...current.pollCursor,
+        mailbox: 'INBOX',
+        lastPolledAt: clock.now().toISOString(),
+      },
     }));
   }
 

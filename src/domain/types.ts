@@ -71,6 +71,10 @@ export interface PollCursor {
   mailbox: string;
   lastUid?: number;
   lastPolledAt?: ISO;
+  // Gmail mailbox change-sequence position (users.history startHistoryId). Owned
+  // by the gmail-api provider for exact, gapless incremental sync; the SMTP/IMAP
+  // path ignores it and uses lastPolledAt instead. See GmailApiProvider.
+  historyId?: string;
 }
 
 // --- Target -----------------------------------------------------------------

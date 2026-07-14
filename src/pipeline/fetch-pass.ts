@@ -75,9 +75,15 @@ export async function runFetchPass(deps: FetchDeps): Promise<FetchReport> {
       await handleMessage(deps, msg, sentRefs, awaiting, report);
     }
 
+    // Merge (don't overwrite): the gmail-api provider may have written a fresh
+    // historyId into pollCursor during fetchReplies — preserve it.
     await store.updateAccount(account.id, (current) => ({
       ...current,
-      pollCursor: { mailbox: 'INBOX', lastPolledAt: clock.now().toISOString() },
+      pollCursor: {
+        ...current.pollCursor,
+        mailbox: 'INBOX',
+        lastPolledAt: clock.now().toISOString(),
+      },
     }));
   }
 

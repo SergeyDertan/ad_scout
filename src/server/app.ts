@@ -83,8 +83,8 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
+  const chunks: Uint8Array[] = [];
+  for await (const c of req) chunks.push(c as Uint8Array);
   if (chunks.length === 0) return {};
   try {
     return JSON.parse(Buffer.concat(chunks).toString('utf8'));

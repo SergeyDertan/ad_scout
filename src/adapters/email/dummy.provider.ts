@@ -35,6 +35,12 @@ export class DummyEmailProvider implements EmailProvider {
     return this.threads.get(rfcMessageId);
   }
 
+  /** No mailbox to mutate — record it so tests can assert on it. */
+  markedProcessed: string[] = [];
+  async markProcessed(_account: Account, emailId: string): Promise<void> {
+    this.markedProcessed.push(emailId);
+  }
+
   async fetchReplies(_account: Account, since?: Date): Promise<IncomingEmail[]> {
     const cutoff = since?.getTime() ?? 0;
     const ready = this.inbox.filter((m) => new Date(m.receivedAt).getTime() >= cutoff);

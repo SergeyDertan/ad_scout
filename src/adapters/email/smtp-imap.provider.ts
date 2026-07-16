@@ -111,6 +111,10 @@ export class SmtpImapProvider implements EmailProvider {
     });
   }
 
+  // No Gmail-style labels over plain IMAP; the label+mark-read feature is
+  // Gmail-only, so this is a deliberate no-op for smtp-imap accounts.
+  async markProcessed(_account: Account, _emailId: string): Promise<void> {}
+
   async fetchReplies(account: Account, since?: Date): Promise<IncomingEmail[]> {
     return this.withImap(account, async (client) => {
       const out: IncomingEmail[] = [];

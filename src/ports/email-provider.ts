@@ -40,4 +40,11 @@ export interface EmailProvider {
   fetchReplies(account: Account, since?: Date): Promise<IncomingEmail[]>;
   /** Exact self-lookup of our just-sent copy in All Mail to read its threadId. */
   resolveThreadId(account: Account, rfcMessageId: string): Promise<string | undefined>;
+  /**
+   * Best-effort post-processing of an inbound message we've decided to KEEP:
+   * label it as processed and mark it read. Called ONLY for messages matched to
+   * a target — never for bounces or unmatched/unknown-sender mail. Callers treat
+   * failures as non-fatal. Providers without label support no-op.
+   */
+  markProcessed(account: Account, emailId: string): Promise<void>;
 }

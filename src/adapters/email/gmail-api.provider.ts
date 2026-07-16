@@ -24,6 +24,10 @@ const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 
+// Applied to every inbound message we match to a target. Nested name renders as
+// a collapsible "AdScout" group in Gmail's sidebar.
+const PROCESSED_LABEL = 'AdScout/Matched';
+
 // Bound every Gmail/OAuth HTTP call. Without this, a request that's mid-flight
 // when the machine sleeps hangs on a dead socket until the OS tears it down —
 // no error, no log, just a stalled pass. On timeout `fetch` rejects with a
@@ -52,6 +56,10 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
   readonly name = 'gmail-api';
   readonly supportsThreadId = true;
 
+  // accountId -> resolved Gmail labelId for PROCESSED_LABEL. Avoids a labels.list
+  // round-trip on every message; the id is stable for the mailbox's lifetime.
+  private readonly labelIdCache = new Map<string, string>();
+
   constructor(
     private readonly store: Store,
     private readonly clientId: string,
@@ -67,7 +75,8 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
       response_type: 'code',
       scope: [
         'https://www.googleapis.com/auth/gmail.send',
-        'https://www.googleapis.com/auth/gmail.readonly',
+        // modify (not readonly) so we can label + mark-read the messages we keep.
+        'https://www.googleapis.com/auth/gmail.modify',
       ].join(' '),
       access_type: 'offline',
       prompt: 'consent', // force refresh_token every time
@@ -201,6 +210,40 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
       messages?: Array<{ id: string; threadId: string }>;
     }>(account, `/messages?q=${encodeURIComponent(q)}&maxResults=1`);
     return result.messages?.[0]?.threadId;
+  }
+
+  // Label the kept message and clear UNREAD in one modify call. Adding a label is
+  // a `labelAdded` history event, NOT `messageAdded`, so it does not perturb the
+  // fetchViaHistory incremental cursor. Callers invoke this best-effort.
+  async markProcessed(account: Account, emailId: string): Promise<void> {
+    const labelId = await this.ensureLabel(account);
+    await this.gmailFetch(account, `/messages/${emailId}/modify`, {
+      method: 'POST',
+      body: JSON.stringify({ addLabelIds: [labelId], removeLabelIds: ['UNREAD'] }),
+    });
+  }
+
+  /** Resolve (cached) the labelId for PROCESSED_LABEL, creating it on first use. */
+  private async ensureLabel(account: Account): Promise<string> {
+    const cached = this.labelIdCache.get(account.id);
+    if (cached) return cached;
+
+    const { labels } = await this.gmailFetch<{
+      labels?: Array<{ id: string; name: string }>;
+    }>(account, '/labels');
+    let label = labels?.find((l) => l.name === PROCESSED_LABEL);
+    if (!label) {
+      label = await this.gmailFetch<{ id: string; name: string }>(account, '/labels', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: PROCESSED_LABEL,
+          labelListVisibility: 'labelShow',
+          messageListVisibility: 'show',
+        }),
+      });
+    }
+    this.labelIdCache.set(account.id, label.id);
+    return label.id;
   }
 
   // Incremental sync via users.history: from the stored historyId cursor we ask

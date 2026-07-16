@@ -326,6 +326,16 @@ export function AccountsView({ tick }: { tick: number }) {
                         Upgrade to OAuth
                       </Button>
                     )}
+                    {a.providerType === 'gmail-api' && a.oauthConnected && (
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        onClick={() => connectGmail(a)}
+                        title="Re-run Google authorization (needed after a permission/scope change)"
+                      >
+                        Reconnect
+                      </Button>
+                    )}
                     {a.status === 'active' ? (
                       <Button size="xs" variant="outline" onClick={() => setActive(a, false)}>
                         <PauseIcon />

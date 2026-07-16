@@ -10,7 +10,7 @@ import {
   type AwaitingTargetRef,
   type SentOutreachRef,
 } from '../domain/reply-matching';
-import type { Reply, Suppression } from '../domain/types';
+import type { Account, Reply, Suppression } from '../domain/types';
 import type { Clock } from '../lib/clock';
 import { describeError } from '../lib/errors';
 import { newId } from '../lib/ids';
@@ -72,7 +72,7 @@ export async function runFetchPass(deps: FetchDeps): Promise<FetchReport> {
     report.fetched += messages.length;
 
     for (const msg of messages) {
-      await handleMessage(deps, msg, sentRefs, awaiting, report);
+      await handleMessage(deps, account, msg, sentRefs, awaiting, report);
     }
 
     // Merge (don't overwrite): the gmail-api provider may have written a fresh
@@ -100,8 +100,19 @@ async function suppress(
   await store.addSuppression({ id: norm, email: norm, reason, at: clock.now().toISOString() });
 }
 
+/** Label + mark-read a kept message. Never throws — a mailbox mutation failure
+ *  (e.g. an account still on the old readonly scope) must not fail the pass. */
+async function markProcessed(deps: FetchDeps, account: Account, emailId: string): Promise<void> {
+  try {
+    await deps.email.markProcessed(account, emailId);
+  } catch (err) {
+    logger.warn('markProcessed failed', { account: account.id, emailId, ...describeError(err) });
+  }
+}
+
 async function handleMessage(
   deps: FetchDeps,
+  account: Account,
   msg: IncomingEmail,
   sentRefs: SentOutreachRef[],
   awaiting: AwaitingTargetRef[],
@@ -159,6 +170,8 @@ async function handleMessage(
     return;
   }
   report.matched++;
+  // Matched to a target = the email was used. Label it + mark it read (best-effort).
+  await markProcessed(deps, account, msg.emailId);
   if (alreadyAnswered) {
     // Leave the resolved target untouched — preserve its known result.
     report.skipped++;

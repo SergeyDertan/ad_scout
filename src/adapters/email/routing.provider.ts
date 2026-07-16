@@ -40,4 +40,8 @@ export class RoutingEmailProvider implements EmailProvider {
   resolveThreadId(account: Account, rfcMessageId: string): Promise<string | undefined> {
     return this.pick(account).resolveThreadId(account, rfcMessageId);
   }
+
+  markProcessed(account: Account, emailId: string): Promise<void> {
+    return this.pick(account).markProcessed(account, emailId);
+  }
 }

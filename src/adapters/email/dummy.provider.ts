@@ -3,6 +3,7 @@
 // send→poll→extract pipeline run with no real mailbox.
 
 import { createHash } from 'node:crypto';
+import type { OutcomeLabel } from '../../domain/labels';
 import type { Account } from '../../domain/types';
 import type {
   EmailProvider,
@@ -35,10 +36,14 @@ export class DummyEmailProvider implements EmailProvider {
     return this.threads.get(rfcMessageId);
   }
 
-  /** No mailbox to mutate — record it so tests can assert on it. */
-  markedProcessed: string[] = [];
-  async markProcessed(_account: Account, emailId: string): Promise<void> {
-    this.markedProcessed.push(emailId);
+  /** No mailbox to mutate — record calls so tests can assert on them. */
+  markedRead: string[] = [];
+  appliedLabels: Array<{ emailId: string; label: OutcomeLabel }> = [];
+  async markRead(_account: Account, emailId: string): Promise<void> {
+    this.markedRead.push(emailId);
+  }
+  async applyLabel(_account: Account, emailId: string, label: OutcomeLabel): Promise<void> {
+    this.appliedLabels.push({ emailId, label });
   }
 
   async fetchReplies(_account: Account, since?: Date): Promise<IncomingEmail[]> {

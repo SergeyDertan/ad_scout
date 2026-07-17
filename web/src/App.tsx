@@ -22,10 +22,12 @@ import { TargetsView } from './components/TargetsView';
 import { BatchesView } from './components/BatchesView';
 import { ResponsesView } from './components/ResponsesView';
 import { SuppressionsView } from './components/SuppressionsView';
+import { LabelsView } from './components/LabelsView';
 import { RunView } from './components/RunView';
 import { StatCards } from './components/StatCards';
 import {
   InboxIcon,
+  LabelsIcon,
   MegaphoneIcon,
   PlayIcon,
   ShieldIcon,
@@ -48,6 +50,7 @@ const TABS: {
   { id: 'batches', label: 'Batches', icon: TagIcon },
   { id: 'responses', label: 'Responses', icon: InboxIcon },
   { id: 'suppressions', label: 'Suppressions', icon: ShieldIcon },
+  { id: 'labels', label: 'Labels', icon: LabelsIcon },
   { id: 'run', label: 'Run', icon: PlayIcon },
 ];
 
@@ -293,6 +296,9 @@ export function App() {
           </Tabs.Content>
           <Tabs.Content value="suppressions">
             <SuppressionsView tick={ticks.suppression} />
+          </Tabs.Content>
+          <Tabs.Content value="labels">
+            <LabelsView />
           </Tabs.Content>
           <Tabs.Content value="run">
             <RunView status={status} />

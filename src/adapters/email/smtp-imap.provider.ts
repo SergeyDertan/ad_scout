@@ -12,6 +12,7 @@
 // NOTE: body extraction below is intentionally minimal (split off headers). For
 // robust MIME handling, add `mailparser` and parse message.source.
 
+import type { OutcomeLabel } from '../../domain/labels';
 import type { Account, EmailAttachment } from '../../domain/types';
 import {
   MAX_ATTACHMENT_BYTES,
@@ -113,7 +114,8 @@ export class SmtpImapProvider implements EmailProvider {
 
   // No Gmail-style labels over plain IMAP; the label+mark-read feature is
   // Gmail-only, so this is a deliberate no-op for smtp-imap accounts.
-  async markProcessed(_account: Account, _emailId: string): Promise<void> {}
+  async markRead(_account: Account, _emailId: string): Promise<void> {}
+  async applyLabel(_account: Account, _emailId: string, _label: OutcomeLabel): Promise<void> {}
 
   async fetchReplies(account: Account, since?: Date): Promise<IncomingEmail[]> {
     return this.withImap(account, async (client) => {

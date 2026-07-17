@@ -5,6 +5,7 @@ import { loadConfig } from '../config';
 import { DummyEmailProvider } from '../adapters/email/dummy.provider';
 import { DummyLlmProvider } from '../adapters/llm/dummy.provider';
 import { MemoryStore } from '../adapters/store/memory.store';
+import { LABELS } from '../domain/labels';
 import type { Account, Campaign, Target } from '../domain/types';
 import { fixedClock } from '../lib/clock';
 import type { LlmProvider } from '../ports/llm-provider';
@@ -123,6 +124,11 @@ test('poll-pass matches a reply by threadId, extracts, and marks target replied'
   assert.equal(replies.length, 1);
   assert.equal(replies[0].matchMethod, 'threadId');
   assert.equal(replies[0].targetId, 't1');
+
+  // The message was seen (marked read) and got the extraction-outcome label.
+  const emailId = replies[0].emailId;
+  assert.deepEqual(email.markedRead, [emailId]);
+  assert.deepEqual(email.appliedLabels, [{ emailId, label: LABELS.answered }]);
   assert.equal(replies[0].extractionStatus, 'done');
 });
 

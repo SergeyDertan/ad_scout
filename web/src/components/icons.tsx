@@ -128,6 +128,14 @@ export const TagIcon = make(
   </>,
 );
 
+export const LabelsIcon = make(
+  <>
+    <path d="M9 5H2v7l6.29 6.29a2 2 0 0 0 2.83 0l4.17-4.17a2 2 0 0 0 0-2.83L9 5z" />
+    <path d="M9 5 13 1h7v7l-4 4" />
+    <line x1="6" y1="9" x2="6.01" y2="9" />
+  </>,
+);
+
 export const AlertTriangleIcon = make(
   <>
     <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />

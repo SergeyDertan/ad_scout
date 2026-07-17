@@ -10,6 +10,7 @@ import {
   type AwaitingTargetRef,
   type SentOutreachRef,
 } from '../domain/reply-matching';
+import { LABELS, type OutcomeLabel } from '../domain/labels';
 import type { Account, Reply, Suppression } from '../domain/types';
 import type { Clock } from '../lib/clock';
 import { describeError } from '../lib/errors';
@@ -100,13 +101,30 @@ async function suppress(
   await store.addSuppression({ id: norm, email: norm, reason, at: clock.now().toISOString() });
 }
 
-/** Label + mark-read a kept message. Never throws — a mailbox mutation failure
- *  (e.g. an account still on the old readonly scope) must not fail the pass. */
-async function markProcessed(deps: FetchDeps, account: Account, emailId: string): Promise<void> {
+/** Mark a fetched message read — "the system saw it". Never throws: a mailbox
+ *  mutation failure (e.g. an account still on the old readonly scope) must not
+ *  fail the pass. */
+async function markRead(deps: FetchDeps, account: Account, emailId: string): Promise<void> {
   try {
-    await deps.email.markProcessed(account, emailId);
+    await deps.email.markRead(account, emailId);
   } catch (err) {
-    logger.warn('markProcessed failed', { account: account.id, emailId, ...describeError(err) });
+    logger.warn('markRead failed', { account: account.id, emailId, ...describeError(err) });
+  }
+}
+
+/** Apply a decision label to a message (best-effort, same non-fatal contract).
+ *  This pass does no extraction, so a matched reply gets the provisional
+ *  AS/Replied; a later poll's extractPendingReplies swaps in the outcome. */
+async function applyLabel(
+  deps: FetchDeps,
+  account: Account,
+  emailId: string,
+  label: OutcomeLabel,
+): Promise<void> {
+  try {
+    await deps.email.applyLabel(account, emailId, label);
+  } catch (err) {
+    logger.warn('applyLabel failed', { account: account.id, emailId, label, ...describeError(err) });
   }
 }
 
@@ -125,6 +143,10 @@ async function handleMessage(
     return;
   }
 
+  // The system has now fetched and seen this message — mark it read regardless of
+  // what we decide about it below. The label records the decision.
+  await markRead(deps, account, msg.emailId);
+
   const bounce = detectBounce(msg.fromAddress, msg.text);
   if (bounce.isBounce) {
     const failed = bounce.failedRecipient;
@@ -135,6 +157,7 @@ async function handleMessage(
       );
       if (target) await store.updateTarget(target.id, (t) => ({ ...t, status: 'bounced' }));
     }
+    await applyLabel(deps, account, msg.emailId, LABELS.bounced);
     report.bounced++;
     return;
   }
@@ -166,12 +189,14 @@ async function handleMessage(
   await store.putReply(reply);
 
   if (!match.targetId) {
+    await applyLabel(deps, account, msg.emailId, LABELS.unmatched);
     report.unmatched++;
     return;
   }
   report.matched++;
-  // Matched to a target = the email was used. Label it + mark it read (best-effort).
-  await markProcessed(deps, account, msg.emailId);
+  // Matched to a target. This pass doesn't extract, so apply the provisional
+  // AS/Replied — a later poll's extractPendingReplies refines it to the outcome.
+  await applyLabel(deps, account, msg.emailId, LABELS.matched);
   if (alreadyAnswered) {
     // Leave the resolved target untouched — preserve its known result.
     report.skipped++;

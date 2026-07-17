@@ -2,6 +2,7 @@
 // match (threadId → fromAddress → unmatched) → store reply → extract → roll up
 // onto the target. Opt-outs and bounces add to the persistent suppression list.
 
+import { LABELS, labelForResult, type OutcomeLabel } from '../domain/labels';
 import {
   detectBounce,
   isTargetResolved,
@@ -151,10 +152,16 @@ export async function extractPendingReplies(
       log(`[${i}/${pending.length}] skip ${reply.fromAddress} — no target/campaign`);
       continue;
     }
+    // The account that owns this reply's mailbox — needed to (re)label it. Absent
+    // ⇒ labeling is skipped (best-effort), extraction still runs.
+    const account = target.assignedAccountId
+      ? await store.getAccount(target.assignedAccountId)
+      : undefined;
     // Already answered — save the reply as-is, never invoke the AI on it.
     if (isTargetResolved(target)) {
       reply.extractionStatus = 'skipped';
       await store.putReply(reply);
+      if (account) await applyLabel(deps, account, reply.emailId, LABELS.matched);
       log(`[${i}/${pending.length}] skip ${target.websiteUrl} — target already answered`);
       continue;
     }
@@ -170,11 +177,13 @@ export async function extractPendingReplies(
       await rollUp(store, target, reply, parsed, review, clock);
       extracted++;
       await store.putReply(reply);
+      if (account) await applyLabel(deps, account, reply.emailId, labelForResult(parsed));
       const offers = parsed.offers?.length ?? 0;
       log(`[${i}/${pending.length}] ok   ${target.websiteUrl} — intent=${parsed.intent ?? 'answer'}, ${offers} offer(s)`);
     } catch (err) {
       reply.extractionStatus = 'failed';
       await store.putReply(reply);
+      if (account) await applyLabel(deps, account, reply.emailId, LABELS.matched);
       failed++;
       log(`[${i}/${pending.length}] FAIL ${target.websiteUrl} — ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -228,13 +237,28 @@ async function suppress(
   await store.addSuppression({ id: norm, email: norm, reason, at: clock.now().toISOString() });
 }
 
-/** Label + mark-read a kept message. Never throws — a mailbox mutation failure
- *  (e.g. an account still on the old readonly scope) must not fail the pass. */
-async function markProcessed(deps: PollDeps, account: Account, emailId: string): Promise<void> {
+/** Mark a fetched message read — "the system saw it". Never throws: a mailbox
+ *  mutation failure (e.g. an account still on the old readonly scope) must not
+ *  fail the pass. */
+async function markRead(deps: PollDeps, account: Account, emailId: string): Promise<void> {
   try {
-    await deps.email.markProcessed(account, emailId);
+    await deps.email.markRead(account, emailId);
   } catch (err) {
-    logger.warn('markProcessed failed', { account: account.id, emailId, ...describeError(err) });
+    logger.warn('markRead failed', { account: account.id, emailId, ...describeError(err) });
+  }
+}
+
+/** Apply a decision label to a message (best-effort, same non-fatal contract). */
+async function applyLabel(
+  deps: PollDeps,
+  account: Account,
+  emailId: string,
+  label: OutcomeLabel,
+): Promise<void> {
+  try {
+    await deps.email.applyLabel(account, emailId, label);
+  } catch (err) {
+    logger.warn('applyLabel failed', { account: account.id, emailId, label, ...describeError(err) });
   }
 }
 
@@ -254,6 +278,10 @@ async function handleMessage(
     return;
   }
 
+  // The system has now fetched and seen this message — mark it read regardless of
+  // what we decide about it below. The label records the decision.
+  await markRead(deps, account, msg.emailId);
+
   // Bounce?
   const bounce = detectBounce(msg.fromAddress, msg.text);
   if (bounce.isBounce) {
@@ -265,6 +293,7 @@ async function handleMessage(
       );
       if (target) await store.updateTarget(target.id, (t) => ({ ...t, status: 'bounced' }));
     }
+    await applyLabel(deps, account, msg.emailId, LABELS.bounced);
     report.bounced++;
     return;
   }
@@ -291,13 +320,12 @@ async function handleMessage(
   };
 
   if (!match.targetId) {
+    await applyLabel(deps, account, msg.emailId, LABELS.unmatched);
     report.unmatched++;
     await store.putReply(reply);
     return;
   }
   report.matched++;
-  // Matched to a target = the email was used. Label it + mark it read (best-effort).
-  await markProcessed(deps, account, msg.emailId);
 
   // Extract + roll up onto the target.
   const target = await store.getTarget(match.targetId);
@@ -305,6 +333,7 @@ async function handleMessage(
   if (isTargetResolved(target)) {
     // Already answered — save the later reply for the record, don't re-extract.
     reply.extractionStatus = 'skipped';
+    await applyLabel(deps, account, msg.emailId, LABELS.matched);
     report.skipped++;
   } else if (target && campaign) {
     try {
@@ -317,9 +346,12 @@ async function handleMessage(
       );
       await persistDiscovered(store, discovered, clock);
       await rollUp(store, target, reply, parsed, review, clock);
+      await applyLabel(deps, account, msg.emailId, labelForResult(parsed));
       report.extracted++;
     } catch (err) {
       reply.extractionStatus = 'failed';
+      // Couldn't classify it, but it IS a matched reply — label it as such.
+      await applyLabel(deps, account, msg.emailId, LABELS.matched);
       report.extractionFailed++;
       logger.warn('extraction failed', {
         reply: reply.id,

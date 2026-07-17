@@ -1,6 +1,7 @@
 // Email port (overview.md §4). Reply-matching does NOT live here — it uses
 // fields the provider surfaces in a normalized way (threadId, emailId).
 
+import type { OutcomeLabel } from '../domain/labels';
 import type { Account, EmailAttachment, ISO } from '../domain/types';
 
 // Attachments are persisted (base64) on the Reply document and later written to
@@ -41,10 +42,15 @@ export interface EmailProvider {
   /** Exact self-lookup of our just-sent copy in All Mail to read its threadId. */
   resolveThreadId(account: Account, rfcMessageId: string): Promise<string | undefined>;
   /**
-   * Best-effort post-processing of an inbound message we've decided to KEEP:
-   * label it as processed and mark it read. Called ONLY for messages matched to
-   * a target — never for bounces or unmatched/unknown-sender mail. Callers treat
-   * failures as non-fatal. Providers without label support no-op.
+   * Clear the UNREAD flag on an inbound message. Called for EVERY message the
+   * pipeline ingests — read means "the system fetched and saw this". Best-effort;
+   * callers treat failures as non-fatal. Providers without mailbox mutation no-op.
    */
-  markProcessed(account: Account, emailId: string): Promise<void>;
+  markRead(account: Account, emailId: string): Promise<void>;
+  /**
+   * Apply a single decision label to an inbound message, replacing any other
+   * managed label it already carries (a message holds exactly one AS/ label at a
+   * time). Best-effort. Providers without label support no-op.
+   */
+  applyLabel(account: Account, emailId: string, label: OutcomeLabel): Promise<void>;
 }

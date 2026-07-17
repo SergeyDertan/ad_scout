@@ -10,6 +10,7 @@
 // Credentials are loaded automatically from client_secret.json (or via
 // GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET env vars).
 
+import { ALL_LABELS, LABEL_COLORS, type OutcomeLabel } from '../../domain/labels';
 import type { Account, EmailAttachment } from '../../domain/types';
 import {
   MAX_ATTACHMENT_BYTES,
@@ -24,9 +25,6 @@ const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 
-// Applied to every inbound message we match to a target. Nested name renders as
-// a collapsible "AdScout" group in Gmail's sidebar.
-const PROCESSED_LABEL = 'AdScout/Matched';
 
 // Bound every Gmail/OAuth HTTP call. Without this, a request that's mid-flight
 // when the machine sleeps hangs on a dead socket until the OS tears it down —
@@ -56,9 +54,10 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
   readonly name = 'gmail-api';
   readonly supportsThreadId = true;
 
-  // accountId -> resolved Gmail labelId for PROCESSED_LABEL. Avoids a labels.list
-  // round-trip on every message; the id is stable for the mailbox's lifetime.
-  private readonly labelIdCache = new Map<string, string>();
+  // accountId -> (managed label name -> resolved Gmail labelId). Loaded once per
+  // account from labels.list, then labels are created lazily on first use. Ids
+  // are stable for the mailbox's lifetime, so this avoids a round-trip per call.
+  private readonly labelIdCache = new Map<string, Map<string, string>>();
 
   constructor(
     private readonly store: Store,
@@ -212,37 +211,62 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
     return result.messages?.[0]?.threadId;
   }
 
-  // Label the kept message and clear UNREAD in one modify call. Adding a label is
-  // a `labelAdded` history event, NOT `messageAdded`, so it does not perturb the
-  // fetchViaHistory incremental cursor. Callers invoke this best-effort.
-  async markProcessed(account: Account, emailId: string): Promise<void> {
-    const labelId = await this.ensureLabel(account);
+  // Clear UNREAD — "the system saw this message". Called for every ingested
+  // message, best-effort.
+  async markRead(account: Account, emailId: string): Promise<void> {
     await this.gmailFetch(account, `/messages/${emailId}/modify`, {
       method: 'POST',
-      body: JSON.stringify({ addLabelIds: [labelId], removeLabelIds: ['UNREAD'] }),
+      body: JSON.stringify({ removeLabelIds: ['UNREAD'] }),
     });
   }
 
-  /** Resolve (cached) the labelId for PROCESSED_LABEL, creating it on first use. */
-  private async ensureLabel(account: Account): Promise<string> {
+  // Apply one decision label, stripping any other managed AS/ label the message
+  // carries so it holds exactly one at a time. Adding/removing a label is a
+  // `labelAdded`/`labelRemoved` history event, NOT `messageAdded`, so it does not
+  // perturb the fetchViaHistory incremental cursor. Callers invoke this best-effort.
+  async applyLabel(account: Account, emailId: string, label: OutcomeLabel): Promise<void> {
+    const byName = await this.ensureLabels(account);
+    const addId = byName.get(label) ?? (await this.createLabel(account, byName, label));
+    // Remove every OTHER managed label that already exists in this mailbox. Gmail
+    // no-ops removeLabelIds the message doesn't actually have, so this is safe.
+    const removeIds = ALL_LABELS.filter((l) => l !== label)
+      .map((l) => byName.get(l))
+      .filter((id): id is string => id != null);
+    await this.gmailFetch(account, `/messages/${emailId}/modify`, {
+      method: 'POST',
+      body: JSON.stringify({ addLabelIds: [addId], removeLabelIds: removeIds }),
+    });
+  }
+
+  /** Load (cached) the account's label name→id map from labels.list. */
+  private async ensureLabels(account: Account): Promise<Map<string, string>> {
     const cached = this.labelIdCache.get(account.id);
     if (cached) return cached;
-
     const { labels } = await this.gmailFetch<{
       labels?: Array<{ id: string; name: string }>;
     }>(account, '/labels');
-    let label = labels?.find((l) => l.name === PROCESSED_LABEL);
-    if (!label) {
-      label = await this.gmailFetch<{ id: string; name: string }>(account, '/labels', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: PROCESSED_LABEL,
-          labelListVisibility: 'labelShow',
-          messageListVisibility: 'show',
-        }),
-      });
-    }
-    this.labelIdCache.set(account.id, label.id);
+    const byName = new Map<string, string>();
+    for (const l of labels ?? []) byName.set(l.name, l.id);
+    this.labelIdCache.set(account.id, byName);
+    return byName;
+  }
+
+  /** Create a managed label (with its palette color) and cache its id. */
+  private async createLabel(
+    account: Account,
+    byName: Map<string, string>,
+    name: OutcomeLabel,
+  ): Promise<string> {
+    const label = await this.gmailFetch<{ id: string; name: string }>(account, '/labels', {
+      method: 'POST',
+      body: JSON.stringify({
+        name,
+        labelListVisibility: 'labelShow',
+        messageListVisibility: 'show',
+        color: LABEL_COLORS[name],
+      }),
+    });
+    byName.set(name, label.id);
     return label.id;
   }
 

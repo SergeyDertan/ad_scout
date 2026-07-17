@@ -1,6 +1,7 @@
 // RoutingEmailProvider — dispatches send/fetch/resolve to smtp-imap or
 // gmail-api based on Account.providerType. Lets both account types coexist.
 
+import type { OutcomeLabel } from '../../domain/labels';
 import type { Account } from '../../domain/types';
 import type {
   EmailProvider,
@@ -41,7 +42,11 @@ export class RoutingEmailProvider implements EmailProvider {
     return this.pick(account).resolveThreadId(account, rfcMessageId);
   }
 
-  markProcessed(account: Account, emailId: string): Promise<void> {
-    return this.pick(account).markProcessed(account, emailId);
+  markRead(account: Account, emailId: string): Promise<void> {
+    return this.pick(account).markRead(account, emailId);
+  }
+
+  applyLabel(account: Account, emailId: string, label: OutcomeLabel): Promise<void> {
+    return this.pick(account).applyLabel(account, emailId, label);
   }
 }

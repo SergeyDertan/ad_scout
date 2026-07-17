@@ -27,16 +27,16 @@ import { DownloadIcon, InboxIcon } from './icons';
 export function ExportDialog({
   rows,
   niches,
-  campaignName,
+  batchName,
   onClose,
 }: {
   rows: ResponseRow[];
   niches: Niche[];
-  campaignName?: string;
+  batchName?: string;
   onClose: () => void;
 }) {
   const model = useMemo(() => buildExportModel(rows, niches), [rows, niches]);
-  const [header, setHeader] = useState(() => defaultHeader(campaignName));
+  const [header, setHeader] = useState(() => defaultHeader(batchName));
   const [busy, setBusy] = useState<'xlsx' | 'html' | null>(null);
 
   const websites = model.rows.length;

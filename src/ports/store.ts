@@ -5,7 +5,6 @@
 import type {
   Account,
   Batch,
-  Campaign,
   Niche,
   Outreach,
   Reply,
@@ -15,7 +14,6 @@ import type {
 } from '../domain/types';
 
 export type DocType =
-  | 'campaign'
   | 'account'
   | 'target'
   | 'batch'
@@ -33,7 +31,7 @@ export interface ChangeEvent {
 export type ChangeListener = (ev: ChangeEvent) => void;
 
 export interface TargetFilter {
-  campaignId?: string;
+  batchId?: string;
   status?: TargetStatus;
 }
 
@@ -43,12 +41,6 @@ export interface OutreachFilter {
 }
 
 export interface Store {
-  // campaigns
-  getCampaign(id: string): Promise<Campaign | undefined>;
-  putCampaign(c: Campaign): Promise<Campaign>;
-  listCampaigns(): Promise<Campaign[]>;
-  deleteCampaign(id: string): Promise<void>;
-
   // accounts
   getAccount(id: string): Promise<Account | undefined>;
   putAccount(a: Account): Promise<Account>;

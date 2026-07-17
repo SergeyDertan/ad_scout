@@ -1,7 +1,6 @@
 // Reply extractor: the LLM does NLP (niche tagging, can-post, opt-out, verbatim
-// answers); the pure domain code (assembleResult / reconcileOffers) types each
-// answer and reconciles niches against the learned registry. Driven by
-// inquiryFields — the same source of truth the drafter uses.
+// prices); the pure domain code (assembleResult / reconcileOffers) parses each
+// price and reconciles niches against the learned registry.
 
 import {
   assembleResult,
@@ -9,7 +8,7 @@ import {
   type RawExtraction,
 } from '../domain/extraction';
 import { allNiches, categorizeTopic } from '../domain/niches';
-import type { Campaign, EmailAttachment, Niche, OutreachResult } from '../domain/types';
+import type { EmailAttachment, Niche, OutreachResult, PitchProfile } from '../domain/types';
 import type { LlmAttachment, LlmProvider } from '../ports/llm-provider';
 import { MAX_ATTACHMENT_BYTES } from '../ports/email-provider';
 import { logger } from '../lib/logger';
@@ -98,9 +97,6 @@ const SYSTEM = [
   '  out-of-office / autoresponder. "question" = they ask US something without answering.',
   '  "decline" = not interested. "other" = none. If they gave ANY price/willingness, it is',
   '  "answer", never "holding".',
-  '- fields: answer each listed question with the owner\'s words in "raw" as PLAIN TEXT —',
-  '  no markdown, no backslash escapes, no bullet formatting. Empty string "" if a',
-  '  question is not addressed. Never guess or infer anything not present in the reply.',
   '- Consider ONLY the owner\'s new reply; ignore any quoted text from our original email',
   '  below it (">"-prefixed lines, "On … wrote:" blocks, forwarded headers).',
   '- Replies may be in any language; still classify canPost/optOut correctly and keep',
@@ -136,16 +132,13 @@ export class Extractor {
    *   automatically). Pass [] if none are persisted yet.
    */
   async extract(
-    campaign: Campaign,
+    profile: PitchProfile,
     replyText: string,
     knownNiches: Niche[] = [],
     attachments: EmailAttachment[] = [],
   ): Promise<ExtractionOutcome> {
     const niches = allNiches(knownNiches);
-    const schema = buildExtractionSchema(campaign.inquiryFields);
-    const fieldList = campaign.inquiryFields
-      .map((f) => `- ${f.key}: ${f.question}`)
-      .join('\n');
+    const schema = buildExtractionSchema();
     const nicheList = niches
       .map((n) => `- ${n.key}${n.sensitive ? ' (sensitive)' : ''}: ${n.label} — e.g. ${n.aliases.slice(0, 4).join(', ')}`)
       .join('\n');
@@ -190,14 +183,11 @@ export class Extractor {
     const useAttachments = llmAttachments.length > 0;
 
     const prompt = [
-      `Campaign: publishing ${campaign.format} about ${campaign.topic} (${campaign.advertised.url}).`,
-      `The niche we asked about: "${campaign.topic}".`,
+      `Outreach: publishing ${profile.format} about ${profile.topic} (${profile.advertised.url}).`,
+      `The niche we asked about: "${profile.topic}".`,
       '',
       'KNOWN NICHES (reuse these keys when they fit):',
       nicheList,
-      '',
-      'Questions we asked:',
-      fieldList,
       '',
       'The reply to analyze (between the markers):',
       '--- REPLY START ---',
@@ -214,8 +204,8 @@ export class Extractor {
       ...(allowWebFetch ? { allowWebFetch: true } : {}),
       ...(useAttachments ? { attachments: llmAttachments } : {}),
     });
-    const requestedCategory = categorizeTopic(campaign.topic, niches);
-    const { result, discovered } = assembleResult(campaign.inquiryFields, json as RawExtraction, {
+    const requestedCategory = categorizeTopic(profile.topic, niches);
+    const { result, discovered } = assembleResult(json as RawExtraction, {
       niches,
       requestedCategory,
     });

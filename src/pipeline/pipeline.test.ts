@@ -6,7 +6,7 @@ import { DummyEmailProvider } from '../adapters/email/dummy.provider';
 import { DummyLlmProvider } from '../adapters/llm/dummy.provider';
 import { MemoryStore } from '../adapters/store/memory.store';
 import { LABELS } from '../domain/labels';
-import type { Account, Campaign, Target } from '../domain/types';
+import type { Account, Batch, Target } from '../domain/types';
 import { fixedClock } from '../lib/clock';
 import type { LlmProvider } from '../ports/llm-provider';
 import { Extractor } from '../services/extractor';
@@ -16,18 +16,11 @@ import { runSendPass } from './send-pass';
 const config = loadConfig({} as NodeJS.ProcessEnv);
 const clock = fixedClock(new Date('2026-06-19T12:00:00Z'));
 
-function campaign(): Campaign {
+function batch(): Batch {
   return {
-    id: 'camp1',
-    name: 'casino',
-    advertised: { url: 'casinoslists.com', description: 'a casino platform' },
-    topic: 'casino',
-    format: 'article',
-    inquiryFields: [
-      { key: 'price', question: 'Cost?', type: 'price' },
-      { key: 'categories', question: 'Categories?', type: 'list' },
-      { key: 'section', question: 'Section?', type: 'text' },
-    ],
+    id: 'batch1',
+    name: 'casino import',
+    source: 'import',
     createdAt: '2026-05-01T00:00:00Z',
   };
 }
@@ -48,7 +41,7 @@ function account(): Account {
 function target(id: string, email: string): Target {
   return {
     id,
-    campaignId: 'camp1',
+    batchId: 'batch1',
     websiteUrl: `${id}.com`,
     contactEmail: email,
     status: 'pending',
@@ -58,7 +51,7 @@ function target(id: string, email: string): Target {
 }
 
 async function seed(store: MemoryStore) {
-  await store.putCampaign(campaign());
+  await store.putBatch(batch());
   await store.putAccount(account());
   await store.putTarget(target('t1', 'info@t1.com'));
   await store.putTarget(target('t2', 'editor@t2.com'));
@@ -111,14 +104,14 @@ test('poll-pass matches a reply by threadId, extracts, and marks target replied'
     receivedAt: new Date('2026-06-19T12:30:00Z'),
   });
 
-  const report = await runPollPass({ store, email, extractor, clock });
+  const report = await runPollPass({ store, email, extractor, clock, config });
   assert.equal(report.matched, 1);
   assert.equal(report.extracted, 1);
 
   const t1 = await store.getTarget('t1');
   assert.equal(t1?.status, 'replied');
   assert.ok(t1?.result);
-  assert.ok(t1?.result?.fields.price);
+  assert.ok(Array.isArray(t1?.result?.offers));
 
   const replies = await store.listReplies();
   assert.equal(replies.length, 1);
@@ -160,7 +153,7 @@ test('a later reply on an already-answered target is saved but not re-extracted'
     text: 'Yes we can publish. $300. Categories: esports. Section: News.',
     receivedAt: new Date('2026-06-19T12:30:00Z'),
   });
-  const first = await runPollPass({ store, email, extractor, clock });
+  const first = await runPollPass({ store, email, extractor, clock, config });
   assert.equal(first.extracted, 1);
   assert.equal(calls, 1);
   const resolved = await store.getTarget('t1');
@@ -176,7 +169,7 @@ test('a later reply on an already-answered target is saved but not re-extracted'
     text: 'Actually never mind, disregard.',
     receivedAt: new Date('2026-06-19T13:00:00Z'),
   });
-  const second = await runPollPass({ store, email, extractor, clock });
+  const second = await runPollPass({ store, email, extractor, clock, config });
   assert.equal(second.matched, 1);
   assert.equal(second.skipped, 1);
   assert.equal(second.extracted, 0);
@@ -207,11 +200,11 @@ test('poll-pass dedupes the same inbound emailId', async () => {
     fromAddress: 'info@t1.com',
     text: 'Yes.',
   });
-  await runPollPass({ store, email, extractor, clock });
+  await runPollPass({ store, email, extractor, clock, config });
 
   // Re-inject the SAME emailId — should be deduped, not re-stored.
   (email as unknown as { inbox: unknown[] }).inbox.push(injected);
-  const second = await runPollPass({ store, email, extractor, clock });
+  const second = await runPollPass({ store, email, extractor, clock, config });
   assert.equal(second.deduped, 1);
   assert.equal((await store.listReplies()).length, 1);
 });
@@ -229,7 +222,6 @@ test('holding reply keeps the target contacted (follow-ups continue) without a s
         reasoning: 'acknowledgement only',
         conditions: '',
         notes: '',
-        fields: { price: { raw: '' }, categories: { raw: '' }, section: { raw: '' } },
       };
     },
     async generateText() {
@@ -246,7 +238,7 @@ test('holding reply keeps the target contacted (follow-ups continue) without a s
     fromAddress: 'info@t1.com',
     text: 'Thanks for reaching out, we will get back to you soon.',
   });
-  await runPollPass({ store, email, extractor, clock });
+  await runPollPass({ store, email, extractor, clock, config });
 
   // NOT marked replied — still 'contacted' so follow-ups keep chasing the answer.
   const t1 = await store.getTarget('t1');
@@ -269,7 +261,6 @@ test('opt-out reply excludes the target and adds a persistent suppression', asyn
         optOut: true,
         conditions: '',
         notes: '',
-        fields: { price: { raw: '' }, categories: { raw: '' }, section: { raw: '' } },
       };
     },
     async generateText() {
@@ -286,7 +277,7 @@ test('opt-out reply excludes the target and adds a persistent suppression', asyn
     fromAddress: 'info@t1.com',
     text: 'Please stop emailing me.',
   });
-  await runPollPass({ store, email, extractor, clock });
+  await runPollPass({ store, email, extractor, clock, config });
 
   const t1 = await store.getTarget('t1');
   assert.equal(t1?.status, 'excluded');

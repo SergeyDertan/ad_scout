@@ -27,12 +27,14 @@ import { logger } from '../lib/logger';
 import type { EmailProvider, IncomingEmail } from '../ports/email-provider';
 import type { Store } from '../ports/store';
 import type { Extractor } from '../services/extractor';
+import type { Config } from '../config';
 
 export interface PollDeps {
   store: Store;
   email: EmailProvider;
   extractor: Extractor;
   clock: Clock;
+  config: Config;
 }
 
 export interface PollReport {
@@ -136,7 +138,7 @@ export async function extractPendingReplies(
   deps: PollDeps,
   opts: ExtractOptions = {},
 ): Promise<{ extracted: number; failed: number }> {
-  const { store, extractor, clock } = deps;
+  const { store, extractor, clock, config } = deps;
   const log = opts.log ?? (() => {});
   const pending = (await store.listReplies()).filter(
     (r) => (r.extractionStatus === 'failed' || r.extractionStatus === 'pending') && r.targetId,
@@ -147,9 +149,8 @@ export async function extractPendingReplies(
   for (const reply of pending) {
     i++;
     const target = await store.getTarget(reply.targetId!);
-    const campaign = target ? await store.getCampaign(target.campaignId) : undefined;
-    if (!target || !campaign) {
-      log(`[${i}/${pending.length}] skip ${reply.fromAddress} — no target/campaign`);
+    if (!target) {
+      log(`[${i}/${pending.length}] skip ${reply.fromAddress} — no target`);
       continue;
     }
     // The account that owns this reply's mailbox — needed to (re)label it. Absent
@@ -168,7 +169,7 @@ export async function extractPendingReplies(
     try {
       const knownNiches = await store.listNiches();
       const { result: parsed, discovered, review } = await extractor.extract(
-        campaign,
+        config.pitch,
         reply.text,
         knownNiches,
         reply.attachments ?? [],
@@ -270,7 +271,7 @@ async function handleMessage(
   awaiting: AwaitingTargetRef[],
   report: PollReport,
 ): Promise<void> {
-  const { store, extractor, clock } = deps;
+  const { store, extractor, clock, config } = deps;
 
   // Dedupe on the stable emailId.
   if (await store.getReplyByEmailId(msg.emailId)) {
@@ -329,17 +330,16 @@ async function handleMessage(
 
   // Extract + roll up onto the target.
   const target = await store.getTarget(match.targetId);
-  const campaign = target ? await store.getCampaign(target.campaignId) : undefined;
   if (isTargetResolved(target)) {
     // Already answered — save the later reply for the record, don't re-extract.
     reply.extractionStatus = 'skipped';
     await applyLabel(deps, account, msg.emailId, LABELS.matched);
     report.skipped++;
-  } else if (target && campaign) {
+  } else if (target) {
     try {
       const knownNiches = await store.listNiches();
       const { result: parsed, discovered, review } = await extractor.extract(
-        campaign,
+        config.pitch,
         msg.text,
         knownNiches,
         msg.attachments ?? [],

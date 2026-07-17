@@ -17,7 +17,7 @@ import {
   isLateMessage,
   needsReview,
   offerMatchesFilter,
-  type Campaign,
+  type BatchRow,
   type Niche,
   type ResponseRow,
 } from '../types';
@@ -30,8 +30,13 @@ import { ExportDialog } from './ExportDialog';
 import { useResource } from '../hooks/useResource';
 import { AlertTriangleIcon, DownloadIcon, InboxIcon, SearchIcon } from './icons';
 
-// From | Site | Campaign | Match | Answer | Niches | Actions
+// From | Site | Batch | Match | Answer | Niches | Actions
 const COLS = '1.2fr 1.2fr 130px 96px 96px 120px 150px';
+
+/** A batch's display label: its name, else a short id (manual adds are unnamed). */
+function batchLabel(b: BatchRow): string {
+  return b.name?.trim() || `batch ${b.id.replace(/^batch_/, '').slice(0, 8)}`;
+}
 const ROW_H = 56;
 const MAX_LIST_H = 640;
 
@@ -90,7 +95,7 @@ function VirtualRow({ index, style, rows, onShow, onEdit }: RowComponentProps<Ro
         {r.website ?? '—'}
       </Text>
       <Text color="fg.muted" fontSize="xs" overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
-        {r.campaignName ?? '—'}
+        {r.batchName ?? '—'}
       </Text>
       <Box><StatusBadge value={r.matchMethod} /></Box>
       <Box>{r.parsed?.canPost ? <StatusBadge value={r.parsed.canPost} /> : <Text color="fg.subtle">—</Text>}</Box>
@@ -135,17 +140,17 @@ function VirtualRow({ index, style, rows, onShow, onEdit }: RowComponentProps<Ro
 }
 
 export function ResponsesView({ tick }: { tick: number }) {
-  const [campaignFilter, setCampaignFilter] = useState('');
+  const [batchFilter, setBatchFilter] = useState('');
   const [nicheFilter, setNicheFilter] = useState('');
   const [canPostFilter, setCanPostFilter] = useState('');
   const [reviewFilter, setReviewFilter] = useState('');
   const [editId, setEditId] = useState<string | null>(null);
   const [showId, setShowId] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
-  const { rows: campaigns } = useResource(useCallback(() => api.listCampaigns(), []), tick);
+  const { rows: batches } = useResource(useCallback(() => api.listBatches(), []), tick);
   const { rows: niches } = useResource(useCallback(() => api.listNiches(), []), tick);
   const { rows: allRows, loading, error, reload } = useResource(
-    useCallback(() => api.listResponses(campaignFilter || undefined), [campaignFilter]),
+    useCallback(() => api.listResponses(batchFilter || undefined), [batchFilter]),
     tick,
   );
   const [search, setSearch] = useState('');
@@ -205,10 +210,10 @@ export function ResponsesView({ tick }: { tick: number }) {
 
         <HStack {...selectWrap}>
           <NativeSelect.Root size="sm" width="40" variant="plain">
-            <NativeSelect.Field value={campaignFilter} onChange={(e) => setCampaignFilter(e.target.value)} fontWeight="medium">
-              <option value="">all campaigns</option>
-              {(campaigns as Campaign[]).map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
+            <NativeSelect.Field value={batchFilter} onChange={(e) => setBatchFilter(e.target.value)} fontWeight="medium">
+              <option value="">all batches</option>
+              {(batches as BatchRow[]).map((b) => (
+                <option key={b.id} value={b.id}>{batchLabel(b)}</option>
               ))}
             </NativeSelect.Field>
             <NativeSelect.Indicator />
@@ -289,7 +294,10 @@ export function ResponsesView({ tick }: { tick: number }) {
         <ExportDialog
           rows={rows}
           niches={niches as Niche[]}
-          campaignName={(campaigns as Campaign[]).find((c) => c.id === campaignFilter)?.name}
+          batchName={(() => {
+            const b = (batches as BatchRow[]).find((x) => x.id === batchFilter);
+            return b ? batchLabel(b) : undefined;
+          })()}
           onClose={() => setExporting(false)}
         />
       )}
@@ -328,7 +336,7 @@ export function ResponsesView({ tick }: { tick: number }) {
           >
             <Text>From</Text>
             <Text>Site</Text>
-            <Text>Campaign</Text>
+            <Text>Batch</Text>
             <Text>Match</Text>
             <Text>Answer</Text>
             <Text>Niches</Text>

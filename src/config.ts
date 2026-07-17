@@ -6,6 +6,7 @@ import type { WarmupConfig } from './domain/warmup';
 import { DEFAULT_WARMUP } from './domain/warmup';
 import type { HealthConfig } from './domain/health';
 import { DEFAULT_HEALTH } from './domain/health';
+import type { PitchProfile } from './domain/types';
 
 export type LlmProviderKind = 'dummy' | 'ollama' | 'openai' | 'claude' | 'claude-code';
 export type StoreKind = 'memory' | 'pouchdb';
@@ -23,6 +24,11 @@ export interface Config {
   claudeCode: { model: string; timeoutMs: number };
   googleOAuth: { clientId: string; clientSecret: string };
   sendWindow: { startHour: number; endHour: number; paceEndHour: number };
+  /** Global outreach pitch defaults. A Batch may override `advertised` per import;
+   *  everything else is global. Drives both the drafter and the extractor. */
+  pitch: PitchProfile;
+  /** No-reply follow-up policy (global). */
+  followUp: { afterDays: number; maxFollowUps: number };
   /** No-reply follow-up bumps. Disabled for now — set FOLLOW_UPS_ENABLED=true to
    *  re-enable. The follow-up code stays intact; this only gates the queue. */
   followUpsEnabled: boolean;
@@ -104,6 +110,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       );
       return { startHour, endHour, paceEndHour };
     })(),
+    pitch: {
+      advertised: {
+        url: env.ADVERTISED_URL ?? 'casinoslists.com',
+        description: env.ADVERTISED_DESCRIPTION ?? 'a rapidly growing online casino platform',
+      },
+      topic: env.PITCH_TOPIC ?? 'casino',
+      format: env.PITCH_FORMAT ?? 'article',
+      ...(env.SUBJECT_TEMPLATE ? { subjectTemplate: env.SUBJECT_TEMPLATE } : {}),
+    },
+    followUp: {
+      afterDays: envInt('FOLLOW_UP_AFTER_DAYS', 4),
+      maxFollowUps: envInt('FOLLOW_UP_MAX', 2),
+    },
     followUpsEnabled: envBool(env, 'FOLLOW_UPS_ENABLED', false),
     reconcileGraceMs: envInt('RECONCILE_GRACE_MS', 15 * 60_000),
     warmup: DEFAULT_WARMUP,

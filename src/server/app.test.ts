@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { loadConfig } from '../config';
 import { MemoryStore } from '../adapters/store/memory.store';
-import type { Account, Campaign, Reply, Target } from '../domain/types';
+import type { Account, Batch, Reply, Target } from '../domain/types';
 import { systemClock } from '../lib/clock';
 import { createApiServer, type ServerDeps } from './app';
 
@@ -21,13 +21,10 @@ async function J(url: string, init?: RequestInit): Promise<any> {
 }
 
 function seed(store: MemoryStore) {
-  const campaign: Campaign = {
-    id: 'c1',
-    name: 'casino',
-    advertised: { url: 'casinoslists.com', description: 'a casino platform' },
-    topic: 'casino',
-    format: 'article',
-    inquiryFields: [{ key: 'price', question: 'Cost?', type: 'price' }],
+  const batch: Batch = {
+    id: 'b1',
+    name: 'casino import',
+    source: 'import',
     createdAt: '2026-05-01T00:00:00Z',
   };
   const account: Account = {
@@ -42,7 +39,7 @@ function seed(store: MemoryStore) {
   };
   const t1: Target = {
     id: 't1',
-    campaignId: 'c1',
+    batchId: 'b1',
     websiteUrl: 'site1.com',
     contactEmail: 'a@site1.com',
     status: 'pending',
@@ -50,7 +47,7 @@ function seed(store: MemoryStore) {
     createdAt: '2026-06-01T00:00:00Z',
   };
   const t2: Target = { ...t1, id: 't2', websiteUrl: 'site2.com', contactEmail: 'b@site2.com', status: 'contacted' };
-  return Promise.all([store.putCampaign(campaign), store.putAccount(account), store.putTarget(t1), store.putTarget(t2)]);
+  return Promise.all([store.putBatch(batch), store.putAccount(account), store.putTarget(t1), store.putTarget(t2)]);
 }
 
 interface Harness {
@@ -116,7 +113,7 @@ test('GET /api/status engagement funnel splits replies by intent', async () => {
   try {
     const target = (id: string, status: Target['status'], result?: Target['result']): Target => ({
       id,
-      campaignId: 'c1',
+      batchId: 'b1',
       websiteUrl: `${id}.com`,
       contactEmail: `${id}@x.com`,
       status,
@@ -142,7 +139,6 @@ test('GET /api/status engagement funnel splits replies by intent', async () => {
               },
             ]
           : [{ postType: 'guest_post', category: 'casino', label: 'Casino', sensitive: false, canPost: 'no' }],
-      fields: {},
     });
     const reply = (id: string, targetId: string): Reply => ({
       id,
@@ -243,20 +239,24 @@ test('GET /api/targets?status= filters', async () => {
   }
 });
 
-test('GET /api/campaigns lists campaigns; POST creates one', async () => {
+test('POST /api/preview renders the outreach email from the global pitch profile', async () => {
   const h = await start();
   try {
-    let cs = await J(`${h.base}/api/campaigns`);
-    assert.equal(cs.length, 1);
-    const created = await J(`${h.base}/api/campaigns`, {
+    const preview = await J(`${h.base}/api/preview`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'poker', advertised: { url: 'poker.example' } }),
+      body: JSON.stringify({ websiteUrl: 'target.example' }),
     });
-    assert.equal(created.name, 'poker');
-    assert.ok(created.id.startsWith('campaign_'));
-    cs = await J(`${h.base}/api/campaigns`);
-    assert.equal(cs.length, 2);
+    assert.ok(preview.subject.length > 0);
+    assert.match(preview.body, /rates for:/); // the broad pricing ask
+    assert.equal(preview.senderEmail, 'vlad@example.com');
+    // A per-import advertised override flows into the body.
+    const overridden = await J(`${h.base}/api/preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ websiteUrl: 'target.example', advertised: { url: 'poker.example', description: 'a poker room' } }),
+    });
+    assert.match(overridden.body, /poker\.example/);
   } finally {
     await h.close();
   }
@@ -305,7 +305,7 @@ test('DELETE /api/accounts/:id removes an account', async () => {
   }
 });
 
-test('POST /api/targets queues a target (defaults to the sole campaign)', async () => {
+test('POST /api/targets queues a target (mints a manual batch when none given)', async () => {
   const h = await start();
   try {
     const t = await J(`${h.base}/api/targets`, {
@@ -314,21 +314,23 @@ test('POST /api/targets queues a target (defaults to the sole campaign)', async 
       body: JSON.stringify({ websiteUrl: 'new.example', contactEmail: 'hi@new.example' }),
     });
     assert.equal(t.status, 'pending');
-    assert.equal(t.campaignId, 'c1');
+    assert.ok(t.batchId.startsWith('batch_'));
     assert.equal(t.followUpCount, 0);
     assert.equal((await h.store.listTargets()).length, 3);
+    // The minted batch is a 'manual' one-off.
+    assert.equal((await h.store.getBatch(t.batchId))?.source, 'manual');
   } finally {
     await h.close();
   }
 });
 
-test('POST /api/targets rejects an unknown campaignId', async () => {
+test('POST /api/targets rejects an unknown batchId', async () => {
   const h = await start();
   try {
     const res = await fetch(`${h.base}/api/targets`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ websiteUrl: 'x.example', contactEmail: 'a@x.example', campaignId: 'nope' }),
+      body: JSON.stringify({ websiteUrl: 'x.example', contactEmail: 'a@x.example', batchId: 'nope' }),
     });
     assert.equal(res.status, 400);
   } finally {
@@ -361,7 +363,7 @@ test('PATCH /api/replies/:id applies a human correction and clears review', asyn
       text: 'see attached price list',
       extractionStatus: 'done',
       review: ['Unsupported attachment type, read it manually: rates.xlsx (…)'],
-      parsed: { canPost: 'maybe', optOut: false, offers: [], fields: { price: { raw: '' } } as never },
+      parsed: { canPost: 'maybe', optOut: false, offers: [] },
     };
     await h.store.putReply(reply);
 
@@ -457,7 +459,7 @@ test('GET /api/stream delivers change events (SSE)', { timeout: 8000 }, async ()
     await readUntil(': connected'); // subscription is active past this point
     await h.store.putTarget({
       id: 't3',
-      campaignId: 'c1',
+      batchId: 'b1',
       websiteUrl: 'site3.com',
       contactEmail: 'c@site3.com',
       status: 'pending',

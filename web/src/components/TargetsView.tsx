@@ -14,7 +14,7 @@ import {
 import { useCallback, useMemo, useState } from 'react';
 import { List, type RowComponentProps } from 'react-window';
 import { api } from '../api';
-import type { Campaign, Target, TargetStatus } from '../types';
+import type { BatchRow, Target, TargetStatus } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { AddTargetForm } from './AddTargetForm';
 import { BulkImportForm } from './BulkImportForm';
@@ -29,7 +29,7 @@ const STATUSES: (TargetStatus | '')[] = [
   '', 'pending', 'reserved', 'contacted', 'replied', 'bounced', 'needs_review', 'excluded',
 ];
 
-// px widths for the 7 columns: website | campaign | contact | status | followups | canpost | actions
+// px widths for the 7 columns: website | batch | contact | status | followups | canpost | actions
 const COLS = '1fr 140px 200px 110px 64px 70px 80px';
 const ROW_H = 52;
 const MAX_LIST_H = 600;
@@ -88,13 +88,13 @@ function StatChip({ label, value, active, onClick }: { label: string; value: num
 // Row renderer for react-window 2.x — extra props come from rowProps
 interface RowData {
   targets: Target[];
-  campaignNames: Record<string, string>;
+  batchNames: Record<string, string>;
   onRemove: (t: Target) => void;
   onThread: (t: Target) => void;
   threadId: string | null;
 }
 
-function VirtualRow({ index, style, targets, campaignNames, onRemove, onThread, threadId }: RowComponentProps<RowData>) {
+function VirtualRow({ index, style, targets, batchNames, onRemove, onThread, threadId }: RowComponentProps<RowData>) {
   const t = targets[index]!;
   const isThreadOpen = threadId === t.id;
   return (
@@ -134,7 +134,7 @@ function VirtualRow({ index, style, targets, campaignNames, onRemove, onThread, 
         )}
       </Box>
       <Text color="fg.muted" overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap" fontSize="xs">
-        {campaignNames[t.campaignId] ?? '—'}
+        {(t.batchId && batchNames[t.batchId]) ?? '—'}
       </Text>
       <Text color="fg.muted" overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
         {t.contactEmail}
@@ -162,21 +162,20 @@ function VirtualRow({ index, style, targets, campaignNames, onRemove, onThread, 
 
 export function TargetsView({ tick }: { tick: number }) {
   const [statusFilter, setStatusFilter] = useState<TargetStatus | ''>('');
-  const [campaignFilter, setCampaignFilter] = useState('');
   const [batchFilter, setBatchFilter] = useState('');
   const [search, setSearch] = useState('');
   const [mode, setMode] = useState<Mode>(null);
   const [threadTarget, setThreadTarget] = useState<Target | null>(null);
   const confirm = useConfirm();
 
-  const { rows: campaigns } = useResource(useCallback(() => api.listCampaigns(), []), tick);
+  const { rows: batchList } = useResource(useCallback(() => api.listBatches(), []), tick);
   const {
     rows: allTargets,
     loading,
     error,
     reload: load,
   } = useResource(
-    useCallback(() => api.listTargets(statusFilter, campaignFilter || undefined), [statusFilter, campaignFilter]),
+    useCallback(() => api.listTargets(statusFilter), [statusFilter]),
     tick,
   );
 
@@ -236,14 +235,18 @@ export function TargetsView({ tick }: { tick: number }) {
 
   const listHeight = Math.min(targets.length * ROW_H, MAX_LIST_H);
 
-  const campaignNames = (campaigns as Campaign[]).reduce<Record<string, string>>((acc, c) => {
-    acc[c.id] = c.name;
-    return acc;
-  }, {});
+  // id → display name for the batch column and filter labels.
+  const batchNames = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const b of batchList as BatchRow[]) {
+      m[b.id] = b.name?.trim() || `batch ${b.id.replace(/^batch_/, '').slice(0, 8)}`;
+    }
+    return m;
+  }, [batchList]);
 
   const rowData: RowData = {
     targets,
-    campaignNames,
+    batchNames,
     onRemove: remove,
     onThread: handleThread,
     threadId: threadTarget?.id ?? null,
@@ -301,31 +304,6 @@ export function TargetsView({ tick }: { tick: number }) {
           </NativeSelect.Root>
         </HStack>
 
-        <HStack
-          gap={2}
-          bg="bg.panel"
-          borderWidth="1px"
-          borderColor="border"
-          rounded="lg"
-          pl={3}
-          pr={1.5}
-          py={1}
-        >
-          <NativeSelect.Root size="sm" width="40" variant="plain">
-            <NativeSelect.Field
-              value={campaignFilter}
-              onChange={(e) => setCampaignFilter(e.target.value)}
-              fontWeight="medium"
-            >
-              <option value="">all campaigns</option>
-              {(campaigns as Campaign[]).map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </NativeSelect.Field>
-            <NativeSelect.Indicator />
-          </NativeSelect.Root>
-        </HStack>
-
         {(batches.length > 0 || hasUnbatched) && (
           <HStack
             gap={2}
@@ -345,7 +323,9 @@ export function TargetsView({ tick }: { tick: number }) {
               >
                 <option value="">all batches</option>
                 {batches.map((b) => (
-                  <option key={b.id} value={b.id} title={b.id}>{batchLabel(b)}</option>
+                  <option key={b.id} value={b.id} title={b.id}>
+                    {batchNames[b.id] ?? batchLabel(b)}
+                  </option>
                 ))}
                 {hasUnbatched && <option value={NO_BATCH}>— no batch —</option>}
               </NativeSelect.Field>
@@ -443,7 +423,7 @@ export function TargetsView({ tick }: { tick: number }) {
             zIndex={1}
           >
             <Text>Website</Text>
-            <Text>Campaign</Text>
+            <Text>Batch</Text>
             <Text>Contact</Text>
             <Text>Status</Text>
             <Text textAlign="center">F/U</Text>

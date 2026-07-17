@@ -90,7 +90,7 @@ async function main() {
 
   // --- Phase 2: re-extract in place, no fetch -----------------------------
   const { extracted, failed } = await extractPendingReplies(
-    { store, email, extractor, clock: systemClock },
+    { store, email, extractor, clock: systemClock, config },
     { log: (m) => console.log(m) },
   );
   console.log(`\nre-extraction complete: ${extracted} extracted, ${failed} failed.`);

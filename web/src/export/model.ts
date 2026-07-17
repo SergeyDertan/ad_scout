@@ -32,7 +32,7 @@ export interface MetaColumn {
 export const META_COLUMNS: MetaColumn[] = [
   { key: 'website', label: 'Website' },
   { key: 'email', label: 'Contact email' },
-  { key: 'campaign', label: 'Campaign' },
+  { key: 'batch', label: 'Batch' },
   { key: 'canPost', label: 'Can post' },
   { key: 'received', label: 'Received' },
 ];
@@ -49,8 +49,8 @@ export interface ExportRow {
   id: string;
   website: string;
   email: string;
-  campaign: string;
-  campaignId: string;
+  batch: string;
+  batchId: string;
   canPost: string;
   received: string;
   receivedLabel: string;
@@ -64,7 +64,7 @@ export interface ExportModel {
   rows: ExportRow[];
   combos: ComboColumn[];
   niches: { key: string; label: string; sensitive: boolean }[];
-  campaigns: { id: string; name: string }[];
+  batches: { id: string; name: string }[];
   generatedAt: string;
 }
 
@@ -94,7 +94,7 @@ function comboSort(a: ComboColumn, b: ComboColumn): number {
 /** Flatten the response feed into the normalized, embeddable export model. */
 export function buildExportModel(rows: ResponseRow[], niches: Niche[]): ExportModel {
   const comboMap = new Map<string, ComboColumn>();
-  const campaignMap = new Map<string, string>();
+  const batchMap = new Map<string, string>();
 
   const exportRows: ExportRow[] = rows.map((r) => {
     const offers = r.parsed?.offers ?? [];
@@ -122,13 +122,13 @@ export function buildExportModel(rows: ResponseRow[], niches: Niche[]): ExportMo
       cats.add(o.category);
       if (o.sensitive) sensitive = true;
     }
-    if (r.campaignId && r.campaignName) campaignMap.set(r.campaignId, r.campaignName);
+    if (r.batchId && r.batchName) batchMap.set(r.batchId, r.batchName);
     return {
       id: r.id,
       website: r.website ?? '',
       email: r.fromAddress,
-      campaign: r.campaignName ?? '',
-      campaignId: r.campaignId ?? '',
+      batch: r.batchName ?? '',
+      batchId: r.batchId ?? '',
       canPost: r.parsed?.canPost ?? '',
       received: r.receivedAt ?? '',
       receivedLabel: r.receivedAt ? new Date(r.receivedAt).toLocaleString() : '',
@@ -143,7 +143,7 @@ export function buildExportModel(rows: ResponseRow[], niches: Niche[]): ExportMo
     rows: exportRows,
     combos: [...comboMap.values()].sort(comboSort),
     niches: niches.map((n) => ({ key: n.key, label: n.label, sensitive: n.sensitive })),
-    campaigns: [...campaignMap.entries()]
+    batches: [...batchMap.entries()]
       .map(([id, name]) => ({ id, name }))
       .sort((a, b) => a.name.localeCompare(b.name)),
     generatedAt: new Date().toISOString(),
@@ -152,15 +152,15 @@ export function buildExportModel(rows: ResponseRow[], niches: Niche[]): ExportMo
 
 export function defaultSelection(model: ExportModel): ExportSelection {
   return {
-    meta: ['website', 'email', 'campaign', 'canPost'],
+    meta: ['website', 'email', 'batch', 'canPost'],
     combos: model.combos.map((c) => c.key),
     includeCanPost: false,
     numericPrices: true,
   };
 }
 
-export function defaultHeader(campaignName?: string): string {
-  const scope = campaignName && campaignName.trim() ? campaignName.trim() : 'All campaigns';
+export function defaultHeader(batchName?: string): string {
+  const scope = batchName && batchName.trim() ? batchName.trim() : 'All batches';
   return `AdScout — ${scope} — responses export (${new Date().toLocaleDateString()})`;
 }
 
@@ -178,7 +178,7 @@ function metaValue(r: ExportRow, key: string): string {
   switch (key) {
     case 'website': return r.website;
     case 'email': return r.email;
-    case 'campaign': return r.campaign;
+    case 'batch': return r.batch;
     case 'canPost': return r.canPost;
     case 'received': return r.receivedLabel;
     default: return '';

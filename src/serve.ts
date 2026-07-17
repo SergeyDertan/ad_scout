@@ -42,7 +42,7 @@ async function main(): Promise<void> {
   const { store, email, extractor, gmailOAuth } = agent;
 
   const sendDeps = { store, email, clock, config };
-  const pollDeps = { store, email, extractor, clock };
+  const pollDeps = { store, email, extractor, clock, config };
   const fetchDeps = { store, email, clock };
 
   const rec = await runReconcile({ store, email, clock, config });

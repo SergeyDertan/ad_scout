@@ -46,14 +46,12 @@ async function main() {
 
   for (const id of toCreate) {
     const arr = groups.get(id)!;
-    // Uniform campaign in practice; fall back to the first target's campaign.
-    const campaignId = arr[0]!.campaignId;
     const createdAt = arr.reduce((min, t) => (t.createdAt < min ? t.createdAt : min), arr[0]!.createdAt);
     // The single legacy batch is 'first'; label any others by their short id.
     const name = toCreate.length === 1 ? 'first' : `legacy ${id.replace(/^batch_/, '').slice(0, 8)}`;
-    const batch: Batch = { id, campaignId, name, source: 'import', createdAt };
+    const batch: Batch = { id, name, source: 'import', createdAt };
     await store.putBatch(batch);
-    console.log(`  created batch ${id} name="${name}" campaign=${campaignId} targets=${arr.length}`);
+    console.log(`  created batch ${id} name="${name}" targets=${arr.length}`);
   }
   console.log('done');
 

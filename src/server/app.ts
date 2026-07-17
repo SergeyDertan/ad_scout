@@ -2,19 +2,18 @@
 // port (overview.md §11) and serves the static web UI from `webDir`.
 //
 //   GET    /api/status
-//   GET    /api/campaigns
-//   POST   /api/campaigns               { name, advertised{url,description}, topic?, format?, inquiryFields? }
+//   POST   /api/preview                 { websiteUrl?, advertised?{url,description}, contactName?, notes? }
 //   GET    /api/accounts
 //   POST   /api/accounts                { email, senderName, credentialRef?, providerType?, maxDailyLimit?, signature?, status? }
 //   PATCH  /api/accounts/:id            { dailyLimitOverride?, maxDailyLimit?, senderName?, signature? }
 //   POST   /api/accounts/:id/pause | /resume
 //   DELETE /api/accounts/:id
-//   GET    /api/targets?status=&campaignId=
-//   POST   /api/targets                 { websiteUrl, contactEmail, campaignId?, contactName?, notes?, batchId? }
+//   GET    /api/targets?status=&batchId=
+//   POST   /api/targets                 { websiteUrl, contactEmail, contactName?, notes?, batchId? }
 //   DELETE /api/targets/:id
 //   GET    /api/batches                 → batches + live { count, byStatus }
-//   POST   /api/batches                 { campaignId, name? } → creates an import batch
-//   GET    /api/responses?campaignId=
+//   POST   /api/batches                 { name?, advertised?{url,description} } → creates an import batch
+//   GET    /api/responses?batchId=
 //   GET    /api/suppressions
 //   POST   /api/run/send | /api/run/poll | /api/run/fetch
 //   GET    /api/stream                  (Server-Sent Events: store change feed)
@@ -30,7 +29,6 @@ import type {
   AccountStatus,
   Batch,
   CanPost,
-  Campaign,
   ProviderType,
   Target,
   TargetStatus,
@@ -38,6 +36,7 @@ import type {
 import { allNiches, categorizeTopic } from '../domain/niches';
 import { accountSendState } from '../domain/account-state';
 import { assembleResult, type RawExtraction, type RawOffer } from '../domain/extraction';
+import { resolveProfile } from '../domain/pitch';
 import type { Clock } from '../lib/clock';
 import { newId } from '../lib/ids';
 import { draftEmail } from '../services/drafter';
@@ -156,8 +155,8 @@ async function handle(
   if (seg[0] === 'api') {
     // GET /api/status
     if (method === 'GET' && seg[1] === 'status' && seg.length === 2) {
-      const campaignId = url.searchParams.get('campaignId') || undefined;
-      const targets = await store.listTargets(campaignId ? { campaignId } : undefined);
+      const batchId = url.searchParams.get('batchId') || undefined;
+      const targets = await store.listTargets(batchId ? { batchId } : undefined);
       const byStatus: Record<string, number> = {};
       for (const t of targets) byStatus[t.status] = (byStatus[t.status] ?? 0) + 1;
 
@@ -217,9 +216,7 @@ async function handle(
         const r = t.result;
         if (!r) continue;
         const offers = r.offers ?? [];
-        const hasPrice =
-          offers.some((o) => o.price?.amount != null) ||
-          Object.values(r.fields ?? {}).some((f) => f?.type === 'price' && f.amount != null);
+        const hasPrice = offers.some((o) => o.price?.amount != null);
         if (hasPrice) outcomes.priced++;
         if (hasPrice || offers.length > 0) outcomes.informative++;
         if (r.canPost === 'yes' || offers.some((o) => o.canPost === 'yes')) outcomes.postingYes++;
@@ -240,53 +237,21 @@ async function handle(
       });
     }
 
-    // GET /api/campaigns
-    if (method === 'GET' && seg[1] === 'campaigns' && seg.length === 2) {
-      return sendJson(res, 200, await store.listCampaigns());
-    }
-
-    // PATCH /api/campaigns/:id — update name, advertised, topic, format, inquiryFields
-    if (method === 'PATCH' && seg[1] === 'campaigns' && seg[2] && seg.length === 3) {
-      const campaign = await store.getCampaign(seg[2]);
-      if (!campaign) return sendJson(res, 404, { error: 'campaign not found' });
-      const body = (await readJsonBody(req)) as Record<string, unknown>;
-      const updated = { ...campaign };
-      if (str(body.name)) updated.name = str(body.name)!;
-      if (str(body.topic) !== undefined) updated.topic = str(body.topic) ?? '';
-      if (str(body.format) !== undefined) updated.format = str(body.format) ?? '';
-      if (body.advertised && typeof body.advertised === 'object') {
-        const adv = body.advertised as Record<string, unknown>;
-        updated.advertised = {
-          url: str(adv.url) ?? updated.advertised.url,
-          description: str(adv.description) ?? updated.advertised.description,
-        };
-      }
-      if (Array.isArray(body.inquiryFields)) {
-        updated.inquiryFields = body.inquiryFields as never;
-      }
-      return sendJson(res, 200, await store.putCampaign(updated));
-    }
-
-    // DELETE /api/campaigns/:id
-    if (method === 'DELETE' && seg[1] === 'campaigns' && seg[2] && seg.length === 3) {
-      const campaign = await store.getCampaign(seg[2]);
-      if (!campaign) return sendJson(res, 404, { error: 'campaign not found' });
-      await store.deleteCampaign(campaign.id);
-      return sendJson(res, 200, { ok: true, id: campaign.id });
-    }
-
-    // POST /api/campaigns/:id/preview — render email for a hypothetical target
-    if (method === 'POST' && seg[1] === 'campaigns' && seg[2] && seg[3] === 'preview') {
-      const campaign = await store.getCampaign(seg[2]);
-      if (!campaign) return sendJson(res, 404, { error: 'campaign not found' });
+    // POST /api/preview — render the outreach email from the global pitch profile
+    // (optionally overriding the advertised site, as a batch would) + a fake target.
+    if (method === 'POST' && seg[1] === 'preview' && seg.length === 2) {
       const body = (await readJsonBody(req)) as Record<string, unknown>;
       const websiteUrl = str(body.websiteUrl) ?? 'example.com';
       const accounts = await store.listAccounts();
       const account = accounts.find((a) => a.status === 'active') ?? accounts[0];
       if (!account) return sendJson(res, 400, { error: 'no accounts configured' });
+      const adv = (body.advertised ?? {}) as Record<string, unknown>;
+      const advertised = str(adv.url)
+        ? { url: str(adv.url)!, description: str(adv.description) ?? '' }
+        : undefined;
+      const profile = resolveProfile(advertised ? { advertised } : undefined, deps.config.pitch);
       const fakeTarget: Target = {
         id: 'preview',
-        campaignId: campaign.id,
         websiteUrl,
         contactEmail: str(body.contactEmail) ?? `contact@${websiteUrl}`,
         contactName: str(body.contactName),
@@ -295,34 +260,13 @@ async function handle(
         followUpCount: 0,
         createdAt: deps.clock.now().toISOString(),
       };
-      const draft = draftEmail(campaign, account, fakeTarget);
+      const draft = draftEmail(profile, account, fakeTarget);
       return sendJson(res, 200, {
         subject: draft.subject,
         body: draft.body,
         senderName: account.senderName,
         senderEmail: account.email,
       });
-    }
-
-    // POST /api/campaigns — create a campaign (targets attach to one)
-    if (method === 'POST' && seg[1] === 'campaigns' && seg.length === 2) {
-      const body = (await readJsonBody(req)) as Record<string, unknown>;
-      const name = str(body.name);
-      const advertised = (body.advertised ?? {}) as Record<string, unknown>;
-      const url = str(advertised.url);
-      if (!name || !url) {
-        return sendJson(res, 400, { error: 'name and advertised.url are required' });
-      }
-      const campaign: Campaign = {
-        id: newId('campaign'),
-        name,
-        advertised: { url, description: str(advertised.description) ?? '' },
-        topic: str(body.topic) ?? '',
-        format: str(body.format) ?? 'article',
-        inquiryFields: Array.isArray(body.inquiryFields) ? (body.inquiryFields as never) : [],
-        createdAt: deps.clock.now().toISOString(),
-      };
-      return sendJson(res, 201, await store.putCampaign(campaign));
     }
 
     // GET /api/accounts — each account enriched with live send state (sent
@@ -421,12 +365,12 @@ async function handle(
       }
     }
 
-    // GET /api/targets?status=&campaignId=
+    // GET /api/targets?status=&batchId=
     if (method === 'GET' && seg[1] === 'targets' && seg.length === 2) {
       const status = url.searchParams.get('status') as TargetStatus | null;
-      const campaignId = url.searchParams.get('campaignId') ?? undefined;
+      const batchId = url.searchParams.get('batchId') ?? undefined;
       return sendJson(res, 200, await store.listTargets(
-        (status || campaignId) ? { ...(status ? { status } : {}), ...(campaignId ? { campaignId } : {}) } : undefined
+        (status || batchId) ? { ...(status ? { status } : {}), ...(batchId ? { batchId } : {}) } : undefined
       ));
     }
 
@@ -448,26 +392,16 @@ async function handle(
       if (!websiteUrl || !contactEmail) {
         return sendJson(res, 400, { error: 'websiteUrl and contactEmail are required' });
       }
-      // Resolve the campaign: explicit id, else the only/first campaign.
-      let campaignId = str(body.campaignId);
-      const campaigns = await store.listCampaigns();
-      if (campaignId) {
-        if (!campaigns.some((c) => c.id === campaignId)) {
-          return sendJson(res, 400, { error: 'unknown campaignId' });
-        }
-      } else {
-        campaignId = campaigns[0]?.id;
-        if (!campaignId) {
-          return sendJson(res, 400, { error: 'no campaign exists — create one first' });
-        }
-      }
       // A bulk import creates its batch up front (POST /api/batches) and passes
       // the id on every row. A lone add omits it → mint a one-off 'manual' batch.
       let batchId = str(body.batchId);
-      if (!batchId) {
+      if (batchId) {
+        if (!(await store.getBatch(batchId))) {
+          return sendJson(res, 400, { error: 'unknown batchId' });
+        }
+      } else {
         const batch: Batch = {
           id: newId('batch'),
-          campaignId,
           source: 'manual',
           createdAt: deps.clock.now().toISOString(),
         };
@@ -476,7 +410,6 @@ async function handle(
       }
       const target: Target = {
         id: newId('target'),
-        campaignId,
         batchId,
         websiteUrl,
         contactEmail,
@@ -534,18 +467,19 @@ async function handle(
     }
 
     // POST /api/batches — create a named import batch; the bulk-import client
-    // calls this first, then posts each target with the returned id.
+    // calls this first, then posts each target with the returned id. An optional
+    // `advertised` overrides the global advertised site for this import's emails.
     if (method === 'POST' && seg[1] === 'batches' && seg.length === 2) {
       const body = (await readJsonBody(req)) as Record<string, unknown>;
-      const campaignId = str(body.campaignId);
-      if (!campaignId || !(await store.getCampaign(campaignId))) {
-        return sendJson(res, 400, { error: 'valid campaignId is required' });
-      }
+      const adv = (body.advertised ?? {}) as Record<string, unknown>;
+      const advertised = str(adv.url)
+        ? { url: str(adv.url)!, description: str(adv.description) ?? '' }
+        : undefined;
       const batch: Batch = {
         id: newId('batch'),
-        campaignId,
         ...(str(body.name) ? { name: str(body.name) } : {}),
         source: 'import',
+        ...(advertised ? { advertised } : {}),
         createdAt: deps.clock.now().toISOString(),
       };
       return sendJson(res, 201, await store.putBatch(batch));
@@ -585,24 +519,17 @@ async function handle(
         : [];
 
       const target = reply.targetId ? await store.getTarget(reply.targetId) : undefined;
-      const campaign = target ? await store.getCampaign(target.campaignId) : undefined;
       const niches = allNiches(await store.listNiches());
-      // Preserve the AI's prose/field answers; only the offers + optOut are edited.
+      // Preserve the AI's prose; only the offers + optOut are edited.
       const raw: RawExtraction = {
         optOut: Boolean(body.optOut),
         offers: rawOffers,
         reasoning: reply.parsed?.reasoning ?? 'Edited by hand.',
         ...(reply.parsed?.conditions ? { conditions: reply.parsed.conditions } : {}),
         ...(reply.parsed?.notes ? { notes: reply.parsed.notes } : {}),
-        fields: Object.fromEntries(
-          Object.entries(reply.parsed?.fields ?? {}).map(([k, v]) => [
-            k,
-            { raw: typeof (v as { raw?: unknown })?.raw === 'string' ? (v as { raw: string }).raw : '' },
-          ]),
-        ),
       };
-      const requestedCategory = campaign ? categorizeTopic(campaign.topic, niches) : undefined;
-      const { result, discovered } = assembleResult(campaign?.inquiryFields ?? [], raw, {
+      const requestedCategory = categorizeTopic(deps.config.pitch.topic, niches);
+      const { result, discovered } = assembleResult(raw, {
         niches,
         ...(requestedCategory ? { requestedCategory } : {}),
       });
@@ -624,22 +551,22 @@ async function handle(
       return sendJson(res, 200, reply);
     }
 
-    // GET /api/responses?campaignId= — replies + parsed result, enriched with target website + campaign
+    // GET /api/responses?batchId= — replies + parsed result, enriched with target website + batch
     if (method === 'GET' && seg[1] === 'responses' && seg.length === 2) {
-      const campaignId = url.searchParams.get('campaignId') ?? undefined;
+      const batchId = url.searchParams.get('batchId') ?? undefined;
       const replies = await store.listReplies();
       const targets = new Map((await store.listTargets()).map((t) => [t.id, t]));
-      const campaigns = new Map((await store.listCampaigns()).map((c) => [c.id, c.name]));
+      const batches = new Map((await store.listBatches()).map((b) => [b.id, b.name]));
       let out = replies.map((r) => {
         const target = r.targetId ? targets.get(r.targetId) : undefined;
         return {
           ...r,
           website: target?.websiteUrl,
-          campaignId: target?.campaignId,
-          campaignName: target?.campaignId ? campaigns.get(target.campaignId) : undefined,
+          batchId: target?.batchId,
+          batchName: target?.batchId ? batches.get(target.batchId) : undefined,
         };
       });
-      if (campaignId) out = out.filter((r) => r.campaignId === campaignId);
+      if (batchId) out = out.filter((r) => r.batchId === batchId);
       return sendJson(res, 200, out);
     }
 

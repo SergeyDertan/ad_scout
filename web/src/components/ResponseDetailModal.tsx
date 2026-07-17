@@ -3,7 +3,6 @@ import {
   Box,
   Button,
   CloseButton,
-  Code,
   Dialog,
   Heading,
   HStack,
@@ -154,7 +153,6 @@ export function ResponseDetailModal({
   onEdit: () => void;
 }) {
   const p = row.parsed;
-  const fields = Object.entries(p?.fields ?? {});
   const reviewReasons = row.review ?? [];
 
   return (
@@ -171,7 +169,7 @@ export function ResponseDetailModal({
                 </HStack>
                 <Text fontSize="xs" color="fg.muted">
                   {row.website ?? 'no linked website'}
-                  {row.campaignName ? ` · ${row.campaignName}` : ''}
+                  {row.batchName ? ` · ${row.batchName}` : ''}
                   {row.receivedAt ? ` · ${new Date(row.receivedAt).toLocaleString()}` : ''}
                 </Text>
               </VStack>
@@ -225,22 +223,6 @@ export function ResponseDetailModal({
                 <Section title="Niche prices">
                   <OffersTable offers={p?.offers} />
                 </Section>
-
-                {/* Custom inquiry fields */}
-                {fields.length > 0 && (
-                  <Section title="Extracted fields">
-                    <VStack align="stretch" gap={1.5}>
-                      {fields.map(([k, v]) => (
-                        <HStack key={k} gap={3} align="start">
-                          <Text fontSize="xs" color="fg.muted" minW="140px" fontWeight="medium">{k}</Text>
-                          <Code bg="transparent" px={0} fontSize="xs">
-                            {typeof v === 'string' ? v : JSON.stringify(v)}
-                          </Code>
-                        </HStack>
-                      ))}
-                    </VStack>
-                  </Section>
-                )}
 
                 <Attachments attachments={row.attachments} />
 

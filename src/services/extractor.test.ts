@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { Extractor } from './extractor';
 import type { LlmJsonRequest, LlmProvider, LlmTextRequest } from '../ports/llm-provider';
-import type { Campaign, EmailAttachment } from '../domain/types';
+import type { EmailAttachment, PitchProfile } from '../domain/types';
 
 // A spy LLM that records the last generateJson request and returns a minimal
 // valid RawExtraction so assembleResult doesn't throw.
@@ -27,14 +27,10 @@ class SpyLlm implements LlmProvider {
   }
 }
 
-const campaign: Campaign = {
-  id: 'c1',
-  name: 'Test',
+const profile: PitchProfile = {
   advertised: { url: 'https://advertiser.example', description: 'x' },
   topic: 'casino',
   format: 'guest post',
-  inquiryFields: [{ key: 'price', question: 'What is the price?', type: 'price' }],
-  createdAt: '2026-01-01T00:00:00.000Z',
 };
 
 const pdf: EmailAttachment = {
@@ -46,7 +42,7 @@ const pdf: EmailAttachment = {
 
 test('research-capable provider gets attachments + webfetch when reply has a link and a file', async () => {
   const llm = new SpyLlm(true);
-  await new Extractor(llm).extract(campaign, 'prices here: https://site.example/rates', [], [pdf]);
+  await new Extractor(llm).extract(profile, 'prices here: https://site.example/rates', [], [pdf]);
   assert.equal(llm.last?.allowWebFetch, true);
   assert.equal(llm.last?.attachments?.length, 1);
   assert.equal(llm.last?.attachments?.[0]?.filename, 'rates.pdf');
@@ -55,7 +51,7 @@ test('research-capable provider gets attachments + webfetch when reply has a lin
 
 test('no link in the reply → WebFetch stays off', async () => {
   const llm = new SpyLlm(true);
-  await new Extractor(llm).extract(campaign, 'we can do $50 per post', [], []);
+  await new Extractor(llm).extract(profile, 'we can do $50 per post', [], []);
   assert.equal(llm.last?.allowWebFetch, undefined);
   assert.equal(llm.last?.attachments, undefined);
   assert.doesNotMatch(llm.last?.prompt ?? '', /RESEARCH/);
@@ -63,7 +59,7 @@ test('no link in the reply → WebFetch stays off', async () => {
 
 test('non-research provider never receives attachments or webfetch', async () => {
   const llm = new SpyLlm(false);
-  await new Extractor(llm).extract(campaign, 'prices: https://site.example/rates', [], [pdf]);
+  await new Extractor(llm).extract(profile, 'prices: https://site.example/rates', [], [pdf]);
   assert.equal(llm.last?.allowWebFetch, undefined);
   assert.equal(llm.last?.attachments, undefined);
   assert.doesNotMatch(llm.last?.prompt ?? '', /RESEARCH/);
@@ -90,7 +86,7 @@ test('a .pdf link is downloaded and passed as an attachment, not WebFetch', asyn
     return pdfFetch()(url);
   }) as unknown as typeof fetch;
   await new Extractor(llm, stub).extract(
-    campaign,
+    profile,
     'Our rates are in this PDF: https://pub.example/rates%20list.pdf thanks!',
     [],
     [],
@@ -108,7 +104,7 @@ test('a failed PDF download is flagged for review, not silently WebFetched', asy
     throw new Error('network down');
   }) as unknown as typeof fetch;
   const out = await new Extractor(llm, failing).extract(
-    campaign,
+    profile,
     'PDF: https://pub.example/rates.pdf',
     [],
     [],
@@ -128,7 +124,7 @@ test('non-PDF bytes at a .pdf URL are rejected (magic-byte check) and flagged', 
     },
   })) as unknown as typeof fetch;
   const out = await new Extractor(llm, htmlAtPdfUrl).extract(
-    campaign,
+    profile,
     'PDF: https://pub.example/fake.pdf',
     [],
     [],
@@ -146,7 +142,7 @@ test('an unreadable attachment type is flagged for review', async () => {
     size: 3,
     contentBase64: Buffer.from('abc').toString('base64'),
   };
-  const out = await new Extractor(llm).extract(campaign, 'see attached', [], [xlsx]);
+  const out = await new Extractor(llm).extract(profile, 'see attached', [], [xlsx]);
   assert.equal(llm.last?.attachments, undefined); // not sent to the model
   assert.equal(out.review.length, 1);
   assert.match(out.review[0], /unsupported attachment type/i);
@@ -155,7 +151,7 @@ test('an unreadable attachment type is flagged for review', async () => {
 test('a non-research provider flags external content it cannot reach', async () => {
   const llm = new SpyLlm(false);
   const out = await new Extractor(llm).extract(
-    campaign,
+    profile,
     'rates: https://pub.example/list.pdf',
     [],
     [pdf],

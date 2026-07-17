@@ -8,12 +8,12 @@
  * baked into the embedded normalized model, so this stays small. */
 (function () {
   var EXPORT = window.__EXPORT__ || {};
-  var model = EXPORT.model || { rows: [], combos: [], niches: [], campaigns: [], generatedAt: '' };
+  var model = EXPORT.model || { rows: [], combos: [], niches: [], batches: [], generatedAt: '' };
 
   var META_COLUMNS = [
     { key: 'website', label: 'Website' },
     { key: 'email', label: 'Contact email' },
-    { key: 'campaign', label: 'Campaign' },
+    { key: 'batch', label: 'Batch' },
     { key: 'canPost', label: 'Can post' },
     { key: 'received', label: 'Received' },
   ];
@@ -21,9 +21,9 @@
   var PREVIEW_LIMIT = 200;
 
   // ---- state ----
-  var filters = { search: '', campaign: '', niche: '', canpost: '' };
+  var filters = { search: '', batch: '', niche: '', canpost: '' };
   var selection = {
-    meta: new Set(['website', 'email', 'campaign', 'canPost']),
+    meta: new Set(['website', 'email', 'batch', 'canPost']),
     combos: new Set(model.combos.map(function (c) { return c.key; })),
     includeCanPost: false,
     numericPrices: true,
@@ -52,7 +52,7 @@
 
   function rowMatches(r) {
     if (filters.search && r.search.indexOf(filters.search) === -1) return false;
-    if (filters.campaign && r.campaignId !== filters.campaign) return false;
+    if (filters.batch && r.batchId !== filters.batch) return false;
     if (filters.niche || filters.canpost) {
       var keys = Object.keys(r.cells);
       var hit = keys.some(function (k) {
@@ -73,7 +73,7 @@
     switch (key) {
       case 'website': return r.website;
       case 'email': return r.email;
-      case 'campaign': return r.campaign;
+      case 'batch': return r.batch;
       case 'canPost': return r.canPost;
       case 'received': return r.receivedLabel;
       default: return '';
@@ -131,10 +131,10 @@
   }
 
   function renderFilters() {
-    var camp = $('campaign');
-    camp.appendChild(opt('', 'All campaigns'));
-    model.campaigns.forEach(function (c) { camp.appendChild(opt(c.id, c.name)); });
-    if (model.campaigns.length < 2) camp.style.display = 'none';
+    var camp = $('batch');
+    camp.appendChild(opt('', 'All batches'));
+    model.batches.forEach(function (c) { camp.appendChild(opt(c.id, c.name)); });
+    if (model.batches.length < 2) camp.style.display = 'none';
 
     var niche = $('niche');
     niche.appendChild(opt('', 'All niches'));
@@ -265,12 +265,12 @@
 
     $('title').addEventListener('input', function (e) { title = e.target.value; });
     $('search').addEventListener('input', function (e) { filters.search = e.target.value.trim().toLowerCase(); render(); });
-    $('campaign').addEventListener('change', function (e) { filters.campaign = e.target.value; render(); });
+    $('batch').addEventListener('change', function (e) { filters.batch = e.target.value; render(); });
     $('niche').addEventListener('change', function (e) { filters.niche = e.target.value; render(); });
     $('canpost').addEventListener('change', function (e) { filters.canpost = e.target.value; render(); });
     $('reset').addEventListener('click', function () {
-      filters = { search: '', campaign: '', niche: '', canpost: '' };
-      $('search').value = ''; $('campaign').value = ''; $('niche').value = ''; $('canpost').value = '';
+      filters = { search: '', batch: '', niche: '', canpost: '' };
+      $('search').value = ''; $('batch').value = ''; $('niche').value = ''; $('canpost').value = '';
       render();
     });
     $('optCanPost').addEventListener('change', function (e) { selection.includeCanPost = e.target.checked; render(); });

@@ -5,14 +5,12 @@ import {
   Heading,
   HStack,
   Input,
-  NativeSelect,
   Text,
   Textarea,
   VStack,
 } from '@chakra-ui/react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { api } from '../api';
-import type { Campaign } from '../types';
 import { Panel } from './Panel';
 import { toaster, toastError } from './Toaster';
 
@@ -102,23 +100,13 @@ export function BulkImportForm({
 }) {
   const [text, setText] = useState('');
   const [name, setName] = useState('');
+  const [advUrl, setAdvUrl] = useState('');
+  const [advDescription, setAdvDescription] = useState('');
   const [fileRows, setFileRows] = useState<ParsedRow[] | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
-  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [campaignId, setCampaignId] = useState('');
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    api
-      .listCampaigns()
-      .then((cs) => {
-        setCampaigns(cs);
-        setCampaignId(cs[0]?.id ?? '');
-      })
-      .catch((e) => toastError('Could not load campaigns', e));
-  }, []);
 
   const textRows = useMemo(() => parseLines(text), [text]);
   const rows = fileRows ?? textRows;
@@ -147,13 +135,17 @@ export function BulkImportForm({
   };
 
   const submit = async () => {
-    if (rows.length === 0 || !campaignId) return;
+    if (rows.length === 0) return;
     setBusy(true);
     setProgress({ done: 0, total: rows.length });
-    // Create the batch record first, then stamp every row with its id.
+    // Create the batch record first, then stamp every row with its id. An
+    // advertised URL here overrides the global default for this import's emails.
     let batchId: string;
     try {
-      const batch = await api.createBatch({ campaignId, name: name.trim() || undefined });
+      const advertised = advUrl.trim()
+        ? { url: advUrl.trim(), description: advDescription.trim() || undefined }
+        : undefined;
+      const batch = await api.createBatch({ name: name.trim() || undefined, advertised });
       batchId = batch.id;
     } catch (err) {
       setBusy(false);
@@ -165,7 +157,7 @@ export function BulkImportForm({
     let fail = 0;
     for (const row of rows) {
       try {
-        await api.createTarget({ ...row, campaignId, batchId });
+        await api.createTarget({ ...row, batchId });
         ok++;
       } catch {
         fail++;
@@ -180,7 +172,7 @@ export function BulkImportForm({
       toaster.create({
         type: 'warning',
         title: `${ok} queued, ${fail} failed`,
-        description: 'Check for duplicate emails or missing campaigns.',
+        description: 'Check for duplicate emails in the import.',
       });
     }
     onCreated();
@@ -198,20 +190,6 @@ export function BulkImportForm({
 
       <HStack gap={4} mb={4} align="flex-start" flexWrap="wrap">
         <Field.Root maxW="xs">
-          <Field.Label>Campaign</Field.Label>
-          <NativeSelect.Root>
-            <NativeSelect.Field value={campaignId} onChange={(e) => setCampaignId(e.target.value)}>
-              {campaigns.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </NativeSelect.Field>
-            <NativeSelect.Indicator />
-          </NativeSelect.Root>
-        </Field.Root>
-
-        <Field.Root maxW="xs">
           <Field.Label>Batch name</Field.Label>
           <Input
             value={name}
@@ -219,6 +197,25 @@ export function BulkImportForm({
             placeholder="e.g. Casino sites — July"
           />
           <Field.HelperText>Labels this import in the Batches tab.</Field.HelperText>
+        </Field.Root>
+
+        <Field.Root maxW="xs">
+          <Field.Label>Advertised site (optional)</Field.Label>
+          <Input
+            value={advUrl}
+            onChange={(e) => setAdvUrl(e.target.value)}
+            placeholder="leave blank for the global default"
+          />
+          <Field.HelperText>Overrides the advertised site for this import’s emails.</Field.HelperText>
+        </Field.Root>
+
+        <Field.Root maxW="xs">
+          <Field.Label>Advertised description (optional)</Field.Label>
+          <Input
+            value={advDescription}
+            onChange={(e) => setAdvDescription(e.target.value)}
+            placeholder="e.g. a rapidly growing casino platform"
+          />
         </Field.Root>
       </HStack>
 
@@ -303,7 +300,7 @@ export function BulkImportForm({
           colorPalette="brand"
           onClick={submit}
           loading={busy}
-          disabled={rows.length === 0 || !campaignId}
+          disabled={rows.length === 0}
           loadingText={progress ? `${progress.done} / ${progress.total}` : undefined}
         >
           Queue {rows.length > 0 ? rows.length : ''} target{rows.length !== 1 ? 's' : ''}

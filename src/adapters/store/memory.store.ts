@@ -5,7 +5,6 @@
 import type {
   Account,
   Batch,
-  Campaign,
   Niche,
   Outreach,
   Reply,
@@ -27,7 +26,6 @@ function clone<T>(v: T): T {
 }
 
 export class MemoryStore implements Store {
-  private campaigns = new Map<string, Campaign>();
   private accounts = new Map<string, Account>();
   private targets = new Map<string, Target>();
   private batches = new Map<string, Batch>();
@@ -46,23 +44,6 @@ export class MemoryStore implements Store {
         /* a bad listener must not break a write */
       }
     }
-  }
-
-  // campaigns
-  async getCampaign(id: string) {
-    const c = this.campaigns.get(id);
-    return c ? clone(c) : undefined;
-  }
-  async putCampaign(c: Campaign) {
-    this.campaigns.set(c.id, clone(c));
-    this.emit('campaign', 'put', c.id);
-    return clone(c);
-  }
-  async listCampaigns() {
-    return [...this.campaigns.values()].map(clone);
-  }
-  async deleteCampaign(id: string) {
-    if (this.campaigns.delete(id)) this.emit('campaign', 'delete', id);
   }
 
   // accounts
@@ -104,7 +85,7 @@ export class MemoryStore implements Store {
   }
   async listTargets(filter?: TargetFilter) {
     let list = [...this.targets.values()];
-    if (filter?.campaignId) list = list.filter((t) => t.campaignId === filter.campaignId);
+    if (filter?.batchId) list = list.filter((t) => t.batchId === filter.batchId);
     if (filter?.status) list = list.filter((t) => t.status === filter.status);
     return list.map(clone);
   }

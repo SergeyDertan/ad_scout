@@ -14,10 +14,9 @@ import {
 } from '@chakra-ui/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './api';
-import type { Campaign, Status } from './types';
+import type { BatchRow, Status } from './types';
 import { useStream, type LiveState } from './hooks/useStream';
 import { AccountsView } from './components/AccountsView';
-import { CampaignsView } from './components/CampaignsView';
 import { TargetsView } from './components/TargetsView';
 import { BatchesView } from './components/BatchesView';
 import { ResponsesView } from './components/ResponsesView';
@@ -28,7 +27,6 @@ import { StatCards } from './components/StatCards';
 import {
   InboxIcon,
   LabelsIcon,
-  MegaphoneIcon,
   PlayIcon,
   ShieldIcon,
   TagIcon,
@@ -44,7 +42,6 @@ const TABS: {
   icon: ComponentType<IconProps>;
   count?: (s: Status | null) => number | undefined;
 }[] = [
-  { id: 'campaigns', label: 'Campaigns', icon: MegaphoneIcon },
   { id: 'accounts', label: 'Accounts', icon: UsersIcon, count: (s) => s?.accounts },
   { id: 'targets', label: 'Targets', icon: TargetIcon, count: (s) => s?.targets.total },
   { id: 'batches', label: 'Batches', icon: TagIcon },
@@ -93,25 +90,30 @@ function ConnectionPill({ live }: { live: LiveState }) {
 }
 
 // Per-type tick counters — each view only refetches when its data type changes.
-type Ticks = { campaign: number; account: number; target: number; reply: number; suppression: number };
-const ZERO_TICKS: Ticks = { campaign: 0, account: 0, target: 0, reply: 0, suppression: 0 };
+type Ticks = { batch: number; account: number; target: number; reply: number; suppression: number };
+const ZERO_TICKS: Ticks = { batch: 0, account: 0, target: 0, reply: 0, suppression: 0 };
+
+/** A batch's display label: its name, else a short id (manual adds are unnamed). */
+function batchLabel(b: BatchRow): string {
+  return b.name?.trim() || `batch ${b.id.replace(/^batch_/, '').slice(0, 8)}`;
+}
 
 export function App() {
-  const [tab, setTab] = useState<string>('campaigns');
+  const [tab, setTab] = useState<string>('targets');
   const [status, setStatus] = useState<Status | null>(null);
   const [statusErr, setStatusErr] = useState(false);
   const [ticks, setTicks] = useState<Ticks>(ZERO_TICKS);
-  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [statCampaign, setStatCampaign] = useState('');
+  const [batches, setBatches] = useState<BatchRow[]>([]);
+  const [statBatch, setStatBatch] = useState('');
 
-  // Keep the selected campaign in a ref so the SSE-driven refreshStatus stays
+  // Keep the selected batch in a ref so the SSE-driven refreshStatus stays
   // stable (no stream re-subscribe) while always reading the latest filter.
-  const statCampaignRef = useRef(statCampaign);
-  statCampaignRef.current = statCampaign;
+  const statBatchRef = useRef(statBatch);
+  statBatchRef.current = statBatch;
 
   const refreshStatus = useCallback(async () => {
     try {
-      setStatus(await api.status(statCampaignRef.current || undefined));
+      setStatus(await api.status(statBatchRef.current || undefined));
       setStatusErr(false);
     } catch {
       setStatusErr(true);
@@ -125,28 +127,28 @@ export function App() {
       setTicks((t) => ({ ...t, [key]: t[key] + 1 }));
     } else {
       // Unknown type — bump everything.
-      setTicks((t) => ({ campaign: t.campaign+1, account: t.account+1, target: t.target+1, reply: t.reply+1, suppression: t.suppression+1 }));
+      setTicks((t) => ({ batch: t.batch+1, account: t.account+1, target: t.target+1, reply: t.reply+1, suppression: t.suppression+1 }));
     }
   }, [refreshStatus]);
 
   const live = useStream(onChange);
 
-  // Refetch stats on mount and whenever the campaign filter changes.
+  // Refetch stats on mount and whenever the batch filter changes.
   useEffect(() => {
     void refreshStatus();
-  }, [refreshStatus, statCampaign]);
+  }, [refreshStatus, statBatch]);
 
-  // Campaign list for the stats filter; refresh when campaigns change.
+  // Batch list for the stats filter; refresh when batches or targets change.
   useEffect(() => {
-    api.listCampaigns().then(setCampaigns).catch(() => {});
-  }, [ticks.campaign]);
+    api.listBatches().then(setBatches).catch(() => {});
+  }, [ticks.batch, ticks.target]);
 
-  // A deleted campaign shouldn't stay selected in the filter.
+  // A deleted batch shouldn't stay selected in the filter.
   useEffect(() => {
-    if (statCampaign && !campaigns.some((c) => c.id === statCampaign)) {
-      setStatCampaign('');
+    if (statBatch && !batches.some((b) => b.id === statBatch)) {
+      setStatBatch('');
     }
-  }, [campaigns, statCampaign]);
+  }, [batches, statBatch]);
 
   return (
     <Box minH="100vh">
@@ -224,21 +226,22 @@ export function App() {
 
         <Flex align="center" justify="space-between" gap={3} mb={3} flexWrap="wrap">
           <Text fontSize="sm" fontWeight="semibold" color="fg.muted" textTransform="uppercase" letterSpacing="wider">
-            {statCampaign
-              ? `Statistics · ${campaigns.find((c) => c.id === statCampaign)?.name ?? ''}`
-              : 'Statistics · all campaigns'}
+            {(() => {
+              const b = batches.find((x) => x.id === statBatch);
+              return b ? `Statistics · ${batchLabel(b)}` : 'Statistics · all batches';
+            })()}
           </Text>
           <HStack gap={2} bg="bg.panel" borderWidth="1px" borderColor="border" rounded="lg" pl={3} pr={1.5} py={1}>
             <NativeSelect.Root size="sm" width="48" variant="plain">
               <NativeSelect.Field
-                value={statCampaign}
-                onChange={(e) => setStatCampaign(e.target.value)}
+                value={statBatch}
+                onChange={(e) => setStatBatch(e.target.value)}
                 fontWeight="medium"
               >
-                <option value="">all campaigns</option>
-                {campaigns.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
+                <option value="">all batches</option>
+                {batches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {batchLabel(b)}
                   </option>
                 ))}
               </NativeSelect.Field>
@@ -279,9 +282,6 @@ export function App() {
             })}
           </Tabs.List>
 
-          <Tabs.Content value="campaigns">
-            <CampaignsView tick={ticks.campaign} />
-          </Tabs.Content>
           <Tabs.Content value="accounts">
             <AccountsView tick={ticks.account} />
           </Tabs.Content>
@@ -289,7 +289,7 @@ export function App() {
             <TargetsView tick={ticks.target} />
           </Tabs.Content>
           <Tabs.Content value="batches">
-            <BatchesView tick={ticks.target} />
+            <BatchesView tick={ticks.batch + ticks.target} />
           </Tabs.Content>
           <Tabs.Content value="responses">
             <ResponsesView tick={ticks.reply} />

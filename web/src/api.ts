@@ -2,10 +2,8 @@ import type {
   Account,
   Batch,
   BatchRow,
-  Campaign,
-  InquiryField,
   NewAccount,
-  NewCampaign,
+  NewBatch,
   NewTarget,
   Niche,
   Outreach,
@@ -31,18 +29,12 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  status: (campaignId?: string) =>
-    req<Status>('/status' + (campaignId ? `?campaignId=${encodeURIComponent(campaignId)}` : '')),
+  status: (batchId?: string) =>
+    req<Status>('/status' + (batchId ? `?batchId=${encodeURIComponent(batchId)}` : '')),
 
-  // campaigns
-  listCampaigns: () => req<Campaign[]>('/campaigns'),
-  createCampaign: (body: NewCampaign) =>
-    req<Campaign>('/campaigns', { method: 'POST', body: JSON.stringify(body) }),
-  patchCampaign: (id: string, body: { inquiryFields?: InquiryField[]; name?: string; topic?: string; format?: string; advertised?: { url: string; description?: string } }) =>
-    req<Campaign>(`/campaigns/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  deleteCampaign: (id: string) => req<{ ok: boolean }>(`/campaigns/${id}`, { method: 'DELETE' }),
-  previewEmail: (campaignId: string, body: { websiteUrl?: string; contactEmail?: string; contactName?: string; notes?: string }) =>
-    req<{ subject: string; body: string; senderName: string; senderEmail: string }>(`/campaigns/${campaignId}/preview`, { method: 'POST', body: JSON.stringify(body) }),
+  // outreach email preview (rendered from the global pitch profile)
+  previewEmail: (body: { websiteUrl?: string; advertised?: { url: string; description?: string }; contactEmail?: string; contactName?: string; notes?: string }) =>
+    req<{ subject: string; body: string; senderName: string; senderEmail: string }>('/preview', { method: 'POST', body: JSON.stringify(body) }),
 
   // accounts
   listAccounts: () => req<Account[]>('/accounts'),
@@ -57,10 +49,10 @@ export const api = {
   getOAuthUrl: (accountId: string) => req<{ authUrl: string }>(`/oauth/start?accountId=${accountId}`),
 
   // targets
-  listTargets: (status?: TargetStatus | '', campaignId?: string) => {
+  listTargets: (status?: TargetStatus | '', batchId?: string) => {
     const params = new URLSearchParams();
     if (status) params.set('status', status);
-    if (campaignId) params.set('campaignId', campaignId);
+    if (batchId) params.set('batchId', batchId);
     const qs = params.toString();
     return req<Target[]>('/targets' + (qs ? `?${qs}` : ''));
   },
@@ -72,7 +64,7 @@ export const api = {
 
   // batches
   listBatches: () => req<BatchRow[]>('/batches'),
-  createBatch: (body: { campaignId: string; name?: string }) =>
+  createBatch: (body: NewBatch) =>
     req<Batch>('/batches', { method: 'POST', body: JSON.stringify(body) }),
 
   deleteReply: (id: string) => req<{ ok: boolean }>(`/replies/${id}`, { method: 'DELETE' }),
@@ -86,8 +78,8 @@ export const api = {
   ) => req<ResponseRow>(`/replies/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
 
   // read-only feeds
-  listResponses: (campaignId?: string) =>
-    req<ResponseRow[]>('/responses' + (campaignId ? `?campaignId=${encodeURIComponent(campaignId)}` : '')),
+  listResponses: (batchId?: string) =>
+    req<ResponseRow[]>('/responses' + (batchId ? `?batchId=${encodeURIComponent(batchId)}` : '')),
   listSuppressions: () => req<Suppression[]>('/suppressions'),
   listNiches: () => req<Niche[]>('/niches'),
 

@@ -6,11 +6,12 @@
 import { remainingToday } from '../domain/limits';
 import type {
   Account,
-  Campaign,
   Outreach,
   OutreachKind,
+  PitchProfile,
   Target,
 } from '../domain/types';
+import { resolveProfile } from '../domain/pitch';
 import type { Clock } from '../lib/clock';
 import { describeError } from '../lib/errors';
 import { newId, newMessageId } from '../lib/ids';
@@ -42,14 +43,13 @@ export interface SendOpts {
 
 interface WorkItem {
   target: Target;
-  campaign: Campaign;
+  profile: PitchProfile;
   kind: OutreachKind;
   sequenceNo: number;
 }
 
-function isFollowUpDue(target: Target, campaign: Campaign, now: Date): boolean {
-  const policy = campaign.followUp;
-  if (!policy) return false;
+function isFollowUpDue(target: Target, config: Config, now: Date): boolean {
+  const policy = config.followUp;
   if (target.status !== 'contacted') return false; // a reply/bounce/opt-out moves it off 'contacted'
   if (target.followUpCount >= policy.maxFollowUps) return false;
   if (!target.lastOutreachAt) return false;
@@ -86,20 +86,20 @@ export async function runSendPass(deps: SendDeps, opts: SendOpts = {}): Promise<
   if (caps.length === 0) return report;
 
   const accountById = new Map(accounts.map((a) => [a.id, a] as const));
-  const campaigns = await store.listCampaigns();
-  const campaignById = new Map(campaigns.map((c) => [c.id, c] as const));
+  const batches = await store.listBatches();
+  const batchById = new Map(batches.map((b) => [b.id, b] as const));
 
-  // Build the work queue: follow-ups due first, then pending targets.
+  // Build the work queue: follow-ups due first, then pending targets. The pitch
+  // profile is the target's batch (advertised override) layered on global config.
   const followUps: WorkItem[] = [];
   const initials: WorkItem[] = [];
   for (const t of await store.listTargets()) {
-    const campaign = campaignById.get(t.campaignId);
-    if (!campaign) continue;
     if (await store.isSuppressed(t.contactEmail)) continue;
-    if (config.followUpsEnabled && isFollowUpDue(t, campaign, now)) {
-      followUps.push({ target: t, campaign, kind: 'followup', sequenceNo: t.followUpCount + 1 });
+    const profile = resolveProfile(t.batchId ? batchById.get(t.batchId) : undefined, config.pitch);
+    if (config.followUpsEnabled && isFollowUpDue(t, config, now)) {
+      followUps.push({ target: t, profile, kind: 'followup', sequenceNo: t.followUpCount + 1 });
     } else if (t.status === 'pending') {
-      initials.push({ target: t, campaign, kind: 'initial', sequenceNo: 0 });
+      initials.push({ target: t, profile, kind: 'initial', sequenceNo: 0 });
     }
   }
   const queue = [...followUps, ...initials];
@@ -124,7 +124,7 @@ async function sendOne(
   report: SendReport,
 ): Promise<void> {
   const { store, email } = deps;
-  const { target, campaign, kind, sequenceNo } = item;
+  const { target, profile, kind, sequenceNo } = item;
 
   // Idempotency: never double-send the same (target, kind, seq).
   const existing = await store.listOutreaches({ targetId: target.id });
@@ -134,7 +134,7 @@ async function sendOne(
   }
 
   // Draft locally (no network), then reserve (consume the slot), then send.
-  const { subject, body } = draftEmail(campaign, account, target);
+  const { subject, body } = draftEmail(profile, account, target);
   const rfcMessageId = newMessageId();
   const nowIso = now.toISOString();
 

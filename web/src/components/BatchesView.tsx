@@ -1,14 +1,15 @@
-import { Badge, Box, HStack, Text } from '@chakra-ui/react';
-import { useCallback, useMemo } from 'react';
+import { Badge, Box, Button, HStack, Text } from '@chakra-ui/react';
+import { useCallback, useState } from 'react';
 import { api } from '../api';
-import type { BatchRow, Campaign, TargetStatus } from '../types';
+import type { BatchRow, TargetStatus } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { Empty } from './Empty';
+import { BatchPreviewDialog } from './BatchPreviewDialog';
 import { useResource } from '../hooks/useResource';
 import { TagIcon } from './icons';
 
-// Batch | Campaign | Targets | Status breakdown | Started
-const COLS = '1.3fr 1fr 76px 1.9fr 150px';
+// Batch | Advertised | Targets | Status breakdown | Started | Actions
+const COLS = '1.3fr 1fr 76px 1.7fr 150px 92px';
 
 const STATUS_ORDER: TargetStatus[] = [
   'pending', 'reserved', 'contacted', 'replied', 'needs_review', 'bounced', 'excluded',
@@ -29,13 +30,7 @@ export function BatchesView({ tick }: { tick: number }) {
     useCallback(() => api.listBatches(), []),
     tick,
   );
-  const { rows: campaigns } = useResource(useCallback(() => api.listCampaigns(), []), tick);
-
-  const campaignNames = useMemo(() => {
-    const m: Record<string, string> = {};
-    for (const c of campaigns as Campaign[]) m[c.id] = c.name;
-    return m;
-  }, [campaigns]);
+  const [previewBatch, setPreviewBatch] = useState<BatchRow | null>(null);
 
   if (error) return <Text color="red.fg" fontSize="sm" pt={4}>{error}</Text>;
 
@@ -77,10 +72,11 @@ export function BatchesView({ tick }: { tick: number }) {
             letterSpacing="wide"
           >
             <Text>Batch</Text>
-            <Text>Campaign</Text>
+            <Text>Advertised</Text>
             <Text textAlign="center">Targets</Text>
             <Text>Status breakdown</Text>
             <Text>Started</Text>
+            <Text textAlign="end">Actions</Text>
           </Box>
 
           {rows.map((b, i) => (
@@ -119,8 +115,14 @@ export function BatchesView({ tick }: { tick: number }) {
                 )}
               </HStack>
 
-              <Text color="fg.muted" overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
-                {campaignNames[b.campaignId] ?? '—'}
+              <Text
+                color={b.advertised ? 'fg.muted' : 'fg.subtle'}
+                overflow="hidden"
+                textOverflow="ellipsis"
+                whiteSpace="nowrap"
+                title={b.advertised?.url}
+              >
+                {b.advertised?.url ?? 'global default'}
               </Text>
 
               <Text textAlign="center" fontWeight="medium">{b.count}</Text>
@@ -140,9 +142,19 @@ export function BatchesView({ tick }: { tick: number }) {
               <Text color="fg.muted" fontSize="xs" whiteSpace="nowrap">
                 {fmtDateTime(b.createdAt)}
               </Text>
+
+              <HStack justify="flex-end">
+                <Button size="xs" variant="outline" onClick={() => setPreviewBatch(b)}>
+                  Preview
+                </Button>
+              </HStack>
             </Box>
           ))}
         </Box>
+      )}
+
+      {previewBatch && (
+        <BatchPreviewDialog batch={previewBatch} onClose={() => setPreviewBatch(null)} />
       )}
     </Box>
   );

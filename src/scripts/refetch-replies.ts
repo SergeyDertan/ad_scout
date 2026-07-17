@@ -199,7 +199,7 @@ async function main() {
   const { store, email, extractor } = buildAgent(config);
 
   await refetchReplies(
-    { store, email, extractor, clock: systemClock },
+    { store, email, extractor, clock: systemClock, config },
     {
       since,
       includeExcluded: process.argv.includes('--include-excluded'),

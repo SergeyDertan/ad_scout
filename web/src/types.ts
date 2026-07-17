@@ -170,7 +170,6 @@ export type TargetStatus =
 
 export interface Target {
   id: string;
-  campaignId: string;
   batchId?: string;
   websiteUrl: string;
   contactEmail: string;
@@ -187,25 +186,6 @@ export interface Target {
   createdAt: string;
 }
 
-export type InquiryFieldType = 'price' | 'text' | 'list' | 'enum' | 'boolean';
-
-export interface InquiryField {
-  key: string;
-  question: string;
-  type: InquiryFieldType;
-  enumValues?: string[];
-  required?: boolean;
-}
-
-export interface Campaign {
-  id: string;
-  name: string;
-  advertised: { url: string; description: string };
-  topic: string;
-  format: string;
-  inquiryFields: InquiryField[];
-  createdAt: string;
-}
 
 export type SendStatus = 'reserved' | 'sent' | 'failed' | 'needs_review';
 export type OutreachKind = 'initial' | 'followup';
@@ -243,8 +223,8 @@ export interface ResponseRow {
   id: string;
   fromAddress: string;
   website?: string;
-  campaignId?: string;
-  campaignName?: string;
+  batchId?: string;
+  batchName?: string;
   matchMethod: 'threadId' | 'fromAddress' | 'unmatched';
   extractionStatus: 'pending' | 'done' | 'failed' | 'skipped';
   review?: string[];
@@ -261,7 +241,6 @@ export interface ResponseRow {
     reasoning?: string;
     optOut?: boolean;
     intent?: string;
-    fields: Record<string, unknown>;
   };
 }
 
@@ -343,7 +322,6 @@ export interface NewAccount {
 export interface NewTarget {
   websiteUrl: string;
   contactEmail: string;
-  campaignId?: string;
   contactName?: string;
   notes?: string;
   /** Shared across a bulk import so all its rows land in one batch. Omit for a
@@ -353,9 +331,10 @@ export interface NewTarget {
 
 export interface Batch {
   id: string;
-  campaignId: string;
   name?: string;
   source: 'import' | 'manual';
+  /** Per-import advertised site override; global config default when absent. */
+  advertised?: { url: string; description: string };
   createdAt: string;
 }
 
@@ -365,9 +344,7 @@ export interface BatchRow extends Batch {
   byStatus: Record<string, number>;
 }
 
-export interface NewCampaign {
-  name: string;
-  advertised: { url: string; description?: string };
-  topic?: string;
-  format?: string;
+export interface NewBatch {
+  name?: string;
+  advertised?: { url: string; description?: string };
 }

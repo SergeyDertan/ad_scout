@@ -11,11 +11,8 @@ export function synthesizeFromSchema(schema: JsonSchema): unknown {
   if (Array.isArray(enumVals) && enumVals.length > 0) return enumVals[0];
 
   switch (schema['type']) {
-    case 'string': {
-      const desc = typeof schema['description'] === 'string' ? schema['description'] : '';
-      // The extraction schema marks verbatim-answer fields in their description.
-      return desc.startsWith('Verbatim answer') ? 'sample answer' : '';
-    }
+    case 'string':
+      return '';
     case 'boolean':
       return false;
     case 'number':

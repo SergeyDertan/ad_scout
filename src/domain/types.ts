@@ -7,36 +7,18 @@ export type ISO = string; // ISO-8601 timestamp
 /** A loose JSON Schema object (used for LLM structured output). */
 export type JsonSchema = Record<string, unknown>;
 
-// --- Campaign ---------------------------------------------------------------
+// --- Pitch profile ----------------------------------------------------------
 
-export interface Campaign {
-  id: ID;
-  name: string;
+/**
+ * The "what & how" of an outreach email: the site we advertise, the topic/format
+ * we pitch, and an optional subject override. Global defaults live in Config; a
+ * Batch may override `advertised` per import. Resolved via resolveProfile().
+ */
+export interface PitchProfile {
   advertised: { url: string; description: string };
   topic: string;
   format: string;
-  inquiryFields: InquiryField[];
-  referenceEmail?: string;
   subjectTemplate?: string;
-  priceExpectation?: string;
-  followUp?: FollowUpPolicy;
-  createdAt: ISO;
-}
-
-export interface FollowUpPolicy {
-  afterDays: number;
-  maxFollowUps: number;
-  templates?: string[];
-}
-
-export type InquiryFieldType = 'price' | 'text' | 'list' | 'enum' | 'boolean';
-
-export interface InquiryField {
-  key: string;
-  question: string;
-  type: InquiryFieldType;
-  enumValues?: string[];
-  required?: boolean;
 }
 
 // --- Account ----------------------------------------------------------------
@@ -90,9 +72,9 @@ export type TargetStatus =
 
 export interface Target {
   id: ID;
-  campaignId: ID;
   /** Groups targets added together — one bulk import, or a single manual add.
-   *  Assigned at creation and shared across every row of the same import. */
+   *  Assigned at creation and shared across every row of the same import. The
+   *  batch also carries the per-import advertised site (else global defaults). */
   batchId?: ID;
   websiteUrl: string;
   contactEmail: string;
@@ -119,9 +101,11 @@ export type BatchSource = 'import' | 'manual';
  */
 export interface Batch {
   id: ID;
-  campaignId: ID;
   name?: string; // user-given label for an import; absent for manual adds
   source: BatchSource;
+  /** Per-import advertised site override. Absent ⇒ the global config default is
+   *  used when drafting. This is the only pitch field that varies per import. */
+  advertised?: { url: string; description: string };
   createdAt: ISO;
 }
 
@@ -199,7 +183,7 @@ export interface Suppression {
 
 export type CanPost = 'yes' | 'no' | 'maybe';
 
-/** A parsed price (shared by PostOffer and the 'price' FieldValue). */
+/** A parsed price attached to a PostOffer. */
 export interface PriceValue {
   amount?: number;
   currency?: string;
@@ -253,12 +237,4 @@ export interface OutreachResult {
   reasoning?: string;
   conditions?: string;
   notes?: string;
-  fields: Record<string, FieldValue>;
 }
-
-export type FieldValue =
-  | { type: 'price'; amount?: number; currency?: string; raw: string }
-  | { type: 'text'; value: string }
-  | { type: 'list'; values: string[] }
-  | { type: 'enum'; value: string }
-  | { type: 'boolean'; value: boolean };

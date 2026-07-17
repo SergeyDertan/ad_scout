@@ -10,7 +10,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ClaudeCodeLlmProvider } from '../adapters/llm/claude-code.provider';
 import { Extractor } from '../services/extractor';
-import type { Campaign, EmailAttachment } from '../domain/types';
+import type { EmailAttachment, PitchProfile } from '../domain/types';
 
 const E2E_DIR =
   process.env.E2E_DIR ??
@@ -19,17 +19,10 @@ const E2E_DIR =
 const PDF_URL =
   'https://partner.inkl.com/hubfs/inkl%20Information/inkl%20Guidelines%20for%202026.pdf';
 
-const campaign: Campaign = {
-  id: 'c-e2e',
-  name: 'E2E',
+const profile: PitchProfile = {
   advertised: { url: 'https://our-casino-brand.example', description: 'iGaming brand' },
   topic: 'casino',
   format: 'guest post',
-  inquiryFields: [
-    { key: 'price', question: 'What is the price for a casino post and a regular post?', type: 'price' },
-    { key: 'turnaround', question: 'What is the turnaround time?', type: 'text' },
-  ],
-  createdAt: '2026-01-01T00:00:00.000Z',
 };
 
 async function loadAttachment(file: string, mimeType: string): Promise<EmailAttachment> {
@@ -62,7 +55,7 @@ async function main() {
   // --- Scenario 1: attachment Read (deterministic xlsx: casino $100 / regular $50)
   const t1 = Date.now();
   const r1 = await extractor.extract(
-    campaign,
+    profile,
     'Hi! Thanks for reaching out. Our rates are in the attached spreadsheet — see the price list. Turnaround is 3 business days.',
     [],
     [xlsx],
@@ -73,7 +66,7 @@ async function main() {
   // --- Scenario 2: link WebFetch
   const t2 = Date.now();
   const r2 = await extractor.extract(
-    campaign,
+    profile,
     `Hello, we'd be happy to feature your casino brand. All our publishing details, guidelines and pricing are here: ${PDF_URL} — please have a look.`,
     [],
     [],
@@ -84,7 +77,7 @@ async function main() {
   // --- Scenario 3: PDF attachment Read
   const t3 = Date.now();
   const r3 = await extractor.extract(
-    campaign,
+    profile,
     'Hi, our full guidelines are in the attached PDF. Let me know if you have questions.',
     [],
     [pdf],

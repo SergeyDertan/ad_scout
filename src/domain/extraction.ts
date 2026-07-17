@@ -1,14 +1,12 @@
 // Pure extraction helpers (overview.md §6 OutreachResult). No I/O.
 //
-// Division of labour: the LLM does NLP only — it returns canPost, optOut, and a
-// VERBATIM `raw` answer per inquiry field. This deterministic, unit-tested code
-// turns each raw string into a typed FieldValue. That keeps the fragile part
-// (parsing prices/lists/enums) out of the model and fully testable.
+// Division of labour: the LLM does NLP only — it tags niches, willingness, and a
+// VERBATIM price per (product × niche). This deterministic, unit-tested code
+// reconciles those offers against the niche registry and parses each raw price.
+// That keeps the fragile part (parsing/reconciling) out of the model and testable.
 
 import type {
   CanPost,
-  FieldValue,
-  InquiryField,
   JsonSchema,
   Niche,
   OutreachResult,
@@ -57,7 +55,6 @@ export interface RawExtraction {
   reasoning: string;
   conditions?: string;
   notes?: string;
-  fields: Record<string, { raw: string }>;
 }
 
 const REPLY_INTENTS: ReplyIntent[] = ['answer', 'holding', 'auto_reply', 'question', 'decline', 'other'];
@@ -115,26 +112,12 @@ const OFFER_SCHEMA = {
   },
 } as const;
 
-/** Build a JSON Schema (structured-output-safe) from a campaign's inquiry fields. */
-export function buildExtractionSchema(fields: InquiryField[]): JsonSchema {
-  const fieldProps: Record<string, unknown> = {};
-  for (const f of fields) {
-    fieldProps[f.key] = {
-      type: 'object',
-      additionalProperties: false,
-      required: ['raw'],
-      properties: {
-        raw: {
-          type: 'string',
-          description: `Verbatim answer to: "${f.question}". Empty string if not addressed.`,
-        },
-      },
-    };
-  }
+/** Build the extraction JSON Schema (structured-output-safe). */
+export function buildExtractionSchema(): JsonSchema {
   return {
     type: 'object',
     additionalProperties: false,
-    required: ['optOut', 'intent', 'offers', 'reasoning', 'conditions', 'notes', 'fields'],
+    required: ['optOut', 'intent', 'offers', 'reasoning', 'conditions', 'notes'],
     properties: {
       optOut: { type: 'boolean' },
       intent: {
@@ -156,12 +139,6 @@ export function buildExtractionSchema(fields: InquiryField[]): JsonSchema {
       },
       conditions: { type: 'string' },
       notes: { type: 'string' },
-      fields: {
-        type: 'object',
-        additionalProperties: false,
-        required: fields.map((f) => f.key),
-        properties: fieldProps,
-      },
     },
   };
 }
@@ -173,9 +150,6 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
   '₴': 'UAH',
 };
 const CURRENCY_CODES = ['USD', 'EUR', 'GBP', 'UAH', 'PLN', 'CAD', 'AUD'];
-
-const TRUTHY = /\b(yes|yep|sure|of course|we can|possible|available|true|ok|okay)\b/i;
-const FALSY = /\b(no|nope|cannot|can't|not possible|unavailable|false|decline)\b/i;
 
 /** Parse a verbatim price string into { amount?, currency?, raw }. Undefined if empty. */
 export function parsePrice(raw: string): PriceValue | undefined {
@@ -199,47 +173,6 @@ export function parsePrice(raw: string): PriceValue | undefined {
     ...(currency ? { currency } : {}),
     raw: value,
   };
-}
-
-/** Convert a verbatim answer to a typed FieldValue per the field's declared type. */
-export function parseFieldValue(field: InquiryField, raw: string): FieldValue {
-  const value = (raw ?? '').trim();
-  switch (field.type) {
-    case 'price': {
-      const price = parsePrice(value);
-      return {
-        type: 'price',
-        ...(price?.amount !== undefined ? { amount: price.amount } : {}),
-        ...(price?.currency ? { currency: price.currency } : {}),
-        raw: value,
-      };
-    }
-    case 'list': {
-      const values = value
-        .split(/[,;\/\n]|(?:\band\b)/i)
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-      return { type: 'list', values };
-    }
-    case 'enum': {
-      const opts = field.enumValues ?? [];
-      const match =
-        opts.find((o) => new RegExp(`\\b${escapeRe(o)}\\b`, 'i').test(value)) ??
-        opts.find((o) => value.toLowerCase().includes(o.toLowerCase()));
-      return { type: 'enum', value: match ?? value };
-    }
-    case 'boolean': {
-      const v = TRUTHY.test(value) ? true : FALSY.test(value) ? false : false;
-      return { type: 'boolean', value: v };
-    }
-    case 'text':
-    default:
-      return { type: 'text', value };
-  }
-}
-
-function escapeRe(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
@@ -379,15 +312,9 @@ function findBaseOffer(
  * Returns any newly-discovered niches so the caller can persist them.
  */
 export function assembleResult(
-  fields: InquiryField[],
   raw: RawExtraction,
   opts: { niches: Niche[]; requestedCategory?: string },
 ): { result: OutreachResult; discovered: Niche[] } {
-  const out: Record<string, FieldValue> = {};
-  for (const f of fields) {
-    const answer = raw.fields?.[f.key]?.raw ?? '';
-    out[f.key] = parseFieldValue(f, answer);
-  }
   const { offers, discovered } = reconcileOffers(raw.offers ?? [], opts.niches);
   const knownWithDiscovered = [...opts.niches, ...discovered];
   // The summary canPost is about the requested niche as a guest post (what the
@@ -407,7 +334,6 @@ export function assembleResult(
     ...(raw.reasoning ? { reasoning: raw.reasoning } : {}),
     ...(raw.conditions ? { conditions: raw.conditions } : {}),
     ...(raw.notes ? { notes: raw.notes } : {}),
-    fields: out,
   };
   return { result, discovered };
 }

@@ -5,7 +5,7 @@ import { loadConfig } from '../config';
 import { DummyEmailProvider } from '../adapters/email/dummy.provider';
 import { DummyLlmProvider } from '../adapters/llm/dummy.provider';
 import { MemoryStore } from '../adapters/store/memory.store';
-import type { Account, Campaign, Outreach, Target } from '../domain/types';
+import type { Account, Batch, Outreach, Target } from '../domain/types';
 import type { IncomingEmail } from '../ports/email-provider';
 import { fixedClock } from '../lib/clock';
 import { Extractor } from '../services/extractor';
@@ -17,13 +17,10 @@ const config = loadConfig({} as NodeJS.ProcessEnv);
 const clock = fixedClock(new Date('2026-06-19T12:00:00Z'));
 
 async function seed(store: MemoryStore) {
-  const campaign: Campaign = {
-    id: 'camp1',
-    name: 'casino',
-    advertised: { url: 'casinoslists.com', description: 'a casino platform' },
-    topic: 'casino',
-    format: 'article',
-    inquiryFields: [{ key: 'price', question: 'Cost?', type: 'price' }],
+  const batch: Batch = {
+    id: 'batch1',
+    name: 'casino import',
+    source: 'import',
     createdAt: '2026-05-01T00:00:00Z',
   };
   const acc: Account = {
@@ -38,14 +35,14 @@ async function seed(store: MemoryStore) {
   };
   const t1: Target = {
     id: 't1',
-    campaignId: 'camp1',
+    batchId: 'batch1',
     websiteUrl: 't1.com',
     contactEmail: 'info@t1.com',
     status: 'pending',
     followUpCount: 0,
     createdAt: '2026-06-01T00:00:00Z',
   };
-  await store.putCampaign(campaign);
+  await store.putBatch(batch);
   await store.putAccount(acc);
   await store.putTarget(t1);
 }
@@ -64,7 +61,7 @@ test('refetch-replies deletes the reply, rewinds the cursor, and re-ingests it (
     text: 'Yes, $120 per casino post.',
     receivedAt: new Date('2026-06-19T12:30:00Z'),
   });
-  await runPollPass({ store, email, extractor, clock });
+  await runPollPass({ store, email, extractor, clock, config });
 
   const before = await store.listReplies();
   assert.equal(before.length, 1);
@@ -75,7 +72,7 @@ test('refetch-replies deletes the reply, rewinds the cursor, and re-ingests it (
   // the dummy drains, so re-queue the same emailId to simulate that.
   (email as unknown as { inbox: IncomingEmail[] }).inbox.push(injected);
 
-  const result = await refetchReplies({ store, email, extractor, clock });
+  const result = await refetchReplies({ store, email, extractor, clock, config });
 
   assert.equal(result.removed, 1);
   assert.equal(result.targetsReset, 1);
@@ -121,9 +118,9 @@ test('refetch-replies anchors the cursor on our earliest outreach, not a stray o
     text: 'old newsletter',
     extractionStatus: 'done',
   });
-  await runPollPass({ store, email, extractor, clock });
+  await runPollPass({ store, email, extractor, clock, config });
 
-  const result = await refetchReplies({ store, email, extractor, clock }, { dryRun: true });
+  const result = await refetchReplies({ store, email, extractor, clock, config }, { dryRun: true });
   // Cursor floored at the outreach send time (~12:00), not rewound to the 2025 stray.
   assert.ok(new Date(result.cursorRolledBackTo!) >= new Date('2026-06-19T11:00:00Z'));
   assert.ok(new Date(result.cursorRolledBackTo!) <= new Date(outreach.sentAt ?? outreach.reservedAt));
@@ -163,7 +160,7 @@ test('refetch-replies rolls each account cursor back to its OWN earliest send', 
   await store.putOutreach(outreach('acc1', '2026-06-01T00:00:00Z')); // acc1 sent earlier
   await store.putOutreach(outreach('acc2', '2026-06-10T00:00:00Z')); // acc2 sent later
 
-  await refetchReplies({ store, email, extractor, clock }, { noFetch: true });
+  await refetchReplies({ store, email, extractor, clock, config }, { noFetch: true });
 
   const a1 = await store.getAccount('acc1');
   const a2 = await store.getAccount('acc2');
@@ -180,9 +177,9 @@ test('refetch-replies --dry-run reports without mutating', async () => {
   await runSendPass({ store, email, clock, config });
   const outreach = (await store.listOutreaches({ targetId: 't1' }))[0];
   email.injectReply({ threadId: outreach.threadId!, fromAddress: 'info@t1.com', text: 'Yes.' });
-  await runPollPass({ store, email, extractor, clock });
+  await runPollPass({ store, email, extractor, clock, config });
 
-  const result = await refetchReplies({ store, email, extractor, clock }, { dryRun: true });
+  const result = await refetchReplies({ store, email, extractor, clock, config }, { dryRun: true });
   assert.equal(result.removed, 1);
   assert.equal(result.report, undefined); // no fetch happened
   assert.equal((await store.listReplies()).length, 1); // untouched
@@ -207,11 +204,11 @@ test('refetch-replies skips opt-out (excluded) targets unless --include-excluded
   });
   const extractor = new Extractor(new DummyLlmProvider());
 
-  const skipped = await refetchReplies({ store, email, extractor, clock }, { dryRun: true });
+  const skipped = await refetchReplies({ store, email, extractor, clock, config }, { dryRun: true });
   assert.equal(skipped.removed, 0); // excluded reply left alone
 
   const included = await refetchReplies(
-    { store, email, extractor, clock },
+    { store, email, extractor, clock, config },
     { dryRun: true, includeExcluded: true },
   );
   assert.equal(included.removed, 1);

@@ -11,7 +11,6 @@ import { normalizeEmail } from '../../domain/reply-matching';
 import type {
   Account,
   Batch,
-  Campaign,
   Niche,
   Outreach,
   Reply,
@@ -137,20 +136,6 @@ export class PouchDbStore implements Store {
     return res.rows.map((r: any) => this.strip<T>(r.doc));
   }
 
-  // campaigns
-  getCampaign(id: string) {
-    return this.get<Campaign>('campaign', id);
-  }
-  putCampaign(c: Campaign) {
-    return this.put('campaign', c);
-  }
-  listCampaigns() {
-    return this.listByType<Campaign>('campaign');
-  }
-  deleteCampaign(id: string) {
-    return this.delete('campaign', id);
-  }
-
   // accounts
   getAccount(id: string) {
     return this.get<Account>('account', id);
@@ -180,7 +165,7 @@ export class PouchDbStore implements Store {
   }
   async listTargets(filter?: TargetFilter) {
     let list = await this.listByType<Target>('target');
-    if (filter?.campaignId) list = list.filter((t) => t.campaignId === filter.campaignId);
+    if (filter?.batchId) list = list.filter((t) => t.batchId === filter.batchId);
     if (filter?.status) list = list.filter((t) => t.status === filter.status);
     return list;
   }

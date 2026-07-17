@@ -11,7 +11,7 @@ import { loadConfig } from './config';
 import { DummyEmailProvider } from './adapters/email/dummy.provider';
 import { DummyLlmProvider } from './adapters/llm/dummy.provider';
 import { MemoryStore } from './adapters/store/memory.store';
-import type { Account, Campaign, Target } from './domain/types';
+import type { Account, Batch, Target } from './domain/types';
 import { systemClock } from './lib/clock';
 import { newId } from './lib/ids';
 import { logger } from './lib/logger';
@@ -20,24 +20,19 @@ import { runReconcile } from './pipeline/reconcile';
 import { runSendPass } from './pipeline/send-pass';
 import { Extractor } from './services/extractor';
 
-async function seed(store: MemoryStore): Promise<{ campaign: Campaign; target: Target }> {
+async function seed(store: MemoryStore): Promise<{ target: Target }> {
   const nowIso = new Date().toISOString();
 
-  const campaign: Campaign = {
-    id: newId('campaign'),
-    name: 'Casino articles — casinoslists.com',
-    advertised: { url: 'casinoslists.com', description: 'a rapidly growing online casino platform' },
-    topic: 'casino',
-    format: 'article',
-    inquiryFields: [
-      { key: 'price', question: 'Cost of publishing an article?', type: 'price' },
-      { key: 'categories', question: 'Popular categories?', type: 'list' },
-      { key: 'section', question: 'Section where it may appear?', type: 'text' },
-    ],
-    followUp: { afterDays: 4, maxFollowUps: 2 },
+  // The advertised site + topic/format come from global config (config.pitch);
+  // an import is just a batch of target websites (optionally with its own
+  // advertised override, omitted here so the global default is used).
+  const batch: Batch = {
+    id: newId('batch'),
+    name: 'Casino outreach — demo import',
+    source: 'import',
     createdAt: nowIso,
   };
-  await store.putCampaign(campaign);
+  await store.putBatch(batch);
 
   const account: Account = {
     id: newId('account'),
@@ -53,7 +48,7 @@ async function seed(store: MemoryStore): Promise<{ campaign: Campaign; target: T
 
   const target: Target = {
     id: newId('target'),
-    campaignId: campaign.id,
+    batchId: batch.id,
     websiteUrl: 'egamersworld.com',
     contactEmail: 'info@egamersworld.com',
     status: 'pending',
@@ -68,7 +63,7 @@ async function seed(store: MemoryStore): Promise<{ campaign: Campaign; target: T
     contactEmail: 'editor@example-gaming.com',
   });
 
-  return { campaign, target };
+  return { target };
 }
 
 async function main(): Promise<void> {
@@ -100,7 +95,7 @@ async function main(): Promise<void> {
     });
   }
 
-  const polled = await runPollPass({ store, email, extractor, clock });
+  const polled = await runPollPass({ store, email, extractor, clock, config });
   logger.info('poll-pass', polled as unknown as Record<string, unknown>);
 
   // Show final state.
@@ -108,7 +103,7 @@ async function main(): Promise<void> {
     logger.info(`target ${t.websiteUrl}`, {
       status: t.status,
       canPost: t.result?.canPost,
-      price: t.result?.fields?.price,
+      offers: t.result?.offers,
     });
   }
   logger.info('Note: extraction here is stubbed by DummyLlmProvider. Set LLM_PROVIDER=ollama|openai|claude for real parsing.');

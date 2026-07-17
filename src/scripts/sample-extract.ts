@@ -17,16 +17,12 @@ async function main() {
   const llm = buildLlm(config);
   const extractor = new Extractor(llm);
 
-  const campaigns = await store.listCampaigns();
-  const campaign = campaigns[0];
-  if (!campaign) throw new Error('no campaign found in the store — needed for the inquiryFields schema');
-
   const replies = (await store.listReplies()).filter(
     (r) => r.extractionStatus === 'pending' || r.extractionStatus === 'failed',
   );
   const sample = replies.slice(0, n);
   console.log(
-    `provider=${llm.name} campaign="${campaign.name}" sampling ${sample.length}/${replies.length} pending replies\n`,
+    `provider=${llm.name} topic="${config.pitch.topic}" sampling ${sample.length}/${replies.length} pending replies\n`,
   );
 
   for (const reply of sample) {
@@ -35,7 +31,7 @@ async function main() {
     console.log('text:', reply.text.slice(0, 200).replace(/\s+/g, ' '));
     try {
       const knownNiches = await store.listNiches();
-      const { result, discovered } = await extractor.extract(campaign, reply.text, knownNiches);
+      const { result, discovered } = await extractor.extract(config.pitch, reply.text, knownNiches);
       if (discovered.length) console.log('would-learn niches:', discovered.map((n) => n.key).join(', '));
       console.log(`result (${Date.now() - t0}ms):`, JSON.stringify(result, null, 2));
     } catch (err) {

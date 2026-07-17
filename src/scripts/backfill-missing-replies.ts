@@ -39,7 +39,7 @@ async function main() {
   }
 
   console.log('\nrunning full poll pass (this will take a while — real Gmail fetch + extraction)...\n');
-  const report = await runPollPass({ store, email, extractor, clock: systemClock });
+  const report = await runPollPass({ store, email, extractor, clock: systemClock, config });
   console.log('\npoll report:', report);
 
   await store.close?.();

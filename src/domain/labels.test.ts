@@ -5,7 +5,7 @@ import { ALL_LABELS, LABEL_COLORS, LABELS, labelForResult } from './labels';
 import type { OutreachResult } from './types';
 
 function result(over: Partial<OutreachResult>): OutreachResult {
-  return { canPost: 'maybe', optOut: false, offers: [], fields: {}, ...over };
+  return { canPost: 'maybe', optOut: false, offers: [], ...over };
 }
 
 test('opt-out overrides intent', () => {

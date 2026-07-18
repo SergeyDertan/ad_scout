@@ -14,6 +14,9 @@
 //   --extract-only  skip the wipe; just extract replies still pending/failed.
 //                   Use to RESUME after an interrupted run (already-done replies
 //                   are skipped, so it's safe to re-run).
+//   --limit N       extract at most N replies this run (pace against the usage
+//                   window; resume with another run — state is per-reply).
+//   --sleep MS      sleep MS between replies (gentler pacing).
 //
 // Cost note: re-extraction makes one LLM call per matched reply (some fetch
 // linked pricing pages → slower, multi-turn). Mind provider usage on large DBs.
@@ -29,12 +32,18 @@ async function main() {
   const dryRun = process.argv.includes('--dry-run');
   const clearOnly = process.argv.includes('--clear-only');
   const extractOnly = process.argv.includes('--extract-only');
+  const limit = numArg('--limit');
+  const sleepMs = numArg('--sleep');
   const config = loadConfig();
   const { store, email, extractor, llm } = buildAgent(config);
 
   const replies = await store.listReplies();
   const targets = await store.listTargets();
   const niches = await store.listNiches();
+  // Derived per-domain history is re-created by re-extraction — wipe it first so a
+  // re-run doesn't double-write. Keep ignore + manual exclusions (curated data).
+  const priceRecords = await store.listPriceRecords();
+  const declinedExclusions = (await store.listDomainExclusions()).filter((e) => e.reason === 'declined');
 
   const repliesToClear = replies.filter((r) => r.parsed !== undefined || r.review !== undefined || r.extractionStatus !== 'pending');
   const targetsToClear = targets.filter((t) => t.result !== undefined || t.status === 'replied' || t.status === 'excluded');
@@ -47,8 +56,9 @@ async function main() {
   } else {
     console.log(
       `${dryRun ? '[dry-run] ' : ''}clearing: ${repliesToClear.length} reply extraction(s), ` +
-        `${targetsToClear.length} target result(s), ${niches.length} dynamic niche(s). ` +
-        `Keeping ${replies.length} raw repl(y/ies) + all outreaches.`,
+        `${targetsToClear.length} target result(s), ${niches.length} dynamic niche(s), ` +
+        `${priceRecords.length} price record(s), ${declinedExclusions.length} declined exclusion(s). ` +
+        `Keeping ${replies.length} raw repl(y/ies) + all outreaches + ignore/manual exclusions.`,
     );
     if (!dryRun && !clearOnly) console.log(`then re-extracting ${matched} matched repl(y/ies) with ${llm.name} (no fetch)…`);
   }
@@ -61,6 +71,8 @@ async function main() {
   // --- Phase 1: wipe AI-derived state (skipped by --extract-only) ----------
   if (!extractOnly) {
     for (const n of niches) await store.deleteNiche(n.key);
+    for (const p of priceRecords) await store.deletePriceRecord(p.id);
+    for (const e of declinedExclusions) await store.deleteDomainExclusion(e.domain);
 
     for (const r of repliesToClear) {
       const { parsed: _p, review: _v, ...rest } = r;
@@ -89,13 +101,30 @@ async function main() {
   }
 
   // --- Phase 2: re-extract in place, no fetch -----------------------------
-  const { extracted, failed } = await extractPendingReplies(
+  const { extracted, failed, ignored, stoppedByLimit, resetAt } = await extractPendingReplies(
     { store, email, extractor, clock: systemClock, config },
-    { log: (m) => console.log(m) },
+    { log: (m) => console.log(m), ...(limit != null ? { limit } : {}), ...(sleepMs != null ? { sleepMs } : {}) },
   );
-  console.log(`\nre-extraction complete: ${extracted} extracted, ${failed} failed.`);
+  if (stoppedByLimit) {
+    console.log(
+      `\nSTOPPED at the Claude usage limit — ${extracted} extracted, ${failed} failed, ${ignored} ignored this run.` +
+        (resetAt ? ` Limit resets ${resetAt.toLocaleString()}.` : '') +
+        `\nRe-run the same command to resume (already-done replies are skipped).`,
+    );
+    process.exitCode = 2; // distinct code so a wrapping loop can detect the pause
+  } else {
+    console.log(`\nre-extraction complete: ${extracted} extracted, ${failed} failed, ${ignored} ignored (spam).`);
+  }
 
   await store.close?.();
+}
+
+/** Read a numeric CLI flag value, e.g. `--limit 50`. Undefined when absent. */
+function numArg(flag: string): number | undefined {
+  const i = process.argv.indexOf(flag);
+  if (i === -1 || i + 1 >= process.argv.length) return undefined;
+  const n = Number(process.argv[i + 1]);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 main().catch((err) => {

@@ -125,66 +125,111 @@ test('poll-pass matches a reply by threadId, extracts, and marks target replied'
   assert.equal(replies[0].extractionStatus, 'done');
 });
 
-test('a later reply on an already-answered target is saved but not re-extracted', async () => {
+// A stub extractor that returns a single regular guest-post offer at the given
+// price (or a non-substantive 'other' reply when price is null).
+function pricingLlm(prices: (string | null)[]): LlmProvider {
+  let i = 0;
+  return {
+    name: 'stub-pricing',
+    async generateJson() {
+      const price = prices[Math.min(i, prices.length - 1)];
+      i++;
+      if (price == null) {
+        return { optOut: false, intent: 'other', offers: [], reasoning: 'chatter', conditions: '', notes: '', isSpam: false };
+      }
+      return {
+        optOut: false,
+        intent: 'answer',
+        offers: [
+          {
+            postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false,
+            canPost: 'yes', priceRaw: price, priceKind: 'absolute', multiplier: 0, relativeTo: '',
+            website: '', isSpecial: false, specialUntil: '',
+          },
+        ],
+        reasoning: 'regular price', conditions: '', notes: '', isSpam: false,
+      };
+    },
+    async generateText() {
+      return '';
+    },
+  };
+}
+
+test('a later substantive reply is re-extracted and appends a new price record (Requirement 2)', async () => {
   const store = new MemoryStore();
   const email = new DummyEmailProvider();
-  // Count how many times the LLM is invoked so we can prove the second reply is
-  // saved without an extraction call.
-  let calls = 0;
-  const dummy = new DummyLlmProvider();
-  const countingLlm: LlmProvider = {
-    name: 'counting',
-    generateJson(req) {
-      calls++;
-      return dummy.generateJson(req);
-    },
-    generateText: (req) => dummy.generateText(req),
-  };
-  const extractor = new Extractor(countingLlm);
+  const extractor = new Extractor(pricingLlm(['$300', '$350']));
   await seed(store);
 
   await runSendPass({ store, email, clock, config });
   const outreach = (await store.listOutreaches({ targetId: 't1' }))[0];
 
-  // First reply — a real answer. Extracts and resolves the target.
   email.injectReply({
     threadId: outreach.threadId!,
     fromAddress: 'info@t1.com',
-    text: 'Yes we can publish. $300. Categories: esports. Section: News.',
+    text: 'Yes we can publish. $300.',
     receivedAt: new Date('2026-06-19T12:30:00Z'),
   });
   const first = await runPollPass({ store, email, extractor, clock, config });
   assert.equal(first.extracted, 1);
-  assert.equal(calls, 1);
-  const resolved = await store.getTarget('t1');
-  assert.equal(resolved?.status, 'replied');
-  const firstResult = resolved?.result;
-  assert.ok(firstResult);
 
-  // Second reply in the SAME thread — must be saved, but NOT extracted, and must
-  // leave the known result untouched.
+  // A LATER reply with an updated price — must be re-extracted and append a record.
   email.injectReply({
     threadId: outreach.threadId!,
     fromAddress: 'info@t1.com',
-    text: 'Actually never mind, disregard.',
-    receivedAt: new Date('2026-06-19T13:00:00Z'),
+    text: 'Price update: now $350.',
+    receivedAt: new Date('2026-06-20T09:00:00Z'),
   });
   const second = await runPollPass({ store, email, extractor, clock, config });
   assert.equal(second.matched, 1);
-  assert.equal(second.skipped, 1);
-  assert.equal(second.extracted, 0);
-  assert.equal(calls, 1, 'the AI must not be invoked on the later reply');
+  assert.equal(second.extracted, 1, 'the later substantive reply is re-extracted');
 
-  const replies = (await store.listReplies()).sort((a, b) =>
-    a.receivedAt.localeCompare(b.receivedAt),
+  // Two append-only price records for the target's domain, newest reflecting $350.
+  const records = (await store.listPriceRecords({ domain: 't1.com' })).sort((a, b) =>
+    a.observedAt.localeCompare(b.observedAt),
   );
-  assert.equal(replies.length, 2);
-  assert.equal(replies[1].extractionStatus, 'skipped');
-  assert.equal(replies[1].parsed, undefined);
+  assert.equal(records.length, 2);
+  assert.equal(records[0].offers[0].price?.amount, 300);
+  assert.equal(records[1].offers[0].price?.amount, 350);
+  assert.equal(records[0].attribution, 'sender');
+  assert.equal(records[0].targetId, 't1');
 
+  // target.result holds the latest substantive snapshot.
+  const t1 = await store.getTarget('t1');
+  assert.equal(t1?.result?.offers[0].price?.amount, 350);
+});
+
+test('a non-substantive later reply preserves the known result and writes no record', async () => {
+  const store = new MemoryStore();
+  const email = new DummyEmailProvider();
+  const extractor = new Extractor(pricingLlm(['$300', null]));
+  await seed(store);
+
+  await runSendPass({ store, email, clock, config });
+  const outreach = (await store.listOutreaches({ targetId: 't1' }))[0];
+
+  email.injectReply({
+    threadId: outreach.threadId!,
+    fromAddress: 'info@t1.com',
+    text: 'Yes we can publish. $300.',
+    receivedAt: new Date('2026-06-19T12:30:00Z'),
+  });
+  await runPollPass({ store, email, extractor, clock, config });
+  const firstResult = (await store.getTarget('t1'))?.result;
+
+  email.injectReply({
+    threadId: outreach.threadId!,
+    fromAddress: 'info@t1.com',
+    text: 'Thanks, talk soon!',
+    receivedAt: new Date('2026-06-20T09:00:00Z'),
+  });
+  await runPollPass({ store, email, extractor, clock, config });
+
+  // The known result is preserved (not clobbered by the chatter) and no 2nd record.
   const after = await store.getTarget('t1');
-  assert.equal(after?.status, 'replied');
-  assert.deepEqual(after?.result, firstResult, 'the known result must be preserved');
+  assert.deepEqual(after?.result, firstResult);
+  assert.equal((await store.listPriceRecords({ domain: 't1.com' })).length, 1);
 });
 
 test('poll-pass dedupes the same inbound emailId', async () => {
@@ -282,4 +327,155 @@ test('opt-out reply excludes the target and adds a persistent suppression', asyn
   const t1 = await store.getTarget('t1');
   assert.equal(t1?.status, 'excluded');
   assert.equal(await store.isSuppressed('info@t1.com'), true);
+});
+
+// A stub returning a fixed RawExtraction — the caller controls the whole shape.
+function stubLlm(raw: Record<string, unknown>): LlmProvider {
+  return {
+    name: 'stub',
+    async generateJson() {
+      return raw;
+    },
+    async generateText() {
+      return '';
+    },
+  };
+}
+
+const rawOffer = (o: Record<string, unknown>) => ({
+  postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false,
+  canPost: 'yes', priceRaw: '', priceKind: 'absolute', multiplier: 0, relativeTo: '',
+  website: '', isSpecial: false, specialUntil: '', ...o,
+});
+
+async function sendAndReply(store: MemoryStore, email: DummyEmailProvider, text: string, from = 'info@t1.com') {
+  await runSendPass({ store, email, clock, config });
+  const outreach = (await store.listOutreaches({ targetId: 't1' }))[0];
+  email.injectReply({ threadId: outreach.threadId!, fromAddress: from, text, receivedAt: new Date('2026-06-19T12:30:00Z') });
+}
+
+test('an offer tagged with a different owned site records against that site (M2, named)', async () => {
+  const store = new MemoryStore();
+  const email = new DummyEmailProvider();
+  const extractor = new Extractor(stubLlm({
+    optOut: false, intent: 'answer', reasoning: 'two sites', conditions: '', notes: '', isSpam: false,
+    offers: [
+      rawOffer({ priceRaw: '$100' }),
+      rawOffer({ priceRaw: '$80', website: 'casik.ua' }),
+    ],
+  }));
+  await seed(store);
+  await sendAndReply(store, email, 'Our site $100, and on casik.ua it is $80.');
+  await runPollPass({ store, email, extractor, clock, config });
+
+  const own = await store.listPriceRecords({ domain: 't1.com' });
+  const other = await store.listPriceRecords({ domain: 'casik.ua' });
+  assert.equal(own.length, 1);
+  assert.equal(own[0].attribution, 'sender');
+  assert.equal(own[0].targetId, 't1');
+  assert.equal(other.length, 1);
+  assert.equal(other[0].attribution, 'named');
+  assert.equal(other[0].targetId, undefined); // not associated with the contacted target
+  assert.equal(other[0].offers[0].price?.amount, 80);
+});
+
+test('untagged offer with a multi-domain sender is pushed to review, not guessed', async () => {
+  const store = new MemoryStore();
+  const email = new DummyEmailProvider();
+  const extractor = new Extractor(stubLlm({
+    optOut: false, intent: 'answer', reasoning: 'x', conditions: '', notes: '', isSpam: false,
+    offers: [rawOffer({ priceRaw: '$100' })],
+  }));
+  await store.putBatch(batch());
+  await store.putAccount(account());
+  // Same contact email is used for TWO different sites → ambiguous attribution.
+  await store.putTarget(target('t1', 'owner@shared.com'));
+  await store.putTarget({ ...target('t2', 'owner@shared.com'), websiteUrl: 't2.com' });
+
+  await sendAndReply(store, email, 'Sure, $100.', 'owner@shared.com');
+  await runPollPass({ store, email, extractor, clock, config });
+
+  // No record written for the untagged offer; the reply carries a review reason.
+  assert.equal((await store.listPriceRecords()).length, 0);
+  const reply = (await store.listReplies()).find((r) => r.targetId === 't1');
+  assert.ok(reply?.review?.some((r) => /associated with 2 sites/.test(r)));
+});
+
+test('AI-detected spam adds the sender to the ignore list and writes no records', async () => {
+  const store = new MemoryStore();
+  const email = new DummyEmailProvider();
+  const extractor = new Extractor(stubLlm({
+    optOut: false, intent: 'other', reasoning: 'unrelated pool-cleaner ad', conditions: '', notes: '',
+    isSpam: true, offers: [],
+  }));
+  await seed(store);
+  await sendAndReply(store, email, '10% off pool cleaners this week!');
+  await runPollPass({ store, email, extractor, clock, config });
+
+  assert.equal(await store.isIgnored('info@t1.com'), true);
+  assert.equal((await store.listPriceRecords()).length, 0);
+  const reply = (await store.listReplies()).find((r) => r.targetId === 't1');
+  assert.equal(reply?.extractionStatus, 'skipped');
+  // A subsequent message from that sender is dropped BEFORE any AI work.
+  email.injectReply({ threadId: (await store.listOutreaches({ targetId: 't1' }))[0].threadId!, fromAddress: 'info@t1.com', text: 'again!' });
+  const second = await runPollPass({ store, email, extractor, clock, config });
+  assert.equal(second.ignored, 1);
+});
+
+test('a blanket decline excludes the domain; a positive later reply lifts it (D8/D10)', async () => {
+  const store = new MemoryStore();
+  const email = new DummyEmailProvider();
+  const declineThenAccept = (() => {
+    let n = 0;
+    return {
+      name: 'stub-decline-accept',
+      async generateJson() {
+        n++;
+        if (n === 1) return { optOut: false, intent: 'decline', reasoning: 'not interested', conditions: '', notes: '', isSpam: false, offers: [] };
+        return { optOut: false, intent: 'answer', reasoning: 'changed mind', conditions: '', notes: '', isSpam: false, offers: [rawOffer({ priceRaw: '$120' })] };
+      },
+      async generateText() { return ''; },
+    } as LlmProvider;
+  })();
+  const extractor = new Extractor(declineThenAccept);
+  await seed(store);
+
+  await sendAndReply(store, email, 'We are not interested, thanks.');
+  await runPollPass({ store, email, extractor, clock, config });
+  assert.equal(await store.isDomainExcluded('t1.com'), true);
+  assert.equal((await store.getTarget('t1'))?.status, 'excluded');
+
+  // Later positive reply → exclusion lifted and price recorded.
+  email.injectReply({ threadId: (await store.listOutreaches({ targetId: 't1' }))[0].threadId!, fromAddress: 'info@t1.com', text: 'Actually we can, $120.', receivedAt: new Date('2026-06-20T10:00:00Z') });
+  await runPollPass({ store, email, extractor, clock, config });
+  assert.equal(await store.isDomainExcluded('t1.com'), false);
+  const records = await store.listPriceRecords({ domain: 't1.com' });
+  assert.equal(records.length, 1);
+  assert.equal(records[0].offers[0].price?.amount, 120);
+});
+
+test('send-pass skips a target whose domain is excluded (D9)', async () => {
+  const store = new MemoryStore();
+  const email = new DummyEmailProvider();
+  await seed(store); // t1 → t1.com, t2 → t2.com
+  await store.putDomainExclusion({ id: 't1.com', domain: 't1.com', reason: 'declined', at: '2026-06-01T00:00:00Z' });
+
+  const report = await runSendPass({ store, email, clock, config });
+  assert.equal(report.sent, 1); // only t2 sent
+  assert.equal((await store.getTarget('t1'))?.status, 'pending'); // never contacted
+  assert.equal((await store.getTarget('t2'))?.status, 'contacted');
+});
+
+test('a sender on the ignore list is dropped before matching or storage', async () => {
+  const store = new MemoryStore();
+  const email = new DummyEmailProvider();
+  const extractor = new Extractor(new DummyLlmProvider());
+  await seed(store);
+  await store.putIgnore({ id: 'email:spam@spam.com', kind: 'email', value: 'spam@spam.com', reason: 'manual', at: '2026-06-01T00:00:00Z' });
+
+  await runSendPass({ store, email, clock, config });
+  email.injectReply({ fromAddress: 'spam@spam.com', text: 'buy now' });
+  const report = await runPollPass({ store, email, extractor, clock, config });
+  assert.equal(report.ignored, 1);
+  assert.equal((await store.listReplies()).length, 0);
 });

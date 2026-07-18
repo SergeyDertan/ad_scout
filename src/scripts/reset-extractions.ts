@@ -24,6 +24,10 @@ async function main() {
 
   const replies = await store.listReplies();
   const targets = await store.listTargets();
+  // Derived per-domain history is re-created by re-extraction — purge it so a
+  // re-run doesn't double-write. Keep ignore + manual exclusions (curated data).
+  const priceRecords = await store.listPriceRecords();
+  const declinedExclusions = (await store.listDomainExclusions()).filter((e) => e.reason === 'declined');
 
   const processedReplies = replies.filter(
     (r) => r.parsed !== undefined || r.extractionStatus === 'done' || r.extractionStatus === 'failed',
@@ -36,8 +40,9 @@ async function main() {
   ).length;
 
   console.log(
-    `${dryRun ? '[dry-run] ' : ''}resetting ${processedReplies.length} reply analysis result(s) ` +
-      `and ${analysedTargets.length} target result(s)` +
+    `${dryRun ? '[dry-run] ' : ''}resetting ${processedReplies.length} reply analysis result(s), ` +
+      `${analysedTargets.length} target result(s), ${priceRecords.length} price record(s), ` +
+      `${declinedExclusions.length} declined exclusion(s)` +
       (skippedExcluded ? ` (skipping ${skippedExcluded} excluded/opt-out target(s))` : ''),
   );
 
@@ -45,6 +50,9 @@ async function main() {
     await store.close?.();
     return;
   }
+
+  for (const p of priceRecords) await store.deletePriceRecord(p.id);
+  for (const e of declinedExclusions) await store.deleteDomainExclusion(e.domain);
 
   let replyCount = 0;
   for (const r of processedReplies) {

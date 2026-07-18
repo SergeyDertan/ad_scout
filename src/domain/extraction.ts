@@ -42,6 +42,14 @@ export interface RawOffer {
   multiplier?: number;
   /** For relative pricing: the base niche key it multiplies (usually 'regular'). */
   relativeTo?: string;
+  /** The site this price is for, ONLY when the owner explicitly prices a
+   *  DIFFERENT site they also own (M2). Blank ⇒ the contacted site (attributed to
+   *  the sender). Any URL/host; normalized by the caller (poll-pass). */
+  website?: string;
+  /** Time-limited promo price (D5). */
+  isSpecial?: boolean;
+  /** Optional deadline the owner gave for the special (ISO or verbatim). */
+  specialUntil?: string;
 }
 
 /** The shape the LLM is asked to return. */
@@ -55,6 +63,9 @@ export interface RawExtraction {
   reasoning: string;
   conditions?: string;
   notes?: string;
+  /** True when the reply is WHOLLY unrelated to posting/ads (e.g. "10% off pool
+   *  cleaners") — pure spam. The caller ignores the sender and writes nothing (D7). */
+  isSpam?: boolean;
 }
 
 const REPLY_INTENTS: ReplyIntent[] = ['answer', 'holding', 'auto_reply', 'question', 'decline', 'other'];
@@ -66,7 +77,7 @@ function coerceIntent(raw: string | undefined): ReplyIntent {
 const OFFER_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['postType', 'category', 'label', 'sensitive', 'canPost', 'priceRaw', 'priceKind', 'multiplier', 'relativeTo'],
+  required: ['postType', 'category', 'label', 'sensitive', 'canPost', 'priceRaw', 'priceKind', 'multiplier', 'relativeTo', 'website', 'isSpecial', 'specialUntil'],
   properties: {
     postType: {
       type: 'string',
@@ -109,6 +120,21 @@ const OFFER_SCHEMA = {
       description:
         'When priceKind=relative, the niche key whose rate this multiplies — usually "regular" (the standard/listed rate). "" when absolute.',
     },
+    website: {
+      type: 'string',
+      description:
+        'Set ONLY when the owner explicitly prices a DIFFERENT website they also own (e.g. "on casik.ua it is $80"). Then put that site (domain/URL) here. Leave "" for the site we contacted them about — that is the default.',
+    },
+    isSpecial: {
+      type: 'boolean',
+      description:
+        'true if this price is a TIME-LIMITED promo/discount ("this month only", "special offer", "until Friday"), not the standing rate. false otherwise.',
+    },
+    specialUntil: {
+      type: 'string',
+      description:
+        'When isSpecial, the deadline the owner gave EXACTLY as written ("end of month", "2026-08-01", "this Friday"), or "" if none given. "" when not special.',
+    },
   },
 } as const;
 
@@ -117,9 +143,14 @@ export function buildExtractionSchema(): JsonSchema {
   return {
     type: 'object',
     additionalProperties: false,
-    required: ['optOut', 'intent', 'offers', 'reasoning', 'conditions', 'notes'],
+    required: ['optOut', 'intent', 'offers', 'reasoning', 'conditions', 'notes', 'isSpam'],
     properties: {
       optOut: { type: 'boolean' },
+      isSpam: {
+        type: 'boolean',
+        description:
+          'true ONLY if this email is WHOLLY unrelated to guest posting / link building / advertising with us — e.g. a marketing blast selling an unrelated product ("10% off pool cleaners"), a newsletter, a platform notification. A real (even negative) reply about posting/pricing is NOT spam. false otherwise.',
+      },
       intent: {
         type: 'string',
         enum: ['answer', 'holding', 'auto_reply', 'question', 'decline', 'other'],
@@ -205,15 +236,23 @@ export function reconcileOffers(
       discovered.push(niche);
     }
     const postType = matchPostType(raw.postType ?? '');
-    const cellKey = `${postType}|${niche.key}`;
+    // A website tag scopes the cell: a casino price for casik.ua is a distinct
+    // cell from a casino price for the contacted site, so they never merge and
+    // relative pricing resolves its base WITHIN the same site. A special (promo)
+    // price ALSO scopes the cell — it must coexist with the standing price (D5),
+    // never overwrite it.
+    const website = (raw.website ?? '').trim();
+    const special = Boolean(raw.isSpecial);
+    const cellKey = makeCellKey(website, postType, niche.key, special);
     const relBase = relativeSpec(raw);
     // Stamp with the RESOLVED keys so the second-pass write-back targets the same
     // cell (raw.category "online casino" resolves to niche.key "casino").
-    const rel = relBase ? { ...relBase, postType, nicheKey: niche.key } : undefined;
+    const rel = relBase ? { ...relBase, website, postType, nicheKey: niche.key, special } : undefined;
     // A relative offer's priceRaw is a premium phrase ("+50%", "3-5x listed"),
     // NOT a figure — parsing it as absolute grabbed a bogus leading number. Defer:
     // its amount is computed from the base offer in the second pass.
     const price = rel ? undefined : parsePrice(raw.priceRaw ?? '');
+    const specialUntil = (raw.specialUntil ?? '').trim();
     const offer: PostOffer = {
       postType,
       category: niche.key,
@@ -221,6 +260,9 @@ export function reconcileOffers(
       sensitive: niche.sensitive,
       canPost: raw.canPost ?? 'maybe',
       ...(price ? { price } : {}),
+      ...(website ? { website } : {}),
+      ...(raw.isSpecial ? { isSpecial: true } : {}),
+      ...(specialUntil ? { specialUntil } : {}),
     };
     const existing = byCell.get(cellKey);
     // Keep the richer entry if the LLM emitted the same cell twice.
@@ -237,8 +279,8 @@ export function reconcileOffers(
   // The base is resolved WITHIN the same post type (a casino link-insertion
   // premium multiplies the regular link-insertion, not the guest-post rate).
   for (const [, rel] of relByCell) {
-    const offer = byCell.get(`${rel.postType}|${rel.nicheKey}`)!;
-    const base = findBaseOffer(byCell, rel.postType, rel.relativeTo, known);
+    const offer = byCell.get(makeCellKey(rel.website, rel.postType, rel.nicheKey, rel.special))!;
+    const base = findBaseOffer(byCell, rel.website, rel.postType, rel.relativeTo, known);
     if (base?.price?.amount != null) {
       offer.price = {
         amount: Math.round(base.price.amount * rel.multiplier * 100) / 100,
@@ -255,10 +297,18 @@ export function reconcileOffers(
   return { offers: [...byCell.values()], discovered };
 }
 
+/** A cell's identity: website tag + post type + niche + special flag. A special
+ *  (promo) price is a SEPARATE cell from the standing price so they coexist. */
+function makeCellKey(website: string, postType: string, nicheKey: string, special: boolean): string {
+  return `${website}|${postType}|${nicheKey}|${special ? 'special' : ''}`;
+}
+
 /** A niche priced as a multiple of another (casino = 1.5× regular). */
 interface RelativeSpec {
+  website: string; // the cell's website tag ('' = contacted site) — scopes base lookup
   postType: string; // the cell's post type (for base lookup + write-back)
   nicheKey: string; // the cell's niche key (for write-back)
+  special: boolean; // the cell's special flag (for write-back)
   multiplier: number;
   relativeTo: string; // base niche wording/key; '' → default to 'regular'
   raw: string; // verbatim premium phrase, kept for provenance
@@ -268,9 +318,9 @@ interface RelativeSpec {
 // outside is treated as absent (fall back to whatever priceRaw parsing found).
 const MAX_MULTIPLIER = 100;
 
-/** The multiplier/base/raw parts of a relative price. The caller stamps postType
- *  + the resolved nicheKey (so write-back hits the same cell). */
-function relativeSpec(raw: RawOffer): Omit<RelativeSpec, 'postType' | 'nicheKey'> | undefined {
+/** The multiplier/base/raw parts of a relative price. The caller stamps website +
+ *  postType + the resolved nicheKey (so write-back hits the same cell). */
+function relativeSpec(raw: RawOffer): Omit<RelativeSpec, 'website' | 'postType' | 'nicheKey' | 'special'> | undefined {
   if (raw.priceKind !== 'relative') return undefined;
   const m = Number(raw.multiplier);
   if (!Number.isFinite(m) || m <= 0 || m > MAX_MULTIPLIER) return undefined;
@@ -281,26 +331,30 @@ function relativeSpec(raw: RawOffer): Omit<RelativeSpec, 'postType' | 'nicheKey'
   };
 }
 
-/** The base offer a relative price multiplies, resolved WITHIN the given post
- *  type: the named niche if priced, else that type's 'regular' rate, else the
- *  default post type's 'regular', else any absolutely-priced offer. */
+/** The base offer a relative price multiplies, resolved WITHIN the same website
+ *  tag and post type: the named niche if priced, else that type's 'regular' rate,
+ *  else the default post type's 'regular', else any absolutely-priced offer for
+ *  that website. */
 function findBaseOffer(
   byCell: Map<string, PostOffer>,
+  website: string,
   postType: string,
   relativeTo: string,
   known: Niche[],
 ): PostOffer | undefined {
   const priced = (o: PostOffer | undefined) => (o && o.price?.amount != null ? o : undefined);
+  // A relative premium always multiplies a STANDING (non-special) base rate.
   if (relativeTo) {
     const rn = matchNiche(relativeTo, known);
-    const named = rn ? priced(byCell.get(`${postType}|${rn.key}`)) : undefined;
+    const named = rn ? priced(byCell.get(makeCellKey(website, postType, rn.key, false))) : undefined;
     if (named) return named;
   }
-  const sameType = priced(byCell.get(`${postType}|${REGULAR_KEY}`));
+  const sameType = priced(byCell.get(makeCellKey(website, postType, REGULAR_KEY, false)));
   if (sameType) return sameType;
-  const defaultType = priced(byCell.get(`${DEFAULT_POST_TYPE}|${REGULAR_KEY}`));
+  const defaultType = priced(byCell.get(makeCellKey(website, DEFAULT_POST_TYPE, REGULAR_KEY, false)));
   if (defaultType) return defaultType;
-  for (const o of byCell.values()) {
+  for (const [key, o] of byCell) {
+    if (!key.startsWith(`${website}|`) || key.endsWith('|special')) continue;
     const p = priced(o);
     if (p) return p;
   }
@@ -317,14 +371,17 @@ export function assembleResult(
 ): { result: OutreachResult; discovered: Niche[] } {
   const { offers, discovered } = reconcileOffers(raw.offers ?? [], opts.niches);
   const knownWithDiscovered = [...opts.niches, ...discovered];
-  // The summary canPost is about the requested niche as a guest post (what the
-  // outreach asked about) — resolve within guest_post first, then any post type.
-  const guestOffers = offers.filter((o) => o.postType === DEFAULT_POST_TYPE);
+  // The summary canPost is about the CONTACTED site's requested niche as a guest
+  // post (what the outreach asked about). Offers the owner tagged with a DIFFERENT
+  // site they own (website set) are for another domain — never let them decide the
+  // contacted target's summary. Resolve within guest_post first, then any type.
+  const ownSite = offers.filter((o) => !o.website);
+  const guestOffers = ownSite.filter((o) => o.postType === DEFAULT_POST_TYPE);
   const summary =
     resolveOffer(guestOffers, opts.requestedCategory, knownWithDiscovered) ??
-    resolveOffer(offers, opts.requestedCategory, knownWithDiscovered) ??
+    resolveOffer(ownSite, opts.requestedCategory, knownWithDiscovered) ??
     guestOffers.find((o) => o.category === 'regular') ??
-    offers.find((o) => o.category === 'regular');
+    ownSite.find((o) => o.category === 'regular');
   const result: OutreachResult = {
     canPost: summary?.canPost ?? 'maybe', // back-compat summary
     optOut: Boolean(raw.optOut),

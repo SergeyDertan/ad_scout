@@ -29,6 +29,8 @@ export const LABELS = {
   bounced: 'AS/Bounced',
   /** Inbound we could not tie to any target — a human may want to look. */
   unmatched: 'AS/Unmatched',
+  /** Dropped before processing — on the ignore list (spam / automated sender). */
+  ignored: 'AS/Ignored',
 } as const;
 
 export type OutcomeLabel = (typeof LABELS)[keyof typeof LABELS];
@@ -59,6 +61,7 @@ export const LABEL_COLORS: Record<OutcomeLabel, LabelColor> = {
   [LABELS.matched]: { backgroundColor: '#cccccc', textColor: '#000000' }, // light gray (provisional)
   [LABELS.bounced]: { backgroundColor: '#cc3a21', textColor: '#ffffff' }, // dark red
   [LABELS.unmatched]: { backgroundColor: '#fad165', textColor: '#000000' }, // yellow (look at me)
+  [LABELS.ignored]: { backgroundColor: '#666666', textColor: '#ffffff' }, // dark gray (dropped)
 };
 
 /**

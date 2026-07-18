@@ -21,6 +21,7 @@ test('buildExtractionSchema lists the universal requirements', () => {
     'reasoning',
     'conditions',
     'notes',
+    'isSpam',
   ]);
   assert.equal(schema.properties.offers.type, 'array');
   assert.deepEqual(schema.properties.offers.items.required, [
@@ -33,6 +34,9 @@ test('buildExtractionSchema lists the universal requirements', () => {
     'priceKind',
     'multiplier',
     'relativeTo',
+    'website',
+    'isSpecial',
+    'specialUntil',
   ]);
   assert.deepEqual(schema.properties.offers.items.properties.postType.enum, [
     'guest_post',
@@ -108,6 +112,43 @@ test('summary canPost falls back from a requested child to the sensitive umbrell
   const { result } = assembleResult(raw, { niches: NICHES, requestedCategory: 'casino' });
   assert.equal(result.canPost, 'yes'); // resolved via umbrella
   assert.deepEqual(result.offers[0].price, { amount: 40, currency: 'USD', raw: '$40' });
+});
+
+test('reconcileOffers carries website / isSpecial / specialUntil onto the offer', () => {
+  const { offers } = reconcileOffers(
+    [
+      offer({ category: 'regular', priceRaw: '$100' }),
+      offer({ category: 'regular', priceRaw: '$80', website: 'casik.ua' }),
+      offer({ category: 'regular', priceRaw: '$60', isSpecial: true, specialUntil: 'end of month' }),
+    ],
+    NICHES,
+  );
+  // Same niche, three different scopes → three distinct cells (own site standing,
+  // other-site, own-site special) — none merged.
+  assert.equal(offers.length, 3);
+  const own = offers.find((o) => !o.website && !o.isSpecial);
+  const other = offers.find((o) => o.website === 'casik.ua');
+  const special = offers.find((o) => o.isSpecial);
+  assert.deepEqual(own?.price, { amount: 100, currency: 'USD', raw: '$100' });
+  assert.deepEqual(other?.price, { amount: 80, currency: 'USD', raw: '$80' });
+  assert.equal(special?.specialUntil, 'end of month');
+  assert.deepEqual(special?.price, { amount: 60, currency: 'USD', raw: '$60' });
+});
+
+test('assembleResult summary ignores offers tagged with a different site', () => {
+  // Asked casino; own site only priced regular, another site priced casino.
+  const raw: RawExtraction = {
+    optOut: false,
+    offers: [
+      offer({ category: 'regular', canPost: 'yes', priceRaw: '$60' }),
+      offer({ category: 'casino', label: 'Casino', sensitive: true, canPost: 'no', priceRaw: '', website: 'casik.ua' }),
+    ],
+    reasoning: 'own regular $60; casik.ua casino declined',
+  };
+  const { result } = assembleResult(raw, { niches: NICHES, requestedCategory: 'casino' });
+  // Summary must NOT pick up the other site's casino 'no'.
+  assert.notEqual(result.canPost, 'no');
+  assert.equal(result.offers.length, 2); // both offers kept for grouping
 });
 
 test('reconcileOffers learns a new niche not in the registry', () => {

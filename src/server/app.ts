@@ -34,6 +34,8 @@ import type {
   TargetStatus,
 } from '../domain/types';
 import { allNiches, categorizeTopic } from '../domain/niches';
+import { normalizeDomain } from '../domain/domain';
+import { buildPriceSheet, knownDomains } from '../domain/price-sheet';
 import { accountSendState } from '../domain/account-state';
 import { assembleResult, type RawExtraction, type RawOffer } from '../domain/extraction';
 import { resolveProfile } from '../domain/pitch';
@@ -392,6 +394,11 @@ async function handle(
       if (!websiteUrl || !contactEmail) {
         return sendJson(res, 400, { error: 'websiteUrl and contactEmail are required' });
       }
+      // Domain-level do-not-contact (D9): reject an import whose site is excluded.
+      // Bulk import tolerates per-row failures, so this drops just the one row.
+      if (await store.isDomainExcluded(normalizeDomain(websiteUrl))) {
+        return sendJson(res, 409, { error: 'websiteUrl domain is excluded (do-not-contact)' });
+      }
       // A bulk import creates its batch up front (POST /api/batches) and passes
       // the id on every row. A lone add omits it → mint a one-off 'manual' batch.
       let batchId = str(body.batchId);
@@ -578,6 +585,87 @@ async function handle(
     // GET /api/niches — seed + learned post-category registry (drives the response filter)
     if (method === 'GET' && seg[1] === 'niches' && seg.length === 2) {
       return sendJson(res, 200, allNiches(await store.listNiches()));
+    }
+
+    // GET /api/domains — known domains (record ∪ target sites) with a light summary
+    if (method === 'GET' && seg[1] === 'domains' && seg.length === 2) {
+      const records = await store.listPriceRecords();
+      const targetDomains = (await store.listTargets()).map((t) => normalizeDomain(t.websiteUrl));
+      const excluded = new Set((await store.listDomainExclusions()).map((e) => e.domain));
+      const now = deps.clock.now();
+      const domains = knownDomains(records, targetDomains).map((domain) => {
+        const sheet = buildPriceSheet(domain, records, now);
+        return {
+          domain,
+          recordCount: sheet.recordCount,
+          standingCells: sheet.cells.length,
+          activeSpecials: sheet.specials.filter((s) => s.active).length,
+          ...(sheet.lastObservedAt ? { lastObservedAt: sheet.lastObservedAt } : {}),
+          optedOut: sheet.optedOut,
+          excluded: excluded.has(domain),
+        };
+      });
+      return sendJson(res, 200, domains);
+    }
+
+    // GET /api/domains/:domain — full price sheet + raw history + exclusion state
+    if (method === 'GET' && seg[1] === 'domains' && seg[2] && seg.length === 3) {
+      const domain = normalizeDomain(decodeURIComponent(seg[2]));
+      const records = (await store.listPriceRecords({ domain })).sort((a, b) =>
+        a.observedAt.localeCompare(b.observedAt),
+      );
+      const sheet = buildPriceSheet(domain, records, deps.clock.now());
+      const excluded = await store.isDomainExcluded(domain);
+      return sendJson(res, 200, { sheet, history: records, excluded });
+    }
+
+    // --- ignore list (inbound skip) CRUD ---
+    if (method === 'GET' && seg[1] === 'ignore' && seg.length === 2) {
+      return sendJson(res, 200, await store.listIgnore());
+    }
+    if (method === 'POST' && seg[1] === 'ignore' && seg.length === 2) {
+      const body = (await readJsonBody(req)) as Record<string, unknown>;
+      const kind = str(body.kind);
+      const rawValue = str(body.value);
+      if ((kind !== 'email' && kind !== 'domain') || !rawValue) {
+        return sendJson(res, 400, { error: "kind ('email'|'domain') and value are required" });
+      }
+      const value = kind === 'email' ? rawValue.trim().toLowerCase() : normalizeDomain(rawValue);
+      if (!value) return sendJson(res, 400, { error: 'value did not normalize to anything' });
+      const entry = await store.putIgnore({
+        id: `${kind}:${value}`,
+        kind,
+        value,
+        reason: str(body.reason) ?? 'manual',
+        at: deps.clock.now().toISOString(),
+      });
+      return sendJson(res, 201, entry);
+    }
+    if (method === 'DELETE' && seg[1] === 'ignore' && seg[2] && seg.length === 3) {
+      await store.deleteIgnore(decodeURIComponent(seg[2]));
+      return sendJson(res, 200, { ok: true, id: decodeURIComponent(seg[2]) });
+    }
+
+    // --- domain exclusion (outbound do-not-contact) CRUD ---
+    if (method === 'GET' && seg[1] === 'exclusions' && seg.length === 2) {
+      return sendJson(res, 200, await store.listDomainExclusions());
+    }
+    if (method === 'POST' && seg[1] === 'exclusions' && seg.length === 2) {
+      const body = (await readJsonBody(req)) as Record<string, unknown>;
+      const domain = normalizeDomain(str(body.domain) ?? '');
+      if (!domain) return sendJson(res, 400, { error: 'domain is required' });
+      const entry = await store.putDomainExclusion({
+        id: domain,
+        domain,
+        reason: 'manual', // user-added exclusions are manual (auto ones come from declines)
+        at: deps.clock.now().toISOString(),
+      });
+      return sendJson(res, 201, entry);
+    }
+    if (method === 'DELETE' && seg[1] === 'exclusions' && seg[2] && seg.length === 3) {
+      const domain = normalizeDomain(decodeURIComponent(seg[2]));
+      await store.deleteDomainExclusion(domain);
+      return sendJson(res, 200, { ok: true, domain });
     }
 
     // POST /api/run/send | /api/run/poll

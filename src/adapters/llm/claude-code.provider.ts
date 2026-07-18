@@ -24,6 +24,7 @@ import type {
   LlmProvider,
   LlmTextRequest,
 } from '../../ports/llm-provider';
+import { detectUsageLimit } from '../../lib/errors';
 import { logger } from '../../lib/logger';
 
 const execFileAsync = promisify(execFile);
@@ -81,6 +82,10 @@ export class ClaudeCodeLlmProvider implements LlmProvider {
         stderr: e.stderr?.slice(0, 2000),
         stdout: e.stdout?.slice(0, 2000),
       });
+      // A subscription usage/session-limit is not a transient failure — surface it
+      // as a typed error so the extraction driver can stop and resume later.
+      const limit = detectUsageLimit(e.stdout) ?? detectUsageLimit(e.stderr) ?? detectUsageLimit(e.message);
+      if (limit) throw limit;
       const detail = e.killed ? `timed out/killed (signal ${e.signal})` : (e.stdout?.trim() || e.stderr?.trim() || e.message);
       throw new Error(`claude CLI failed (${label}): ${detail.slice(0, 500)}`);
     }
@@ -100,6 +105,8 @@ export class ClaudeCodeLlmProvider implements LlmProvider {
       costUsd: parsed.total_cost_usd,
     });
     if (parsed.is_error) {
+      const limit = detectUsageLimit(parsed.result);
+      if (limit) throw limit;
       throw new Error(`claude CLI (${label}) reported an error: ${parsed.result}`);
     }
     return parsed;

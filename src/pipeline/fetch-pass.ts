@@ -4,7 +4,6 @@
 
 import {
   detectBounce,
-  isTargetResolved,
   matchReply,
   normalizeEmail,
   type AwaitingTargetRef,
@@ -31,8 +30,10 @@ export interface FetchReport {
   bounced: number;
   matched: number;
   unmatched: number;
-  /** Matched replies stored 'skipped' because the target was already answered. */
+  /** Matched replies stored 'skipped' because the body was empty. */
   skipped: number;
+  /** Inbound dropped pre-storage because the sender is on the ignore list. */
+  ignored: number;
 }
 
 export async function runFetchPass(deps: FetchDeps): Promise<FetchReport> {
@@ -44,6 +45,7 @@ export async function runFetchPass(deps: FetchDeps): Promise<FetchReport> {
     matched: 0,
     unmatched: 0,
     skipped: 0,
+    ignored: 0,
   };
 
   const sentRefs: SentOutreachRef[] = (await store.listOutreaches())
@@ -147,6 +149,13 @@ async function handleMessage(
   // what we decide about it below. The label records the decision.
   await markRead(deps, account, msg.emailId);
 
+  // Ignore list (D6): drop spam / automated senders before any work or storage.
+  if (await store.isIgnored(msg.fromAddress)) {
+    await applyLabel(deps, account, msg.emailId, LABELS.ignored);
+    report.ignored++;
+    return;
+  }
+
   const bounce = detectBounce(msg.fromAddress, msg.text);
   if (bounce.isBounce) {
     const failed = bounce.failedRecipient;
@@ -168,10 +177,11 @@ async function handleMessage(
     awaiting,
   );
 
-  // A later reply on an already-answered target is saved for the record but must
-  // never enter the extraction queue (store 'skipped', not 'pending').
+  // Every matched, non-empty reply enters the extraction queue as 'pending' — a
+  // later substantive reply must still be extracted so it appends a PriceRecord
+  // (PRICE-HISTORY-PLAN.md §5.2 Requirement 2). Empty bodies are stored 'skipped'.
   const target = match.targetId ? await store.getTarget(match.targetId) : undefined;
-  const alreadyAnswered = isTargetResolved(target);
+  const isEmpty = !msg.text?.trim();
 
   const reply: Reply = {
     id: newId('reply'),
@@ -183,7 +193,7 @@ async function handleMessage(
     matchMethod: match.method,
     receivedAt: msg.receivedAt,
     text: msg.text,
-    extractionStatus: alreadyAnswered ? 'skipped' : 'pending',
+    extractionStatus: match.targetId && !isEmpty ? 'pending' : 'skipped',
   };
 
   await store.putReply(reply);
@@ -197,8 +207,7 @@ async function handleMessage(
   // Matched to a target. This pass doesn't extract, so apply the provisional
   // AS/Replied — a later poll's extractPendingReplies refines it to the outcome.
   await applyLabel(deps, account, msg.emailId, LABELS.matched);
-  if (alreadyAnswered) {
-    // Leave the resolved target untouched — preserve its known result.
+  if (isEmpty) {
     report.skipped++;
   } else if (target) {
     await store.updateTarget(target.id, (t) =>

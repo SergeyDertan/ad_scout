@@ -338,6 +338,89 @@ test('POST /api/targets rejects an unknown batchId', async () => {
   }
 });
 
+test('GET /api/domains + /api/domains/:domain expose the derived price sheet', async () => {
+  const h = await start();
+  try {
+    // Two records for site1.com: an older regular+sensitive, a newer regular update.
+    await h.store.putPriceRecord({
+      id: 'pr1', domain: 'site1.com', attribution: 'sender', sourceEmail: 'a@site1.com',
+      sourceMessageId: '<A>', observedAt: '2026-02-01T00:00:00Z',
+      offers: [
+        { postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', price: { amount: 500, raw: '500' } },
+        { postType: 'guest_post', category: 'sensitive', label: 'Sensitive', sensitive: true, canPost: 'yes', price: { amount: 600, raw: '600' } },
+      ],
+    });
+    await h.store.putPriceRecord({
+      id: 'pr2', domain: 'site1.com', attribution: 'sender', sourceEmail: 'a@site1.com',
+      sourceMessageId: '<B>', observedAt: '2026-04-04T00:00:00Z',
+      offers: [{ postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', price: { amount: 550, raw: '550' } }],
+    });
+
+    const domains = await J(`${h.base}/api/domains`);
+    const site1 = domains.find((d: any) => d.domain === 'site1.com');
+    assert.equal(site1.recordCount, 2);
+    assert.equal(site1.standingCells, 2);
+    assert.equal(site1.lastObservedAt, '2026-04-04T00:00:00Z');
+    // site2.com is known via the seeded target even with no records.
+    assert.ok(domains.some((d: any) => d.domain === 'site2.com'));
+
+    const detail = await J(`${h.base}/api/domains/site1.com`);
+    const regular = detail.sheet.cells.find((c: any) => c.category === 'regular');
+    const sensitive = detail.sheet.cells.find((c: any) => c.category === 'sensitive');
+    assert.equal(regular.price.amount, 550);
+    assert.equal(regular.stale, false);
+    assert.equal(sensitive.price.amount, 600);
+    assert.equal(sensitive.stale, true); // carried forward from the earlier message
+    assert.equal(detail.history.length, 2);
+    assert.equal(detail.excluded, false);
+  } finally {
+    await h.close();
+  }
+});
+
+test('ignore + exclusion CRUD round-trips', async () => {
+  const h = await start();
+  try {
+    const ig = await J(`${h.base}/api/ignore`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'domain', value: 'HTTPS://www.Spammy.com/x', reason: 'noise' }),
+    });
+    assert.equal(ig.value, 'spammy.com');
+    assert.equal(ig.id, 'domain:spammy.com');
+    assert.equal((await J(`${h.base}/api/ignore`)).length, 1);
+    await J(`${h.base}/api/ignore/${encodeURIComponent('domain:spammy.com')}`, { method: 'DELETE' });
+    assert.equal((await J(`${h.base}/api/ignore`)).length, 0);
+
+    const ex = await J(`${h.base}/api/exclusions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain: 'blocked.com' }),
+    });
+    assert.equal(ex.domain, 'blocked.com');
+    assert.equal(ex.reason, 'manual');
+    assert.equal(await h.store.isDomainExcluded('blocked.com'), true);
+    await J(`${h.base}/api/exclusions/blocked.com`, { method: 'DELETE' });
+    assert.equal(await h.store.isDomainExcluded('blocked.com'), false);
+  } finally {
+    await h.close();
+  }
+});
+
+test('POST /api/targets rejects an import whose domain is excluded (D9)', async () => {
+  const h = await start();
+  try {
+    await h.store.putDomainExclusion({ id: 'blocked.com', domain: 'blocked.com', reason: 'declined', at: '2026-06-01T00:00:00Z' });
+    const res = await fetch(`${h.base}/api/targets`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ websiteUrl: 'https://www.blocked.com/path', contactEmail: 'a@blocked.com' }),
+    });
+    assert.equal(res.status, 409);
+    assert.equal((await h.store.listTargets()).length, 2); // nothing created
+  } finally {
+    await h.close();
+  }
+});
+
 test('DELETE /api/targets/:id removes a target', async () => {
   const h = await start();
   try {

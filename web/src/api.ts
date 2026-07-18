@@ -2,6 +2,10 @@ import type {
   Account,
   Batch,
   BatchRow,
+  DomainDetail,
+  DomainExclusion,
+  DomainSummary,
+  IgnoreEntry,
   NewAccount,
   NewBatch,
   NewTarget,
@@ -82,6 +86,23 @@ export const api = {
     req<ResponseRow[]>('/responses' + (batchId ? `?batchId=${encodeURIComponent(batchId)}` : '')),
   listSuppressions: () => req<Suppression[]>('/suppressions'),
   listNiches: () => req<Niche[]>('/niches'),
+
+  // per-domain price history
+  listDomains: () => req<DomainSummary[]>('/domains'),
+  getDomain: (domain: string) => req<DomainDetail>(`/domains/${encodeURIComponent(domain)}`),
+
+  // ignore list (inbound skip)
+  listIgnore: () => req<IgnoreEntry[]>('/ignore'),
+  addIgnore: (body: { kind: 'email' | 'domain'; value: string; reason?: string }) =>
+    req<IgnoreEntry>('/ignore', { method: 'POST', body: JSON.stringify(body) }),
+  deleteIgnore: (id: string) => req<{ ok: boolean }>(`/ignore/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // domain exclusion (outbound do-not-contact)
+  listExclusions: () => req<DomainExclusion[]>('/exclusions'),
+  addExclusion: (domain: string) =>
+    req<DomainExclusion>('/exclusions', { method: 'POST', body: JSON.stringify({ domain }) }),
+  deleteExclusion: (domain: string) =>
+    req<{ ok: boolean }>(`/exclusions/${encodeURIComponent(domain)}`, { method: 'DELETE' }),
 
   // manual passes
   runSend: () => req<unknown>('/run/send', { method: 'POST' }),

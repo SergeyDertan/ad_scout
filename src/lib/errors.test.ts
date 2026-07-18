@@ -1,7 +1,20 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { describeError } from './errors';
+import { describeError, detectUsageLimit, UsageLimitError } from './errors';
+
+test('detectUsageLimit recognizes the CLI limit message and parses the reset epoch', () => {
+  const err = detectUsageLimit('Claude AI usage limit reached|1719763200');
+  assert.ok(err instanceof UsageLimitError);
+  assert.equal(err?.resetAt?.getTime(), 1719763200 * 1000);
+  // Without an epoch it still detects, with no resetAt.
+  const noEpoch = detectUsageLimit('5-hour limit reached, try again later');
+  assert.ok(noEpoch instanceof UsageLimitError);
+  assert.equal(noEpoch?.resetAt, undefined);
+  // Ordinary errors are not misclassified.
+  assert.equal(detectUsageLimit('claude CLI returned non-JSON output'), undefined);
+  assert.equal(detectUsageLimit(undefined), undefined);
+});
 
 test('unwraps undici "fetch failed" to the root DNS cause', () => {
   // Shape Node throws when offline: TypeError { cause: Error { code: ENOTFOUND } }.

@@ -3,6 +3,7 @@
 // (no-reply bumps) are prioritized ahead of new initial sends and draw from the
 // same per-account daily cap.
 
+import { normalizeDomain } from '../domain/domain';
 import { remainingToday } from '../domain/limits';
 import type {
   Account,
@@ -95,6 +96,9 @@ export async function runSendPass(deps: SendDeps, opts: SendOpts = {}): Promise<
   const initials: WorkItem[] = [];
   for (const t of await store.listTargets()) {
     if (await store.isSuppressed(t.contactEmail)) continue;
+    // Domain-level do-not-contact (D9): a blanket-declined / manually-excluded
+    // website domain is skipped even if the email itself isn't suppressed.
+    if (await store.isDomainExcluded(normalizeDomain(t.websiteUrl))) continue;
     const profile = resolveProfile(t.batchId ? batchById.get(t.batchId) : undefined, config.pitch);
     if (config.followUpsEnabled && isFollowUpDue(t, config, now)) {
       followUps.push({ target: t, profile, kind: 'followup', sequenceNo: t.followUpCount + 1 });

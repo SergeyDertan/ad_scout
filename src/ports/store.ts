@@ -5,8 +5,11 @@
 import type {
   Account,
   Batch,
+  DomainExclusion,
+  IgnoreEntry,
   Niche,
   Outreach,
+  PriceRecord,
   Reply,
   Suppression,
   Target,
@@ -20,7 +23,10 @@ export type DocType =
   | 'outreach'
   | 'reply'
   | 'suppression'
-  | 'niche';
+  | 'niche'
+  | 'pricerecord'
+  | 'ignore'
+  | 'domainexclusion';
 
 export interface ChangeEvent {
   type: DocType;
@@ -89,6 +95,26 @@ export interface Store {
   isSuppressed(email: string): Promise<boolean>;
   addSuppression(s: Suppression): Promise<void>;
   listSuppressions(): Promise<Suppression[]>;
+
+  // price records (append-only per-domain history)
+  putPriceRecord(r: PriceRecord): Promise<PriceRecord>;
+  listPriceRecords(filter?: { domain?: string }): Promise<PriceRecord[]>;
+  /** Remove a price record by id. Used only by the migration/reset scripts to
+   *  wipe history before a re-scan — normal operation never deletes. */
+  deletePriceRecord(id: string): Promise<void>;
+
+  // ignore list (inbound skip)
+  putIgnore(e: IgnoreEntry): Promise<IgnoreEntry>;
+  listIgnore(): Promise<IgnoreEntry[]>;
+  /** True when `email`, its address-domain, or the seed constant matches. */
+  isIgnored(email: string): Promise<boolean>;
+  deleteIgnore(id: string): Promise<void>;
+
+  // domain exclusion (outbound do-not-contact by website domain)
+  putDomainExclusion(d: DomainExclusion): Promise<DomainExclusion>;
+  isDomainExcluded(domain: string): Promise<boolean>;
+  listDomainExclusions(): Promise<DomainExclusion[]>;
+  deleteDomainExclusion(domain: string): Promise<void>;
 
   // live feed
   subscribe(listener: ChangeListener): () => void;

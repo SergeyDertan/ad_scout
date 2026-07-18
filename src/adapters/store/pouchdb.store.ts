@@ -7,12 +7,17 @@
 //     STORE=pouchdb  POUCH_DIR=./data/pouch
 // NOTE: PouchDB's Node leveldb adapter is flagged deprecated — pin versions.
 
+import { normalizeDomain } from '../../domain/domain';
+import { isSeedIgnoredDomain } from '../../domain/ignore-seed';
 import { normalizeEmail } from '../../domain/reply-matching';
 import type {
   Account,
   Batch,
+  DomainExclusion,
+  IgnoreEntry,
   Niche,
   Outreach,
+  PriceRecord,
   Reply,
   Suppression,
   Target,
@@ -237,6 +242,60 @@ export class PouchDbStore implements Store {
   }
   listSuppressions() {
     return this.listByType<Suppression>('suppression');
+  }
+
+  // price records (doc id = pricerecord id)
+  putPriceRecord(r: PriceRecord) {
+    return this.put('pricerecord', r);
+  }
+  async listPriceRecords(filter?: { domain?: string }) {
+    let list = await this.listByType<PriceRecord>('pricerecord');
+    if (filter?.domain) {
+      const d = normalizeDomain(filter.domain);
+      list = list.filter((r) => r.domain === d);
+    }
+    return list;
+  }
+  deletePriceRecord(id: string) {
+    return this.delete('pricerecord', id);
+  }
+
+  // ignore list (doc id = `${kind}:${value}`)
+  async putIgnore(e: IgnoreEntry) {
+    const id = `${e.kind}:${e.value}`;
+    await this.put('ignore', { ...e, id });
+    return { ...e, id };
+  }
+  listIgnore() {
+    return this.listByType<IgnoreEntry>('ignore');
+  }
+  async isIgnored(email: string) {
+    const norm = normalizeEmail(email);
+    if (await this.get<IgnoreEntry>('ignore', `email:${norm}`)) return true;
+    const domain = normalizeDomain(norm);
+    if (!domain) return false;
+    if (await this.get<IgnoreEntry>('ignore', `domain:${domain}`)) return true;
+    return isSeedIgnoredDomain(domain);
+  }
+  deleteIgnore(id: string) {
+    return this.delete('ignore', id);
+  }
+
+  // domain exclusion (doc id = normalized domain)
+  async putDomainExclusion(d: DomainExclusion) {
+    const id = normalizeDomain(d.domain);
+    await this.put('domainexclusion', { ...d, id, domain: id });
+    return { ...d, id, domain: id };
+  }
+  async isDomainExcluded(domain: string) {
+    const doc = await this.get<DomainExclusion>('domainexclusion', normalizeDomain(domain));
+    return doc !== undefined;
+  }
+  listDomainExclusions() {
+    return this.listByType<DomainExclusion>('domainexclusion');
+  }
+  deleteDomainExclusion(domain: string) {
+    return this.delete('domainexclusion', normalizeDomain(domain));
   }
 
   subscribe(listener: ChangeListener): () => void {

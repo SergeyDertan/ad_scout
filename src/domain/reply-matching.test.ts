@@ -1,6 +1,45 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detectBounce, matchReply } from './reply-matching';
+import { attributeOffers, detectBounce, emailToDomains, matchReply } from './reply-matching';
+import type { PostOffer } from './types';
+
+const po = (o: Partial<PostOffer>): PostOffer => ({
+  postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', ...o,
+});
+
+test('emailToDomains maps normalized contact emails to their distinct site domains', () => {
+  const map = emailToDomains([
+    { contactEmail: 'Owner@Shared.com', websiteUrl: 'https://www.a.com/x' },
+    { contactEmail: 'owner@shared.com', websiteUrl: 'b.com' },
+    { contactEmail: 'solo@one.com', websiteUrl: 'one.com' },
+  ]);
+  assert.deepEqual(map.get('owner@shared.com')?.sort(), ['a.com', 'b.com']);
+  assert.deepEqual(map.get('solo@one.com'), ['one.com']);
+});
+
+test('attributeOffers: named site (M2) vs single sender (M1)', () => {
+  const { groups, reviewReasons } = attributeOffers(
+    [po({ price: { raw: '$100' } }), po({ price: { raw: '$80' }, website: 'casik.ua' })],
+    ['casik.com'],
+  );
+  assert.equal(reviewReasons.length, 0);
+  const sender = groups.find((g) => g.domain === 'casik.com');
+  const named = groups.find((g) => g.domain === 'casik.ua');
+  assert.equal(sender?.attribution, 'sender');
+  assert.equal(named?.attribution, 'named');
+});
+
+test('attributeOffers: multi-domain sender + untagged offer → review, no group', () => {
+  const { groups, reviewReasons } = attributeOffers([po({})], ['a.com', 'b.com']);
+  assert.equal(groups.length, 0);
+  assert.equal(reviewReasons.length, 1);
+});
+
+test('attributeOffers: zero sender domains + untagged offer → nothing attributed', () => {
+  const { groups, reviewReasons } = attributeOffers([po({})], []);
+  assert.equal(groups.length, 0);
+  assert.equal(reviewReasons.length, 0);
+});
 
 const sent = [
   { targetId: 't1', threadId: 'thr_aaa' },

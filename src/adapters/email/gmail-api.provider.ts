@@ -335,7 +335,15 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
     // whereas seeding afterward could skip past it and lose the reply.
     await this.seedHistoryId(account);
 
-    let q = 'in:inbox';
+    // Search INBOX *and* Spam: a publisher's reply Gmail misclassified as spam is
+    // a real reply we must still ingest (actual junk is dropped downstream by the
+    // ignore list + AI isSpam). The mailbox scope lives entirely in `q` here — a
+    // labelIds=INBOX constraint would re-exclude Spam — and includeSpamTrash lifts
+    // the API's default spam/trash filter while `q` keeps Trash out.
+    // NOTE: the incremental (historyId) path stays INBOX-only, so a message
+    // delivered straight to Spam AFTER this backfill is only caught on a full
+    // resync (cleared historyId), not by steady-state polling.
+    let q = '(in:inbox OR in:spam)';
     if (since) {
       // Gmail 'after:' takes Unix timestamp in seconds.
       q += ` after:${Math.floor(since.getTime() / 1000)}`;
@@ -343,7 +351,7 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
 
     const list = await this.gmailFetch<{ messages?: Array<{ id: string }> }>(
       account,
-      `/messages?labelIds=INBOX&q=${encodeURIComponent(q)}&maxResults=500`,
+      `/messages?q=${encodeURIComponent(q)}&maxResults=500&includeSpamTrash=true`,
     );
     return this.hydrate(account, (list.messages ?? []).map((m) => m.id));
   }

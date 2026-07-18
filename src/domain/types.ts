@@ -210,6 +210,70 @@ export interface PostOffer {
   sensitive: boolean; // copied from the niche — lets the UI filter without the registry
   canPost: CanPost;
   price?: PriceValue;
+  /** The site the owner tagged this offer with, ONLY when they priced a DIFFERENT
+   *  site they also own (M2). Blank/absent ⇒ the contacted site. Used by the
+   *  ingest phase to group offers into per-domain PriceRecords, then it is implied
+   *  by the record's `domain` (kept here for provenance). */
+  website?: string;
+  /** Time-limited promo price. A special does NOT overwrite the standing cell —
+   *  both coexist; the derived price sheet surfaces the promo separately (D5). */
+  isSpecial?: boolean;
+  /** Optional deadline the owner gave for a special. Expired ⇒ drops from active. */
+  specialUntil?: ISO;
+}
+
+// --- Price history (append-only, per domain) --------------------------------
+
+/**
+ * One observation of a domain's posting terms, as a single inbound message
+ * stated them (PRICE-HISTORY-PLAN.md §3.1). Append-only and event-shaped: it
+ * carries ONLY the cells that message mentioned. The "current price sheet" and
+ * the known-domains list are DERIVED from these records at read time, never
+ * stored (D1/D2).
+ */
+export interface PriceRecord {
+  id: ID; // newId('pricerecord')
+  domain: string; // normalizeDomain(...) — the index key
+  offers: PostOffer[]; // ONLY the cells this message said; [] = "can post, no price"
+  optOut?: boolean; // rare; opt-out is email-level, kept for completeness
+  observedAt: ISO; // the "date" of this observation
+  sourceEmail: string; // normalized from-address
+  sourceMessageId: string; // reply.rfcMessageId
+  replyId?: ID; // provenance → Reply
+  targetId?: ID; // set when domain == the contacted target's site
+  attribution: 'sender' | 'named'; // M1 (sender's domain) vs M2 (owner-tagged site) — D4
+}
+
+// --- Ignore list (inbound skip) ---------------------------------------------
+
+/**
+ * A sender we drop before doing any work — spam / automated senders (D6/D7).
+ * `kind:'email'` matches an exact from-address; `kind:'domain'` matches the
+ * sender ADDRESS domain (e.g. facebook.com). Checked at the top of message
+ * handling, replacing any regex prefilter.
+ */
+export interface IgnoreEntry {
+  id: ID; // `${kind}:${value}` (normalized) — natural key
+  kind: 'email' | 'domain';
+  value: string; // normalized email, or bare sender-address domain
+  reason: string; // AI reason (spam) or human note
+  emailId?: string; // the message that triggered it — for manual review (D7)
+  at: ISO;
+}
+
+// --- Domain exclusion (outbound do-not-contact by website domain) ------------
+
+/**
+ * A website domain we won't contact (D8). Distinct from email-level suppression:
+ * a blanket `intent:'decline'` excludes the DOMAIN; a per-cell `canPost:'no'` is
+ * just a price cell, not an exclusion. A later positive record lifts it (D10).
+ */
+export interface DomainExclusion {
+  id: ID; // = normalized domain
+  domain: string;
+  reason: 'declined' | 'manual';
+  sourceReplyId?: ID; // provenance
+  at: ISO;
 }
 
 /**

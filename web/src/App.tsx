@@ -20,6 +20,8 @@ import { AccountsView } from './components/AccountsView';
 import { TargetsView } from './components/TargetsView';
 import { BatchesView } from './components/BatchesView';
 import { ResponsesView } from './components/ResponsesView';
+import { DomainsView } from './components/DomainsView';
+import { IgnoreView } from './components/IgnoreView';
 import { SuppressionsView } from './components/SuppressionsView';
 import { LabelsView } from './components/LabelsView';
 import { RunView } from './components/RunView';
@@ -46,7 +48,9 @@ const TABS: {
   { id: 'targets', label: 'Targets', icon: TargetIcon, count: (s) => s?.targets.total },
   { id: 'batches', label: 'Batches', icon: TagIcon },
   { id: 'responses', label: 'Responses', icon: InboxIcon },
+  { id: 'domains', label: 'Domains', icon: TagIcon },
   { id: 'suppressions', label: 'Suppressions', icon: ShieldIcon },
+  { id: 'ignore', label: 'Ignore', icon: ShieldIcon },
   { id: 'labels', label: 'Labels', icon: LabelsIcon },
   { id: 'run', label: 'Run', icon: PlayIcon },
 ];
@@ -294,8 +298,14 @@ export function App() {
           <Tabs.Content value="responses">
             <ResponsesView tick={ticks.reply} />
           </Tabs.Content>
+          <Tabs.Content value="domains">
+            <DomainsView tick={ticks.reply + ticks.target} />
+          </Tabs.Content>
           <Tabs.Content value="suppressions">
             <SuppressionsView tick={ticks.suppression} />
+          </Tabs.Content>
+          <Tabs.Content value="ignore">
+            <IgnoreView tick={ticks.reply} />
           </Tabs.Content>
           <Tabs.Content value="labels">
             <LabelsView />

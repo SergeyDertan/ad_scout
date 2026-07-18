@@ -8,6 +8,42 @@
 // genuine API/auth failure. `describeError` unwraps that chain into flat,
 // loggable fields.
 
+/**
+ * The Claude Code CLI (subscription session) hit its usage/rate limit. Thrown by
+ * the claude-code provider so the extraction driver can STOP cleanly — leaving
+ * the current reply 'pending' to resume later — instead of burning through every
+ * remaining reply marking it 'failed'. `resetAt` is the reset time when the CLI
+ * reported one (it appends a unix epoch: "usage limit reached|<epoch>").
+ */
+export class UsageLimitError extends Error {
+  readonly resetAt?: Date;
+  constructor(message: string, resetAt?: Date) {
+    super(message);
+    this.name = 'UsageLimitError';
+    if (resetAt) this.resetAt = resetAt;
+  }
+}
+
+/**
+ * Detect a Claude Code usage/session-limit message in CLI output. Returns a typed
+ * UsageLimitError (with the reset time when the CLI appended an epoch) or
+ * undefined when the text is an ordinary error. Never throws.
+ */
+export function detectUsageLimit(text: string | undefined): UsageLimitError | undefined {
+  if (!text) return undefined;
+  if (!/usage limit reached|rate limit|limit reached|exceed(ed)? your (usage|plan|account) limit/i.test(text)) {
+    return undefined;
+  }
+  const m = text.match(/\|\s*(\d{10,13})\b/); // "…reached|1719763200"
+  let resetAt: Date | undefined;
+  if (m) {
+    const n = Number(m[1]);
+    const d = new Date(n < 1e12 ? n * 1000 : n); // seconds vs milliseconds
+    if (!Number.isNaN(d.getTime())) resetAt = d;
+  }
+  return new UsageLimitError(text.trim().slice(0, 200), resetAt);
+}
+
 interface ErrnoLike {
   message?: unknown;
   code?: unknown;

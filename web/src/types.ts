@@ -278,6 +278,77 @@ export interface Suppression {
   at: string;
 }
 
+// --- Per-domain price history (mirrors src/domain/price-sheet.ts) ------------
+
+/** A row in the known-domains list (GET /api/domains). */
+export interface DomainSummary {
+  domain: string;
+  recordCount: number;
+  standingCells: number;
+  activeSpecials: number;
+  lastObservedAt?: string;
+  optedOut: boolean;
+  excluded: boolean;
+}
+
+/** A folded standing/special price cell (GET /api/domains/:domain). */
+export interface PriceCell {
+  postType: string;
+  category: string;
+  label: string;
+  sensitive: boolean;
+  canPost: CanPost;
+  price?: PriceValue;
+  asOf: string;
+  sourceMessageId: string;
+  replyId?: string;
+  stale: boolean;
+  specialUntil?: string; // specials only
+  active?: boolean; // specials only
+}
+
+export interface PriceRecordRow {
+  id: string;
+  domain: string;
+  offers: PostOffer[];
+  observedAt: string;
+  sourceEmail: string;
+  sourceMessageId: string;
+  attribution: 'sender' | 'named';
+  targetId?: string;
+  optOut?: boolean;
+}
+
+export interface DomainDetail {
+  sheet: {
+    domain: string;
+    cells: PriceCell[];
+    specials: PriceCell[];
+    lastObservedAt?: string;
+    recordCount: number;
+    optedOut: boolean;
+  };
+  history: PriceRecordRow[];
+  excluded: boolean;
+}
+
+export interface IgnoreEntry {
+  id: string;
+  kind: 'email' | 'domain';
+  value: string;
+  reason: string;
+  emailId?: string;
+  at: string;
+}
+
+export interface DomainExclusion {
+  id: string;
+  domain: string;
+  reason: 'declined' | 'manual';
+  sourceReplyId?: string;
+  at: string;
+}
+
 export interface Engagement {
   queued: number;
   contacted: number;

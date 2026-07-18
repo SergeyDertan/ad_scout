@@ -86,8 +86,22 @@ const SYSTEM = [
   '  absolute, set multiplier 0 and relativeTo "".',
   '- sensitive: true for grey niches (casino, gambling, betting, vpn, crypto, cbd, adult,',
   '  dating, forex, loans, pharma, ...); false for ordinary/regular posts.',
+  '- website: LEAVE BLANK ("") for the site we contacted them about — that is the default and',
+  '  the common case. Set it ONLY when the owner explicitly prices a DIFFERENT site they also',
+  '  own in the SAME reply (e.g. "on casik.ua the same post is $80"): put that site (domain or',
+  '  URL) here so its price is recorded against that site, not the one we asked about. Do NOT',
+  '  put our advertised site or a generic link here.',
+  '- isSpecial/specialUntil: set isSpecial true when a price is a TIME-LIMITED promo/discount',
+  '  ("this month only", "special offer", "-20% until Friday"), NOT the standing rate; put the',
+  '  deadline verbatim in specialUntil ("end of month", "2026-08-01") or "" if none. Otherwise',
+  '  isSpecial false and specialUntil "". A special is IN ADDITION to the standing price — if',
+  '  they give both, emit the standing cell normally and mark only the promo cell isSpecial.',
   '',
   'Other rules:',
+  '- isSpam: true ONLY when the email is WHOLLY unrelated to guest posting / link building /',
+  '  advertising with us — an unrelated marketing blast ("10% off pool cleaners"), a newsletter,',
+  '  a platform/social notification. A genuine reply about posting/pricing — even a flat refusal —',
+  '  is NOT spam. When unsure, false. When isSpam is true, offers may be empty.',
   '- reasoning: ONE short line (max ~20 words) explaining the niche/price classification,',
   '  e.g. "Owner priced casino $150 and regular $60; no other niches mentioned". No line breaks.',
   '- optOut: true ONLY if they ask to stop being contacted / unsubscribe / "remove me".',
@@ -112,6 +126,9 @@ export interface ExtractionOutcome {
   /** Reasons the AI couldn't fully process the reply (unreadable file, unreachable
    *  link, provider without file/web access). Empty ⇒ nothing needs review. */
   review: string[];
+  /** The reply is WHOLLY unrelated to posting/ads (D7). The caller ignores the
+   *  sender and writes no price records. */
+  isSpam: boolean;
 }
 
 /** MIME types Claude Code's Read tool can parse. Everything else (xlsx, docx,
@@ -209,7 +226,7 @@ export class Extractor {
       niches,
       requestedCategory,
     });
-    return { result, discovered, review };
+    return { result, discovered, review, isSpam: Boolean((json as RawExtraction).isSpam) };
   }
 }
 

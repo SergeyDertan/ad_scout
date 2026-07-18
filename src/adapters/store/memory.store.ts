@@ -5,12 +5,17 @@
 import type {
   Account,
   Batch,
+  DomainExclusion,
+  IgnoreEntry,
   Niche,
   Outreach,
+  PriceRecord,
   Reply,
   Suppression,
   Target,
 } from '../../domain/types';
+import { normalizeDomain } from '../../domain/domain';
+import { isSeedIgnoredDomain } from '../../domain/ignore-seed';
 import { normalizeEmail } from '../../domain/reply-matching';
 import type {
   ChangeEvent,
@@ -34,6 +39,9 @@ export class MemoryStore implements Store {
   private repliesByEmailId = new Map<string, string>(); // emailId -> reply id
   private suppressions = new Map<string, Suppression>(); // keyed by normalized email
   private niches = new Map<string, Niche>(); // keyed by niche.key
+  private priceRecords = new Map<string, PriceRecord>(); // keyed by id
+  private ignores = new Map<string, IgnoreEntry>(); // keyed by `${kind}:${value}`
+  private domainExclusions = new Map<string, DomainExclusion>(); // keyed by domain
   private listeners = new Set<ChangeListener>();
 
   private emit(type: DocType, action: ChangeEvent['action'], id: string): void {
@@ -173,6 +181,66 @@ export class MemoryStore implements Store {
   }
   async listSuppressions() {
     return [...this.suppressions.values()].map(clone);
+  }
+
+  // price records
+  async putPriceRecord(r: PriceRecord) {
+    this.priceRecords.set(r.id, clone(r));
+    this.emit('pricerecord', 'put', r.id);
+    return clone(r);
+  }
+  async listPriceRecords(filter?: { domain?: string }) {
+    let list = [...this.priceRecords.values()];
+    if (filter?.domain) {
+      const d = normalizeDomain(filter.domain);
+      list = list.filter((r) => r.domain === d);
+    }
+    return list.map(clone);
+  }
+  async deletePriceRecord(id: string) {
+    if (this.priceRecords.delete(id)) this.emit('pricerecord', 'delete', id);
+  }
+
+  // ignore list
+  async putIgnore(e: IgnoreEntry) {
+    const key = `${e.kind}:${e.value}`;
+    const doc = clone({ ...e, id: key });
+    this.ignores.set(key, doc);
+    this.emit('ignore', 'put', key);
+    return clone(doc);
+  }
+  async listIgnore() {
+    return [...this.ignores.values()].map(clone);
+  }
+  async isIgnored(email: string) {
+    const norm = normalizeEmail(email);
+    if (this.ignores.has(`email:${norm}`)) return true;
+    const domain = normalizeDomain(norm);
+    if (!domain) return false;
+    if (this.ignores.has(`domain:${domain}`)) return true;
+    return isSeedIgnoredDomain(domain);
+  }
+  async deleteIgnore(id: string) {
+    if (this.ignores.delete(id)) this.emit('ignore', 'delete', id);
+  }
+
+  // domain exclusion
+  async putDomainExclusion(d: DomainExclusion) {
+    const key = normalizeDomain(d.domain);
+    const doc = clone({ ...d, id: key, domain: key });
+    this.domainExclusions.set(key, doc);
+    this.emit('domainexclusion', 'put', key);
+    return clone(doc);
+  }
+  async isDomainExcluded(domain: string) {
+    return this.domainExclusions.has(normalizeDomain(domain));
+  }
+  async listDomainExclusions() {
+    return [...this.domainExclusions.values()].map(clone);
+  }
+  async deleteDomainExclusion(domain: string) {
+    const key = normalizeDomain(domain);
+    if (this.domainExclusions.delete(key)) this.emit('domainexclusion', 'delete', key);
   }
 
   subscribe(listener: ChangeListener): () => void {

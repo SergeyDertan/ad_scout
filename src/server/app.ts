@@ -492,6 +492,14 @@ async function handle(
       return sendJson(res, 201, await store.putBatch(batch));
     }
 
+    // GET /api/replies/:id — one raw reply (source message behind a price record)
+    if (method === 'GET' && seg[1] === 'replies' && seg[2] && seg.length === 3) {
+      const id = decodeURIComponent(seg[2]);
+      const reply = (await store.listReplies()).find((r) => r.id === id);
+      if (!reply) return sendJson(res, 404, { error: 'reply not found' });
+      return sendJson(res, 200, reply);
+    }
+
     // DELETE /api/replies/:id
     if (method === 'DELETE' && seg[1] === 'replies' && seg[2] && seg.length === 3) {
       await store.deleteReply(seg[2]);

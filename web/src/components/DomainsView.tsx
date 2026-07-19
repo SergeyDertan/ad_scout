@@ -1,11 +1,37 @@
-import { Badge, Box, Button, HStack, Table, Text, VStack } from '@chakra-ui/react';
-import { useCallback, useEffect, useState } from 'react';
+import {
+  Badge,
+  Box,
+  Button,
+  CloseButton,
+  Dialog,
+  HStack,
+  Input,
+  InputGroup,
+  NativeSelect,
+  Portal,
+  Spinner,
+  Table,
+  Text,
+  VStack,
+} from '@chakra-ui/react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { List, type RowComponentProps } from 'react-window';
 import { api } from '../api';
 import { DataPanel } from './DataPanel';
 import { Empty } from './Empty';
 import { useResource } from '../hooks/useResource';
-import { TagIcon } from './icons';
-import { formatPrice, postTypeLabel, type DomainDetail, type PriceCell } from '../types';
+import { ChevronDownIcon, SearchIcon, TagIcon } from './icons';
+import {
+  formatPrice,
+  postTypeLabel,
+  type DomainDetail,
+  type DomainSummary,
+  type EmailAttachment,
+  type PostOffer,
+  type PriceCell,
+  type PriceRecordRow,
+  type ResponseRow,
+} from '../types';
 
 function fmtDate(iso?: string): string {
   if (!iso) return '—';
@@ -14,10 +40,78 @@ function fmtDate(iso?: string): string {
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+function fmtDateTime(iso?: string): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
 function CanPostBadge({ value }: { value: string }) {
   const palette = value === 'yes' ? 'green' : value === 'no' ? 'red' : 'gray';
   return <Badge colorPalette={palette} variant="subtle">{value}</Badge>;
 }
+
+// --- Source-message viewer (the raw reply behind a price record) --------------
+
+/** Fetches and shows the raw inbound message a price record was extracted from. */
+function SourceMessage({ replyId }: { replyId: string }) {
+  const [reply, setReply] = useState<ResponseRow | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    api.getReply(replyId).then((r) => live && setReply(r)).catch((e) => live && setError(String(e)));
+    return () => { live = false; };
+  }, [replyId]);
+
+  if (error) return <Text color="red.fg" fontSize="xs">{error}</Text>;
+  if (!reply) return <HStack fontSize="xs" color="fg.muted" gap={2}><Spinner size="xs" /><Text>Loading message…</Text></HStack>;
+
+  return (
+    <VStack align="stretch" gap={2} mt={2}>
+      <HStack fontSize="xs" color="fg.muted" gap={3} flexWrap="wrap">
+        <Text><Text as="span" fontWeight="semibold">From:</Text> {reply.fromAddress}</Text>
+        {reply.receivedAt && <Text><Text as="span" fontWeight="semibold">Received:</Text> {fmtDateTime(reply.receivedAt)}</Text>}
+        {reply.parsed?.intent && <Badge size="sm" variant="surface">{reply.parsed.intent}</Badge>}
+      </HStack>
+      <Box bg="bg.subtle" borderWidth="1px" borderColor="border" rounded="md" p={3} maxH="320px" overflowY="auto">
+        <Text as="pre" fontSize="xs" whiteSpace="pre-wrap" fontFamily="inherit" lineHeight="1.6">
+          {reply.text?.trim() || '(no body)'}
+        </Text>
+      </Box>
+      <Attachments attachments={reply.attachments} />
+    </VStack>
+  );
+}
+
+function Attachments({ attachments }: { attachments?: EmailAttachment[] }) {
+  if (!attachments || attachments.length === 0) return null;
+  return (
+    <HStack gap={2} flexWrap="wrap">
+      {attachments.map((a, i) => (
+        <Box
+          key={`${a.filename}-${i}`}
+          as="a"
+          {...{ href: `data:${a.mimeType};base64,${a.contentBase64}`, download: a.filename }}
+          fontSize="xs"
+          bg="bg.muted"
+          rounded="md"
+          px={2.5}
+          py={1.5}
+          _hover={{ bg: 'bg.subtle' }}
+        >
+          <Text as="span" fontWeight="medium">{a.filename}</Text>
+          <Text as="span" color="fg.subtle" ml={2}>{(a.size / 1024).toFixed(1)} KB</Text>
+        </Box>
+      ))}
+    </HStack>
+  );
+}
+
+// --- Folded price sheet tables ------------------------------------------------
 
 function CellRow({ cell, special }: { cell: PriceCell; special?: boolean }) {
   return (
@@ -47,7 +141,104 @@ function CellRow({ cell, special }: { cell: PriceCell; special?: boolean }) {
   );
 }
 
-function DomainDetailPanel({ domain, onChanged }: { domain: string; onChanged: () => void }) {
+function PriceTable({ cells, special }: { cells: PriceCell[]; special?: boolean }) {
+  return (
+    <Table.Root size="sm" variant="line">
+      <Table.Header>
+        <Table.Row bg="bg.subtle">
+          <Table.ColumnHeader>Product</Table.ColumnHeader>
+          <Table.ColumnHeader>Niche</Table.ColumnHeader>
+          <Table.ColumnHeader>Can post</Table.ColumnHeader>
+          <Table.ColumnHeader>Price</Table.ColumnHeader>
+          <Table.ColumnHeader>As of</Table.ColumnHeader>
+        </Table.Row>
+      </Table.Header>
+      <Table.Body>
+        {cells.map((c) => <CellRow key={`${special ? 's|' : ''}${c.postType}|${c.category}`} cell={c} special={special} />)}
+      </Table.Body>
+    </Table.Root>
+  );
+}
+
+// --- One history record (a single observed message) ---------------------------
+
+function OfferRow({ offer }: { offer: PostOffer }) {
+  return (
+    <Table.Row>
+      <Table.Cell color="fg.muted">{postTypeLabel(offer.postType)}</Table.Cell>
+      <Table.Cell>
+        <HStack gap={1.5}>
+          <Text>{offer.label || offer.category}</Text>
+          {offer.sensitive && <Badge colorPalette="orange" variant="surface" size="sm">sensitive</Badge>}
+          {offer.isSpecial && (
+            <Badge colorPalette="purple" variant="subtle" size="sm">
+              special{offer.specialUntil ? ` · till ${offer.specialUntil}` : ''}
+            </Badge>
+          )}
+        </HStack>
+      </Table.Cell>
+      <Table.Cell><CanPostBadge value={offer.canPost} /></Table.Cell>
+      <Table.Cell fontWeight="medium">{formatPrice(offer.price)}</Table.Cell>
+    </Table.Row>
+  );
+}
+
+function HistoryRecord({ record }: { record: PriceRecordRow }) {
+  const [showMsg, setShowMsg] = useState(false);
+  return (
+    <Box borderWidth="1px" borderColor="border" rounded="lg" bg="bg.panel" p={3}>
+      <HStack justify="space-between" flexWrap="wrap" gap={2} mb={2}>
+        <HStack gap={2} flexWrap="wrap">
+          <Text fontWeight="semibold" fontSize="sm">{fmtDateTime(record.observedAt)}</Text>
+          <Badge size="sm" variant="surface" colorPalette={record.attribution === 'named' ? 'blue' : 'gray'}>
+            {record.attribution === 'named' ? 'named site' : 'sender'}
+          </Badge>
+          {record.optOut && <Badge size="sm" colorPalette="red" variant="subtle">opted out</Badge>}
+        </HStack>
+        {record.replyId ? (
+          <Button size="xs" variant="outline" onClick={() => setShowMsg((v) => !v)}>
+            {showMsg ? 'Hide message' : 'View source message'}
+          </Button>
+        ) : (
+          <Text fontSize="xs" color="fg.subtle">no linked message</Text>
+        )}
+      </HStack>
+
+      <HStack gap={4} fontSize="xs" color="fg.muted" flexWrap="wrap" mb={record.offers.length ? 2 : 0}>
+        <Text><Text as="span" fontWeight="semibold">Email:</Text> {record.sourceEmail || '—'}</Text>
+        <Text truncate maxW="360px" title={record.sourceMessageId}>
+          <Text as="span" fontWeight="semibold">Message-Id:</Text> {record.sourceMessageId || '—'}
+        </Text>
+      </HStack>
+
+      {record.offers.length > 0 ? (
+        <Box borderWidth="1px" borderColor="border" rounded="md" overflow="hidden">
+          <Table.Root size="sm" variant="line">
+            <Table.Header>
+              <Table.Row bg="bg.subtle">
+                <Table.ColumnHeader>Product</Table.ColumnHeader>
+                <Table.ColumnHeader>Niche</Table.ColumnHeader>
+                <Table.ColumnHeader>Can post</Table.ColumnHeader>
+                <Table.ColumnHeader>Price</Table.ColumnHeader>
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {record.offers.map((o, i) => <OfferRow key={`${o.postType}|${o.category}|${i}`} offer={o} />)}
+            </Table.Body>
+          </Table.Root>
+        </Box>
+      ) : (
+        <Text fontSize="xs" color="fg.subtle">No priced cells in this message (acknowledgement only).</Text>
+      )}
+
+      {showMsg && record.replyId && <SourceMessage replyId={record.replyId} />}
+    </Box>
+  );
+}
+
+// --- Per-domain detail modal --------------------------------------------------
+
+function DomainDetailModal({ domain, onClose, onChanged }: { domain: string; onClose: () => void; onChanged: () => void }) {
   const [detail, setDetail] = useState<DomainDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -70,140 +261,294 @@ function DomainDetailPanel({ domain, onChanged }: { domain: string; onChanged: (
     }
   };
 
-  if (error) return <Text color="red.fg" fontSize="sm">{error}</Text>;
-  if (!detail) return <Text color="fg.muted" fontSize="sm">Loading…</Text>;
+  const sheet = detail?.sheet;
+  const history = detail?.history ?? [];
 
-  const { sheet, history } = detail;
   return (
-    <VStack align="stretch" gap={4}>
-      <HStack justify="space-between" flexWrap="wrap" gap={2}>
-        <HStack gap={2}>
-          <Text fontWeight="semibold" fontSize="lg">{domain}</Text>
-          {detail.excluded && <Badge colorPalette="red" variant="solid">excluded</Badge>}
-          {sheet.optedOut && <Badge colorPalette="purple" variant="subtle">opted out</Badge>}
-        </HStack>
-        <Button size="sm" variant={detail.excluded ? 'outline' : 'subtle'} colorPalette="red" onClick={toggleExcluded} loading={busy}>
-          {detail.excluded ? 'Re-include (remove exclusion)' : 'Exclude domain'}
-        </Button>
+    <Dialog.Root open onOpenChange={(e) => { if (!e.open) onClose(); }} size="xl" placement="center" scrollBehavior="inside">
+      <Portal>
+        <Dialog.Backdrop />
+        <Dialog.Positioner>
+          <Dialog.Content rounded="xl" maxW="900px">
+            <Dialog.Header>
+              <HStack justify="space-between" flex="1" flexWrap="wrap" gap={2}>
+                <HStack gap={2} flexWrap="wrap">
+                  <Dialog.Title>{domain}</Dialog.Title>
+                  {detail?.excluded && <Badge colorPalette="red" variant="solid">excluded</Badge>}
+                  {sheet?.optedOut && <Badge colorPalette="purple" variant="subtle">opted out</Badge>}
+                </HStack>
+                {detail && (
+                  <Button
+                    size="sm"
+                    variant={detail.excluded ? 'outline' : 'subtle'}
+                    colorPalette="red"
+                    onClick={toggleExcluded}
+                    loading={busy}
+                    mr={8}
+                  >
+                    {detail.excluded ? 'Re-include' : 'Exclude domain'}
+                  </Button>
+                )}
+              </HStack>
+            </Dialog.Header>
+
+            <Dialog.Body>
+              {error ? (
+                <Text color="red.fg" fontSize="sm">{error}</Text>
+              ) : !detail || !sheet ? (
+                <HStack color="fg.muted" fontSize="sm" gap={2}><Spinner size="sm" /><Text>Loading…</Text></HStack>
+              ) : (
+                <VStack align="stretch" gap={5}>
+                  <Box>
+                    <Text fontSize="sm" fontWeight="semibold" color="fg.muted" mb={2}>
+                      Current prices ({sheet.cells.length})
+                    </Text>
+                    {sheet.cells.length === 0 ? (
+                      <Text fontSize="sm" color="fg.muted">No priced cells recorded yet.</Text>
+                    ) : (
+                      <PriceTable cells={sheet.cells} />
+                    )}
+                  </Box>
+
+                  {sheet.specials.length > 0 && (
+                    <Box>
+                      <Text fontSize="sm" fontWeight="semibold" color="fg.muted" mb={2}>
+                        Special offers ({sheet.specials.length})
+                      </Text>
+                      <PriceTable cells={sheet.specials} special />
+                    </Box>
+                  )}
+
+                  <Box>
+                    <Text fontSize="sm" fontWeight="semibold" color="fg.muted" mb={2}>
+                      History ({history.length} record{history.length === 1 ? '' : 's'})
+                    </Text>
+                    {history.length === 0 ? (
+                      <Text fontSize="sm" color="fg.muted">No observed messages for this domain yet.</Text>
+                    ) : (
+                      <VStack align="stretch" gap={2.5}>
+                        {history.slice().reverse().map((r) => <HistoryRecord key={r.id} record={r} />)}
+                      </VStack>
+                    )}
+                  </Box>
+                </VStack>
+              )}
+            </Dialog.Body>
+
+            <Dialog.Footer>
+              <Button variant="outline" onClick={onClose}>Close</Button>
+            </Dialog.Footer>
+
+            <Dialog.CloseTrigger asChild>
+              <CloseButton size="sm" />
+            </Dialog.CloseTrigger>
+          </Dialog.Content>
+        </Dialog.Positioner>
+      </Portal>
+    </Dialog.Root>
+  );
+}
+
+// --- Sortable domains list ----------------------------------------------------
+
+type SortKey = 'domain' | 'standingCells' | 'activeSpecials' | 'recordCount' | 'lastObservedAt';
+type StateFilter = 'all' | 'excluded' | 'optedOut' | 'active' | 'specials';
+
+// Domain | Prices | Specials | Records | Last quote | State
+const COLS = '1fr 90px 90px 90px 150px 170px';
+const ROW_H = 52;
+const MAX_LIST_H = 640;
+
+function SortHeader({
+  label, col, sortKey, dir, onSort,
+}: {
+  label: string; col: SortKey; sortKey: SortKey; dir: 'asc' | 'desc';
+  onSort: (c: SortKey) => void;
+}) {
+  const active = sortKey === col;
+  return (
+    <HStack
+      gap={1}
+      as="button"
+      {...{ type: 'button' }}
+      onClick={() => onSort(col)}
+      cursor="pointer"
+      userSelect="none"
+      minW={0}
+      _hover={{ color: 'fg' }}
+      color={active ? 'fg' : undefined}
+    >
+      <Text>{label}</Text>
+      <Box
+        as="span"
+        transform={active && dir === 'asc' ? 'rotate(180deg)' : undefined}
+        opacity={active ? 1 : 0.25}
+        transition="transform 0.15s"
+      >
+        <ChevronDownIcon boxSize={3.5} />
+      </Box>
+    </HStack>
+  );
+}
+
+interface RowData {
+  rows: DomainSummary[];
+  onSelect: (domain: string) => void;
+}
+
+function VirtualRow({ index, style, rows, onSelect }: RowComponentProps<RowData>) {
+  const d = rows[index]!;
+  return (
+    <Box
+      style={style}
+      display="grid"
+      gridTemplateColumns={COLS}
+      alignItems="center"
+      px={4}
+      gap={3}
+      fontSize="sm"
+      cursor="pointer"
+      onClick={() => onSelect(d.domain)}
+      borderBottomWidth="1px"
+      borderColor="border"
+      bg={index % 2 === 0 ? 'bg.panel' : 'bg.subtle'}
+      _hover={{ bg: 'bg.muted' }}
+      transition="background 0.1s"
+    >
+      <Text fontWeight="medium" overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
+        {d.domain}
+      </Text>
+      <Text>{d.standingCells}</Text>
+      <Text>{d.activeSpecials || '—'}</Text>
+      <Text>{d.recordCount}</Text>
+      <Text color="fg.muted" overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
+        {fmtDate(d.lastObservedAt)}
+      </Text>
+      <HStack gap={1.5} minW={0}>
+        {d.excluded && <Badge colorPalette="red" variant="solid" size="sm">excluded</Badge>}
+        {d.optedOut && <Badge colorPalette="purple" variant="subtle" size="sm">opted out</Badge>}
+        {!d.excluded && !d.optedOut && <Text color="fg.subtle">—</Text>}
       </HStack>
-
-      <Box>
-        <Text fontSize="sm" fontWeight="semibold" color="fg.muted" mb={2}>Current prices ({sheet.cells.length})</Text>
-        {sheet.cells.length === 0 ? (
-          <Text fontSize="sm" color="fg.muted">No priced cells recorded yet.</Text>
-        ) : (
-          <Table.Root size="sm" variant="line">
-            <Table.Header>
-              <Table.Row bg="bg.subtle">
-                <Table.ColumnHeader>Product</Table.ColumnHeader>
-                <Table.ColumnHeader>Niche</Table.ColumnHeader>
-                <Table.ColumnHeader>Can post</Table.ColumnHeader>
-                <Table.ColumnHeader>Price</Table.ColumnHeader>
-                <Table.ColumnHeader>As of</Table.ColumnHeader>
-              </Table.Row>
-            </Table.Header>
-            <Table.Body>
-              {sheet.cells.map((c) => <CellRow key={`${c.postType}|${c.category}`} cell={c} />)}
-            </Table.Body>
-          </Table.Root>
-        )}
-      </Box>
-
-      {sheet.specials.length > 0 && (
-        <Box>
-          <Text fontSize="sm" fontWeight="semibold" color="fg.muted" mb={2}>Special offers ({sheet.specials.length})</Text>
-          <Table.Root size="sm" variant="line">
-            <Table.Header>
-              <Table.Row bg="bg.subtle">
-                <Table.ColumnHeader>Product</Table.ColumnHeader>
-                <Table.ColumnHeader>Niche</Table.ColumnHeader>
-                <Table.ColumnHeader>Can post</Table.ColumnHeader>
-                <Table.ColumnHeader>Price</Table.ColumnHeader>
-                <Table.ColumnHeader>As of</Table.ColumnHeader>
-              </Table.Row>
-            </Table.Header>
-            <Table.Body>
-              {sheet.specials.map((c) => <CellRow key={`s|${c.postType}|${c.category}`} cell={c} special />)}
-            </Table.Body>
-          </Table.Root>
-        </Box>
-      )}
-
-      <Box>
-        <Text fontSize="sm" fontWeight="semibold" color="fg.muted" mb={2}>History ({history.length} record{history.length === 1 ? '' : 's'})</Text>
-        <VStack align="stretch" gap={1.5}>
-          {history.slice().reverse().map((r) => (
-            <HStack key={r.id} fontSize="xs" color="fg.muted" gap={3} borderBottomWidth="1px" borderColor="border" pb={1.5}>
-              <Text minW="90px">{fmtDate(r.observedAt)}</Text>
-              <Badge size="sm" variant="surface" colorPalette={r.attribution === 'named' ? 'blue' : 'gray'}>{r.attribution}</Badge>
-              <Text flex="1" truncate>{r.sourceEmail}</Text>
-              <Text>{r.offers.length} cell{r.offers.length === 1 ? '' : 's'}</Text>
-            </HStack>
-          ))}
-        </VStack>
-      </Box>
-    </VStack>
+    </Box>
   );
 }
 
 export function DomainsView({ tick }: { tick: number }) {
   const { rows, loading, error, reload } = useResource(useCallback(() => api.listDomains(), []), tick);
   const [selected, setSelected] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [stateFilter, setStateFilter] = useState<StateFilter>('all');
+  const [sortKey, setSortKey] = useState<SortKey>('lastObservedAt');
+  const [dir, setDir] = useState<'asc' | 'desc'>('desc');
+
+  const onSort = (col: SortKey) => {
+    if (col === sortKey) setDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else { setSortKey(col); setDir(col === 'domain' ? 'asc' : 'desc'); }
+  };
+
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const filtered = (rows as DomainSummary[]).filter((d) => {
+      if (q && !d.domain.toLowerCase().includes(q)) return false;
+      switch (stateFilter) {
+        case 'excluded': return d.excluded;
+        case 'optedOut': return d.optedOut;
+        case 'specials': return d.activeSpecials > 0;
+        case 'active': return !d.excluded && !d.optedOut;
+        default: return true;
+      }
+    });
+    const factor = dir === 'asc' ? 1 : -1;
+    return filtered.sort((a, b) => {
+      if (sortKey === 'domain') return factor * a.domain.localeCompare(b.domain);
+      if (sortKey === 'lastObservedAt') return factor * (a.lastObservedAt ?? '').localeCompare(b.lastObservedAt ?? '');
+      return factor * ((a[sortKey] as number) - (b[sortKey] as number));
+    });
+  }, [rows, search, stateFilter, sortKey, dir]);
+
+  const listHeight = Math.min(visible.length * ROW_H, MAX_LIST_H);
 
   if (error) return <Text color="red.fg" fontSize="sm" pt={4}>{error}</Text>;
 
   return (
     <Box pt={4}>
       <Text color="fg.muted" fontSize="sm" mb={4}>
-        Per-domain price history — every recorded quote, folded into a current price sheet. Subdomains and
-        TLDs are kept distinct (casik.com ≠ casik.ua).
+        Per-domain price history — every recorded quote, folded into a current price sheet. Click a row to open the
+        full history. Subdomains and TLDs are kept distinct (casik.com ≠ casik.ua).
       </Text>
+
+      <HStack gap={2} mb={3} flexWrap="wrap">
+        <InputGroup startElement={<SearchIcon boxSize={3.5} color="fg.muted" />} maxW="64">
+          <Input
+            size="sm"
+            placeholder="Search domain…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            bg="bg.panel"
+          />
+        </InputGroup>
+        <NativeSelect.Root size="sm" width="44" variant="plain">
+          <NativeSelect.Field value={stateFilter} onChange={(e) => setStateFilter(e.target.value as StateFilter)} fontWeight="medium">
+            <option value="all">all domains</option>
+            <option value="active">active (contactable)</option>
+            <option value="specials">has active specials</option>
+            <option value="optedOut">opted out</option>
+            <option value="excluded">excluded</option>
+          </NativeSelect.Field>
+          <NativeSelect.Indicator />
+        </NativeSelect.Root>
+        <Text fontSize="xs" color="fg.subtle" ml="auto">
+          {visible.length} of {rows.length} domain{rows.length === 1 ? '' : 's'}
+        </Text>
+      </HStack>
+
       <DataPanel
         loading={loading}
         isEmpty={rows.length === 0}
         empty={<Empty icon={TagIcon} title="No domains yet" description="Price records appear here as publishers reply with quotes." />}
       >
-        <Table.Root size="md" variant="line" interactive>
-          <Table.Header>
-            <Table.Row bg="bg.subtle">
-              <Table.ColumnHeader>Domain</Table.ColumnHeader>
-              <Table.ColumnHeader>Prices</Table.ColumnHeader>
-              <Table.ColumnHeader>Specials</Table.ColumnHeader>
-              <Table.ColumnHeader>Records</Table.ColumnHeader>
-              <Table.ColumnHeader>Last quote</Table.ColumnHeader>
-              <Table.ColumnHeader>State</Table.ColumnHeader>
-            </Table.Row>
-          </Table.Header>
-          <Table.Body>
-            {rows.map((d) => (
-              <Table.Row
-                key={d.domain}
-                onClick={() => setSelected(d.domain === selected ? null : d.domain)}
-                cursor="pointer"
-                bg={d.domain === selected ? 'bg.muted' : undefined}
-              >
-                <Table.Cell fontWeight="medium">{d.domain}</Table.Cell>
-                <Table.Cell>{d.standingCells}</Table.Cell>
-                <Table.Cell>{d.activeSpecials || '—'}</Table.Cell>
-                <Table.Cell>{d.recordCount}</Table.Cell>
-                <Table.Cell color="fg.muted">{fmtDate(d.lastObservedAt)}</Table.Cell>
-                <Table.Cell>
-                  <HStack gap={1.5}>
-                    {d.excluded && <Badge colorPalette="red" variant="solid" size="sm">excluded</Badge>}
-                    {d.optedOut && <Badge colorPalette="purple" variant="subtle" size="sm">opted out</Badge>}
-                    {!d.excluded && !d.optedOut && <Text color="fg.subtle">—</Text>}
-                  </HStack>
-                </Table.Cell>
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table.Root>
+        {visible.length === 0 ? (
+          <Text fontSize="sm" color="fg.muted" py={6} textAlign="center">No domains match the current filter.</Text>
+        ) : (
+          <Box>
+            {/* Header row (matches the virtualized grid columns) */}
+            <Box
+              display="grid"
+              gridTemplateColumns={COLS}
+              px={4}
+              py={2}
+              bg="bg.subtle"
+              borderBottomWidth="1px"
+              borderColor="border"
+              gap={3}
+              fontSize="xs"
+              fontWeight="semibold"
+              color="fg.muted"
+              textTransform="uppercase"
+              letterSpacing="wide"
+            >
+              <SortHeader label="Domain" col="domain" sortKey={sortKey} dir={dir} onSort={onSort} />
+              <SortHeader label="Prices" col="standingCells" sortKey={sortKey} dir={dir} onSort={onSort} />
+              <SortHeader label="Specials" col="activeSpecials" sortKey={sortKey} dir={dir} onSort={onSort} />
+              <SortHeader label="Records" col="recordCount" sortKey={sortKey} dir={dir} onSort={onSort} />
+              <SortHeader label="Last quote" col="lastObservedAt" sortKey={sortKey} dir={dir} onSort={onSort} />
+              <Text>State</Text>
+            </Box>
+
+            <List
+              style={{ height: listHeight }}
+              rowCount={visible.length}
+              rowHeight={ROW_H}
+              rowComponent={VirtualRow}
+              rowProps={{ rows: visible, onSelect: setSelected } satisfies RowData}
+              overscanCount={5}
+            />
+          </Box>
+        )}
       </DataPanel>
 
       {selected && (
-        <Box mt={4} p={4} borderWidth="1px" borderColor="border" rounded="lg" bg="bg.panel">
-          <DomainDetailPanel domain={selected} onChanged={reload} />
-        </Box>
+        <DomainDetailModal domain={selected} onClose={() => setSelected(null)} onChanged={reload} />
       )}
     </Box>
   );

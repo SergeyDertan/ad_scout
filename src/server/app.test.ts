@@ -378,6 +378,34 @@ test('GET /api/domains + /api/domains/:domain expose the derived price sheet', a
   }
 });
 
+test('GET /api/replies/:id returns the source message behind a price record', async () => {
+  const h = await start();
+  try {
+    const reply: Reply = {
+      id: 'rep1',
+      emailId: 'em1',
+      rfcMessageId: '<A>',
+      fromAddress: 'a@site1.com',
+      targetId: 't1',
+      matchMethod: 'threadId',
+      receivedAt: '2026-02-01T00:00:00Z',
+      text: 'We can post a guest post for $500.',
+      extractionStatus: 'done',
+    };
+    await h.store.putReply(reply);
+
+    const got = await J(`${h.base}/api/replies/rep1`);
+    assert.equal(got.id, 'rep1');
+    assert.equal(got.text, 'We can post a guest post for $500.');
+    assert.equal(got.fromAddress, 'a@site1.com');
+
+    const res = await fetch(`${h.base}/api/replies/does-not-exist`);
+    assert.equal(res.status, 404);
+  } finally {
+    await h.close();
+  }
+});
+
 test('ignore + exclusion CRUD round-trips', async () => {
   const h = await start();
   try {

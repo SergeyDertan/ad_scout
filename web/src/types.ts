@@ -16,6 +16,9 @@ export interface PostOffer {
   sensitive: boolean;
   canPost: CanPost;
   price?: PriceValue;
+  website?: string;
+  isSpecial?: boolean;
+  specialUntil?: string;
 }
 
 /** Display labels for the fixed product enum. */
@@ -314,6 +317,7 @@ export interface PriceRecordRow {
   observedAt: string;
   sourceEmail: string;
   sourceMessageId: string;
+  replyId?: string;
   attribution: 'sender' | 'named';
   targetId?: string;
   optOut?: boolean;

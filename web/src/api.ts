@@ -71,6 +71,7 @@ export const api = {
   createBatch: (body: NewBatch) =>
     req<Batch>('/batches', { method: 'POST', body: JSON.stringify(body) }),
 
+  getReply: (id: string) => req<ResponseRow>(`/replies/${encodeURIComponent(id)}`),
   deleteReply: (id: string) => req<{ ok: boolean }>(`/replies/${id}`, { method: 'DELETE' }),
 
   patchReply: (

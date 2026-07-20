@@ -9,6 +9,7 @@ import { acquireLock, LockHeldError } from './lib/lock';
 import { systemClock } from './lib/clock';
 import { enableFileLogging, logger } from './lib/logger';
 import { makeTcpProbe } from './lib/reachability';
+import { Mutex } from './lib/mutex';
 import { runReconcile } from './pipeline/reconcile';
 import { runSendPass } from './pipeline/send-pass';
 import { runPollPass } from './pipeline/poll-pass';
@@ -45,6 +46,10 @@ async function main(): Promise<void> {
   const pollDeps = { store, email, extractor, clock, config };
   const fetchDeps = { store, email, clock };
 
+  // One shared mutex serializes every pass — scheduled AND manual "Run now" —
+  // so overlapping runs queue instead of racing the store's read-modify-writes.
+  const passLock = new Mutex();
+
   const rec = await runReconcile({ store, email, clock, config });
   logger.info('reconcile', rec as unknown as Record<string, unknown>);
 
@@ -52,9 +57,9 @@ async function main(): Promise<void> {
     store,
     config,
     clock,
-    runSend: () => runSendPass(sendDeps),
-    runPoll: () => runPollPass(pollDeps),
-    runFetch: () => runFetchPass(fetchDeps),
+    runSend: () => passLock.run(() => runSendPass(sendDeps)),
+    runPoll: () => passLock.run(() => runPollPass(pollDeps)),
+    runFetch: () => passLock.run(() => runFetchPass(fetchDeps)),
     // Built front-end (web/ is a separate Vite + React + Chakra module).
     // Run `pnpm web:build` first; in dev use `pnpm web:dev` (proxies /api).
     webDir: process.env.WEB_DIR ?? './web/dist',
@@ -65,8 +70,8 @@ async function main(): Promise<void> {
   const scheduler = new DripScheduler({
     clock,
     window: config.sendWindow,
-    runSend: () => runSendPass(sendDeps, { maxPerAccount: 1 }),
-    runPoll: () => runFetchPass(fetchDeps),
+    runSend: () => passLock.run(() => runSendPass(sendDeps, { maxPerAccount: 1 })),
+    runPoll: () => passLock.run(() => runFetchPass(fetchDeps)),
     // Gmail incremental history sync makes each idle poll cheap, so we don't need
     // a tight cadence — 5 min keeps reply latency low without busy-looping.
     // Override with POLL_INTERVAL_MS.

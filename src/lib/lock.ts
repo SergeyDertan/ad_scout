@@ -1,7 +1,7 @@
 // Single-instance guard (overview.md §8). fs-based, no external dependency.
 // Writes a lock file containing this process's pid; a stale lock (dead pid) is
-// reclaimed. There is no concurrency within the agent, so this only guards
-// against a second process starting.
+// reclaimed. This only guards against a second *process* starting; overlapping
+// passes *within* the process are serialized separately (see lib/mutex.ts).
 
 import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';

@@ -243,6 +243,11 @@ export class PouchDbStore implements Store {
   listSuppressions() {
     return this.listByType<Suppression>('suppression');
   }
+  // Delete by the exact stored key — callers pass the email as listSuppressions
+  // returns it, so a legacy malformed key can still be removed.
+  async removeSuppression(email: string) {
+    await this.delete('suppression', email);
+  }
 
   // price records (doc id = pricerecord id)
   putPriceRecord(r: PriceRecord) {

@@ -97,6 +97,16 @@ test('detectBounce flags mailer-daemon and extracts the failed recipient', () =>
   assert.equal(r.failedRecipient, 'dead@nowhere.com');
 });
 
+test('detectBounce peels the bare address out of a markdown-rendered DSN body', () => {
+  // Some providers hand us the bounce body already rendered to markdown, so the
+  // failed recipient arrives as an autolink. The recipient must be the bare
+  // address, not the `[x](mailto:x)` wrapper (which used to be suppressed verbatim).
+  const body = 'Delivery has failed to: [admin@buddymantra.com](mailto:admin@buddymantra.com)';
+  const r = detectBounce('mailer-daemon@googlemail.com', body);
+  assert.equal(r.isBounce, true);
+  assert.equal(r.failedRecipient, 'admin@buddymantra.com');
+});
+
 test('detectBounce returns false for an ordinary reply', () => {
   const r = detectBounce('owner@site.com', 'Sure, the price is $200.');
   assert.equal(r.isBounce, false);

@@ -95,6 +95,9 @@ export interface Store {
   isSuppressed(email: string): Promise<boolean>;
   addSuppression(s: Suppression): Promise<void>;
   listSuppressions(): Promise<Suppression[]>;
+  /** Delete the suppression whose stored email is exactly `email` (as returned by
+   *  listSuppressions — not re-normalized). No-op if absent. */
+  removeSuppression(email: string): Promise<void>;
 
   // price records (append-only per-domain history)
   putPriceRecord(r: PriceRecord): Promise<PriceRecord>;

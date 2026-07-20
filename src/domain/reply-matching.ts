@@ -25,8 +25,17 @@ export interface MatchResult {
   method: MatchMethod;
 }
 
+// A bare address, no wrapping punctuation. Deliberately conservative: this is
+// only used to peel an address back out of noise (markdown `[x](mailto:x)`,
+// display-name `Foo <x>`), never to validate.
+const BARE_EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
+
 export function normalizeEmail(addr: string): string {
-  return addr.trim().toLowerCase();
+  const trimmed = addr.trim().toLowerCase();
+  // Peel the bare address out of `[x@y](mailto:x@y)`, `<x@y>`, `Foo <x@y>` etc.
+  // A clean address matches itself, so this is a no-op on well-formed input.
+  const m = trimmed.match(BARE_EMAIL);
+  return m ? m[0] : trimmed;
 }
 
 /**

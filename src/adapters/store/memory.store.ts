@@ -182,6 +182,10 @@ export class MemoryStore implements Store {
   async listSuppressions() {
     return [...this.suppressions.values()].map(clone);
   }
+  // Delete by the exact stored key (see Store.removeSuppression).
+  async removeSuppression(email: string) {
+    if (this.suppressions.delete(email)) this.emit('suppression', 'delete', email);
+  }
 
   // price records
   async putPriceRecord(r: PriceRecord) {

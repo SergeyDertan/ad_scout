@@ -35,6 +35,27 @@ test('attributeOffers: multi-domain sender + untagged offer → review, no group
   assert.equal(reviewReasons.length, 1);
 });
 
+// An owner running several of our targets from one mailbox: the reply is still an
+// answer about the site we mailed, so its untagged prices belong to that site
+// rather than being dropped as ambiguous.
+test('attributeOffers: matched target wins over an ambiguous multi-domain sender', () => {
+  const { groups, reviewReasons } = attributeOffers(
+    [po({ price: { raw: '$100' } }), po({ price: { raw: '$250' }, website: 'b.com' })],
+    ['a.com', 'b.com'],
+    'a.com',
+  );
+  assert.equal(reviewReasons.length, 0); // no longer ambiguous
+  assert.equal(groups.find((g) => g.domain === 'a.com')?.attribution, 'sender');
+  assert.equal(groups.find((g) => g.domain === 'a.com')?.offers.length, 1);
+  // An explicitly named site still wins for its own offer.
+  assert.equal(groups.find((g) => g.domain === 'b.com')?.attribution, 'named');
+});
+
+test('attributeOffers: matched target takes the untagged offer even when the sender maps to one other site', () => {
+  const { groups } = attributeOffers([po({})], ['other.com'], 'own.com');
+  assert.deepEqual(groups.map((g) => g.domain), ['own.com']);
+});
+
 test('attributeOffers: zero sender domains + untagged offer → nothing attributed', () => {
   const { groups, reviewReasons } = attributeOffers([po({})], []);
   assert.equal(groups.length, 0);

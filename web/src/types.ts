@@ -91,12 +91,22 @@ function offerProductTier(offer: PostOffer): string {
  * sensitive price in their tier (empty = no anomaly). Skipped when the priced
  * offers mix currencies, since cross-currency amounts aren't comparable.
  *
- * Returns a set of CELL keys ("postType|category") so only the offending cell is
- * flagged — a regular guest post priced above a sensitive guest post must not
- * also highlight the regular link-insertion row. Use `offerCellKey` to test.
+ * Comparison is also per-SITE: one reply often prices a whole portfolio (the
+ * sender's site plus other domains they own, tagged via `offer.website`), and
+ * those are independent rate cards. A $180 regular post on one domain says
+ * nothing about a $130 sensitive post on another, so bucketing by site keeps
+ * a pricier site from flagging a cheaper one.
+ *
+ * Returns a set of CELL keys ("site|postType|category") so only the offending
+ * cell is flagged — a regular guest post priced above a sensitive guest post
+ * must not also highlight the regular link-insertion row. Use `offerCellKey`.
  */
+export function offerSite(offer: PostOffer): string {
+  return offer.website?.trim().toLowerCase() ?? '';
+}
+
 export function offerCellKey(offer: PostOffer): string {
-  return `${offer.postType || 'guest_post'}|${offer.category}`;
+  return `${offerSite(offer)}|${offer.postType || 'guest_post'}|${offer.category}`;
 }
 
 export function invertedPriceOffers(offers?: PostOffer[]): Set<string> {
@@ -107,10 +117,10 @@ export function invertedPriceOffers(offers?: PostOffer[]): Set<string> {
   const currencies = new Set(priced.map((o) => o.price?.currency).filter(Boolean));
   if (currencies.size > 1) return flagged; // not comparable
 
-  // Bucket by product tier, then compare regular vs sensitive within each tier.
+  // Bucket by site × product tier, then compare regular vs sensitive within each.
   const tiers = new Map<string, PostOffer[]>();
   for (const o of priced) {
-    const tier = offerProductTier(o);
+    const tier = `${offerSite(o)}|${offerProductTier(o)}`;
     (tiers.get(tier) ?? tiers.set(tier, []).get(tier)!).push(o);
   }
 

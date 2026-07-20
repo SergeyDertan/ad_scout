@@ -265,7 +265,11 @@ async function ingestReply(
   // Attribute this reply's offers to domains (M1 sender / M2 named), collecting
   // any D11 ambiguity as review reasons.
   const senderDomains = senderDomainsFor(emailDomainMap, reply.fromAddress, target);
-  const { groups, reviewReasons } = attributeOffers(parsed.offers, senderDomains);
+  const { groups, reviewReasons } = attributeOffers(
+    parsed.offers,
+    senderDomains,
+    normalizeDomain(target.websiteUrl) || undefined,
+  );
   const review = [...outcome.review, ...reviewReasons];
 
   await rollUp(store, target, reply, parsed, review, clock);

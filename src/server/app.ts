@@ -29,11 +29,15 @@ import type {
   AccountStatus,
   Batch,
   CanPost,
+  OutreachResult,
+  PriceRecord,
   ProviderType,
+  Reply,
   Target,
   TargetStatus,
 } from '../domain/types';
 import { allNiches, categorizeTopic } from '../domain/niches';
+import { attributeOffers, emailToDomains, normalizeEmail } from '../domain/reply-matching';
 import { normalizeDomain } from '../domain/domain';
 import { buildPriceSheet, knownDomains } from '../domain/price-sheet';
 import { accountSendState } from '../domain/account-state';
@@ -118,6 +122,63 @@ function deriveCredentialRef(email: string): string {
   const local = email.split('@')[0] ?? email;
   const slug = local.replace(/[^a-zA-Z0-9]+/g, '_').toUpperCase();
   return `GMAIL_${slug}`;
+}
+
+/**
+ * Re-attribute a hand-corrected reply's offers and bring its PriceRecords back in
+ * line. The Domains view derives ENTIRELY from PriceRecords, so without this a
+ * correction lands in the responses feed and the price sheet keeps serving the
+ * old figure forever.
+ *
+ * Records are updated IN PLACE rather than appended. A human edit fixes what we
+ * believe the message said — it is not a new observation from the publisher — so
+ * the record keeps its id and its original `observedAt`. Appending instead would
+ * make a typo fix look like a fresh price announcement and would double-count the
+ * message in the history.
+ *
+ * A domain whose offers the edit removed entirely no longer has an observation
+ * behind it, so its record is deleted rather than left as an empty husk.
+ */
+async function syncPriceRecords(
+  store: Store,
+  reply: Reply,
+  target: Target,
+  result: OutreachResult,
+  clock: Clock,
+): Promise<void> {
+  const own = normalizeDomain(target.websiteUrl);
+  const senderDomains = new Set(
+    emailToDomains(await store.listTargets()).get(normalizeEmail(reply.fromAddress)) ?? [],
+  );
+  if (own) senderDomains.add(own);
+  const { groups } = attributeOffers(result.offers, [...senderDomains], own || undefined);
+
+  const stale = new Map(
+    (await store.listPriceRecords())
+      .filter((r) => r.replyId === reply.id)
+      .map((r) => [r.domain, r] as const),
+  );
+
+  for (const group of groups) {
+    const prev = stale.get(group.domain);
+    const record: PriceRecord = {
+      // Keep identity + observation time; only what the message SAID changes.
+      id: prev?.id ?? newId('pricerecord'),
+      domain: group.domain,
+      offers: group.offers,
+      observedAt: prev?.observedAt ?? reply.receivedAt ?? clock.now().toISOString(),
+      sourceEmail: normalizeEmail(reply.fromAddress),
+      sourceMessageId: reply.rfcMessageId,
+      replyId: reply.id,
+      ...(group.domain === own ? { targetId: target.id } : {}),
+      attribution: group.attribution,
+      ...(result.optOut ? { optOut: true } : {}),
+    };
+    await store.putPriceRecord(record);
+    stale.delete(group.domain);
+  }
+
+  for (const orphan of stale.values()) await store.deletePriceRecord(orphan.id);
 }
 
 export function createApiServer(deps: ServerDeps): Server {
@@ -507,7 +568,8 @@ async function handle(
     }
 
     // PATCH /api/replies/:id — human correction of the AI extraction.
-    // Body: { offers: [{ postType?, category, label?, sensitive?, canPost, priceRaw }], optOut? }
+    // Body: { offers: [{ postType?, category, label?, sensitive?, canPost, priceRaw,
+    //                    website?, isSpecial?, specialUntil? }], optOut? }
     // Rebuilt through assembleResult so price parsing / niche reconciliation /
     // canPost summary match a normal extraction. Clears the `review` flag.
     if (method === 'PATCH' && seg[1] === 'replies' && seg[2] && seg.length === 3) {
@@ -522,6 +584,10 @@ async function handle(
             // A newly-added offer may carry only a label; use it as the category
             // seed (reconcileOffers normalizes it into a niche key).
             const category = str(off.category) ?? str(off.label) ?? '';
+            // website/isSpecial/specialUntil scope the reconcile cell key
+            // (website|postType|niche|special). Dropping them here merges cells
+            // that must stay distinct — a portfolio reply pricing 11 domains
+            // would collapse to one site's worth of offers on save.
             return {
               ...(str(off.postType) ? { postType: str(off.postType) } : {}),
               category,
@@ -529,6 +595,9 @@ async function handle(
               sensitive: Boolean(off.sensitive),
               canPost: (str(off.canPost) as CanPost) ?? 'maybe',
               priceRaw: typeof off.priceRaw === 'string' ? off.priceRaw : '',
+              ...(str(off.website) ? { website: str(off.website) } : {}),
+              ...(off.isSpecial ? { isSpecial: true } : {}),
+              ...(str(off.specialUntil) ? { specialUntil: str(off.specialUntil) } : {}),
             };
           }).filter((o) => o.category)
         : [];
@@ -562,6 +631,7 @@ async function handle(
           status: result.optOut ? 'excluded' : 'replied',
           result,
         }));
+        await syncPriceRecords(store, reply, target, result, deps.clock);
       }
       return sendJson(res, 200, reply);
     }

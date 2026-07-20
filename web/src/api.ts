@@ -77,7 +77,18 @@ export const api = {
   patchReply: (
     id: string,
     body: {
-      offers: { category: string; label?: string; sensitive?: boolean; canPost: string; priceRaw: string }[];
+      offers: {
+        postType?: string;
+        category: string;
+        label?: string;
+        sensitive?: boolean;
+        canPost: string;
+        priceRaw: string;
+        /** '' = the contacted site. Must round-trip: it scopes the server cell key. */
+        website?: string;
+        isSpecial?: boolean;
+        specialUntil?: string;
+      }[];
       optOut?: boolean;
     },
   ) => req<ResponseRow>(`/replies/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),

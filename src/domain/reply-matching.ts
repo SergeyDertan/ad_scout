@@ -79,14 +79,24 @@ export interface AttributionResult {
 /**
  * Split a reply's offers into per-domain groups (PRICE-HISTORY-PLAN.md §5.2):
  *  - offer tagged with a `website` → that site's domain, attribution 'named' (M2);
+ *  - untagged offer + a matched target → THAT target's domain, 'sender' (M1);
  *  - untagged offer + sender→exactly 1 domain → that domain, 'sender' (M1);
  *  - untagged offer + sender→2+ domains → ambiguous, push a review reason, skip;
  *  - untagged offer + sender→0 domains → nothing to attribute.
+ *
+ * `ownDomain` is the domain of the target the reply was matched to. It takes
+ * precedence because a matched reply is an answer to the mail we sent ABOUT that
+ * site, so an untagged price is that site's price. Without it, an owner running
+ * several of our targets from one mailbox made every untagged price ambiguous —
+ * and the contacted site ended up with no prices at all while the sites they
+ * happened to name got them.
+ *
  * Pure — the caller owns persistence.
  */
 export function attributeOffers(
   offers: PostOffer[],
   senderDomains: string[],
+  ownDomain?: string,
 ): AttributionResult {
   const groups = new Map<string, DomainGroup>();
   const reviewReasons: string[] = [];
@@ -105,7 +115,9 @@ export function attributeOffers(
       add(normalizeDomain(website), 'named', offer);
       continue;
     }
-    if (senderDomains.length === 1) {
+    if (ownDomain) {
+      add(ownDomain, 'sender', offer);
+    } else if (senderDomains.length === 1) {
       add(senderDomains[0]!, 'sender', offer);
     } else if (senderDomains.length >= 2 && !flaggedMulti) {
       reviewReasons.push(

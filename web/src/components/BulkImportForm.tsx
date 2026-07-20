@@ -5,11 +5,12 @@ import {
   Heading,
   HStack,
   Input,
+  Spinner,
   Text,
   Textarea,
   VStack,
 } from '@chakra-ui/react';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { Panel } from './Panel';
 import { toaster, toastError } from './Toaster';
@@ -18,6 +19,13 @@ interface ParsedRow {
   websiteUrl: string;
   contactEmail: string;
   contactName?: string;
+}
+
+interface Preview {
+  subject: string;
+  body: string;
+  senderName: string;
+  senderEmail: string;
 }
 
 /** Accept comma, tab, or 2+-space as delimiter. Skip blank lines. */
@@ -106,10 +114,58 @@ export function BulkImportForm({
   const [fileName, setFileName] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [showPreview, setShowPreview] = useState(false);
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const previewDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const textRows = useMemo(() => parseLines(text), [text]);
   const rows = fileRows ?? textRows;
+
+  // The email is rendered from the first parsed row, so the preview shows a
+  // real target rather than a placeholder. Advertised overrides on this batch
+  // are applied just as they would be at send time.
+  const sampleRow = rows[0];
+  const advertised = advUrl.trim()
+    ? { url: advUrl.trim(), description: advDescription.trim() || undefined }
+    : undefined;
+
+  // Debounced live preview: refetch whenever the sample target or the
+  // advertised override changes, but only while the panel is open.
+  useEffect(() => {
+    if (!showPreview) return;
+    if (previewDebounceRef.current) clearTimeout(previewDebounceRef.current);
+    previewDebounceRef.current = setTimeout(async () => {
+      setPreviewLoading(true);
+      setPreviewError(null);
+      try {
+        const result = await api.previewEmail({
+          websiteUrl: sampleRow?.websiteUrl || 'example.com',
+          contactName: sampleRow?.contactName,
+          contactEmail: sampleRow?.contactEmail,
+          ...(advertised ? { advertised } : {}),
+        });
+        setPreview(result);
+      } catch (e) {
+        setPreviewError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setPreviewLoading(false);
+      }
+    }, 350);
+    return () => {
+      if (previewDebounceRef.current) clearTimeout(previewDebounceRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    showPreview,
+    sampleRow?.websiteUrl,
+    sampleRow?.contactName,
+    sampleRow?.contactEmail,
+    advertised?.url,
+    advertised?.description,
+  ]);
 
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -142,9 +198,6 @@ export function BulkImportForm({
     // advertised URL here overrides the global default for this import's emails.
     let batchId: string;
     try {
-      const advertised = advUrl.trim()
-        ? { url: advUrl.trim(), description: advDescription.trim() || undefined }
-        : undefined;
       const batch = await api.createBatch({ name: name.trim() || undefined, advertised });
       batchId = batch.id;
     } catch (err) {
@@ -291,6 +344,85 @@ export function BulkImportForm({
           )}
         </Field.Root>
       )}
+
+      {/* Message preview — shows the exact outreach email the first row would
+          receive, including any advertised override set above. */}
+      <Box mt={4}>
+        <Button
+          size="xs"
+          variant="ghost"
+          colorPalette="brand"
+          onClick={() => setShowPreview((v) => !v)}
+          disabled={rows.length === 0 && !showPreview}
+        >
+          {showPreview ? 'Hide message preview' : 'Preview message'}
+        </Button>
+
+        {showPreview && (
+          <Box mt={3}>
+            <Text fontSize="xs" color="fg.muted" mb={2}>
+              Previewing the email for{' '}
+              <Box as="span" fontWeight="semibold" color="fg">
+                {sampleRow?.websiteUrl ?? 'the first row'}
+              </Box>
+              {rows.length > 1 ? ` (first of ${rows.length} rows)` : ''}.
+            </Text>
+
+            {previewError && (
+              <Text color="red.fg" fontSize="sm" mb={2}>
+                {previewError}
+              </Text>
+            )}
+
+            {preview ? (
+              <Box
+                bg="bg.subtle"
+                borderWidth="1px"
+                borderColor="border"
+                rounded="lg"
+                overflow="hidden"
+                opacity={previewLoading ? 0.6 : 1}
+                transition="opacity 0.15s"
+              >
+                <Box px={4} py={3} borderBottomWidth="1px" borderColor="border" bg="bg.muted">
+                  <HStack gap={2} mb={1}>
+                    <Text fontSize="xs" color="fg.subtle" minW="48px">
+                      From
+                    </Text>
+                    <Text fontSize="xs" color="fg">
+                      {preview.senderName} &lt;{preview.senderEmail}&gt;
+                    </Text>
+                  </HStack>
+                  <HStack gap={2}>
+                    <Text fontSize="xs" color="fg.subtle" minW="48px">
+                      Subject
+                    </Text>
+                    <Text fontSize="xs" fontWeight="semibold" color="fg">
+                      {preview.subject}
+                    </Text>
+                  </HStack>
+                </Box>
+                <Box px={4} py={4}>
+                  <Text
+                    as="pre"
+                    fontSize="sm"
+                    whiteSpace="pre-wrap"
+                    fontFamily="inherit"
+                    lineHeight="1.7"
+                    color="fg"
+                  >
+                    {preview.body}
+                  </Text>
+                </Box>
+              </Box>
+            ) : previewLoading ? (
+              <Box py={8} display="flex" justifyContent="center">
+                <Spinner color="brand.solid" />
+              </Box>
+            ) : null}
+          </Box>
+        )}
+      </Box>
 
       <HStack mt={5} justify="flex-end">
         <Button variant="ghost" onClick={onClose} disabled={busy}>

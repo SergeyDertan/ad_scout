@@ -379,7 +379,7 @@ test('an offer tagged with a different owned site records against that site (M2,
   assert.equal(other[0].offers[0].price?.amount, 80);
 });
 
-test('untagged offer with a multi-domain sender is pushed to review, not guessed', async () => {
+test('untagged offer with a multi-domain sender goes to the site we contacted', async () => {
   const store = new MemoryStore();
   const email = new DummyEmailProvider();
   const extractor = new Extractor(stubLlm({
@@ -388,17 +388,24 @@ test('untagged offer with a multi-domain sender is pushed to review, not guessed
   }));
   await store.putBatch(batch());
   await store.putAccount(account());
-  // Same contact email is used for TWO different sites → ambiguous attribution.
+  // Same contact email is used for TWO different sites. The reply is still an
+  // answer about the site we mailed, so the untagged price is attributed there
+  // rather than dropped — otherwise the contacted site ends up with no prices.
   await store.putTarget(target('t1', 'owner@shared.com'));
   await store.putTarget({ ...target('t2', 'owner@shared.com'), websiteUrl: 't2.com' });
 
   await sendAndReply(store, email, 'Sure, $100.', 'owner@shared.com');
   await runPollPass({ store, email, extractor, clock, config });
 
-  // No record written for the untagged offer; the reply carries a review reason.
-  assert.equal((await store.listPriceRecords()).length, 0);
+  const records = await store.listPriceRecords();
+  assert.equal(records.length, 1);
+  assert.equal(records[0]!.domain, 't1.com'); // the site we contacted, not t2.com
+  assert.equal(records[0]!.attribution, 'sender');
+  assert.equal(records[0]!.offers[0]?.price?.amount, 100);
+
+  // …and it is no longer flagged as ambiguous.
   const reply = (await store.listReplies()).find((r) => r.targetId === 't1');
-  assert.ok(reply?.review?.some((r) => /associated with 2 sites/.test(r)));
+  assert.equal(reply?.review?.some((r) => /associated with 2 sites/.test(r)) ?? false, false);
 });
 
 test('AI-detected spam adds the sender to the ignore list and writes no records', async () => {

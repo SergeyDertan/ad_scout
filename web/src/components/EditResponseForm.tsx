@@ -24,6 +24,15 @@ interface OfferRow {
   sensitive: boolean;
   canPost: string;
   priceRaw: string;
+  /** The site this price is for; '' = the contacted site. One reply often prices
+   *  a whole portfolio, and this is what keeps those rows distinct — the server
+   *  cell key is website|postType|niche|special, so blanking it MERGES rows and
+   *  silently drops every domain but the first. */
+  website: string;
+  /** Promo flags. Not editable here, but they also scope the server cell key, so
+   *  they must round-trip or a special collapses into the standing price. */
+  isSpecial?: boolean;
+  specialUntil?: string;
 }
 
 function toRows(row: ResponseRow): OfferRow[] {
@@ -34,6 +43,9 @@ function toRows(row: ResponseRow): OfferRow[] {
     sensitive: o.sensitive,
     canPost: o.canPost,
     priceRaw: o.price?.raw ?? '',
+    website: o.website ?? '',
+    ...(o.isSpecial ? { isSpecial: true } : {}),
+    ...(o.specialUntil ? { specialUntil: o.specialUntil } : {}),
   }));
 }
 
@@ -58,7 +70,7 @@ export function EditResponseForm({
   const add = () =>
     setOffers((prev) => [
       ...prev,
-      { postType: 'guest_post', category: '', label: '', sensitive: false, canPost: 'yes', priceRaw: '' },
+      { postType: 'guest_post', category: '', label: '', sensitive: false, canPost: 'yes', priceRaw: '', website: '' },
     ]);
 
   const valid = offers.every((o) => o.label.trim() !== '');
@@ -76,6 +88,9 @@ export function EditResponseForm({
           sensitive: o.sensitive,
           canPost: o.canPost,
           priceRaw: o.priceRaw.trim(),
+          website: o.website.trim(),
+          ...(o.isSpecial ? { isSpecial: true } : {}),
+          ...(o.specialUntil ? { specialUntil: o.specialUntil } : {}),
         })),
       });
       toaster.create({ type: 'success', title: 'Response updated' });
@@ -110,6 +125,7 @@ export function EditResponseForm({
         <HStack fontSize="xs" color="fg.muted" fontWeight="medium" px={1}>
           <Box w="36">Product</Box>
           <Box flex="1">Niche</Box>
+          <Box flex="1">Site</Box>
           <Box w="20">Sensitive</Box>
           <Box w="28">Willing</Box>
           <Box w="32">Price</Box>
@@ -132,6 +148,13 @@ export function EditResponseForm({
               placeholder="casino, regular, …"
               value={o.label}
               onChange={(e) => update(i, { label: e.target.value })}
+            />
+            <Input
+              flex="1"
+              size="sm"
+              placeholder={row.website ?? 'this site'}
+              value={o.website}
+              onChange={(e) => update(i, { website: e.target.value })}
             />
             <Box w="20" textAlign="center">
               <Checkbox.Root

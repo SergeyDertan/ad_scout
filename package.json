@@ -16,6 +16,8 @@
     "verify:replies": "tsx src/scripts/verify-replies.ts",
     "verify:sends": "tsx src/scripts/verify-sends.ts",
     "fix:stuck-targets": "tsx src/scripts/fix-stuck-targets.ts",
+    "reattribute:ambiguous": "tsx src/scripts/reattribute-ambiguous.ts",
+    "correct:dj-sensitive": "tsx src/scripts/correct-dj-sensitive.ts",
     "assign:batch-ids": "tsx src/scripts/assign-batch-ids.ts",
     "reset:extractions": "tsx src/scripts/reset-extractions.ts",
     "reset:for-reingest": "tsx src/scripts/reset-for-reingest.ts",

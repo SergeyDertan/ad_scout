@@ -506,6 +506,199 @@ test('PATCH /api/replies/:id applies a human correction and clears review', asyn
   }
 });
 
+// A portfolio reply prices several domains the owner runs, distinguished only by
+// `website`. That field scopes the reconcile cell key, so if the edit round-trip
+// drops it every domain's guest-post cell merges into the contacted site's and
+// all but the first are silently discarded (25 offers → 5, seen in production).
+test('PATCH /api/replies/:id keeps per-site offers distinct', async () => {
+  const h = await start();
+  try {
+    const reply: Reply = {
+      id: 'r2',
+      emailId: 'e2',
+      rfcMessageId: '<e2@x>',
+      fromAddress: 'a@site1.com',
+      targetId: 't1',
+      matchMethod: 'fromAddress',
+      receivedAt: '2026-06-02T00:00:00Z',
+      text: 'our network rates',
+      extractionStatus: 'done',
+      parsed: { canPost: 'yes', optOut: false, offers: [] },
+    };
+    await h.store.putReply(reply);
+
+    // Same product × niche on three sites — identical but for `website`.
+    const updated = await J(`${h.base}/api/replies/r2`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        offers: [
+          { postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$120', website: '' },
+          { postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$180', website: 'turbogeek.org' },
+          { postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$200', website: 'tomoson.com' },
+        ],
+      }),
+    });
+
+    const offers = updated.parsed.offers as Array<{ website?: string; price?: { amount?: number } }>;
+    assert.equal(offers.length, 3); // not collapsed to 1
+    assert.equal(offers.find((o) => !o.website)?.price?.amount, 120);
+    assert.equal(offers.find((o) => o.website === 'turbogeek.org')?.price?.amount, 180);
+    assert.equal(offers.find((o) => o.website === 'tomoson.com')?.price?.amount, 200);
+  } finally {
+    await h.close();
+  }
+});
+
+// A promo price must coexist with the standing price rather than overwrite it
+// (D5) — `isSpecial` scopes the cell key the same way `website` does.
+test('PATCH /api/replies/:id keeps a special distinct from the standing price', async () => {
+  const h = await start();
+  try {
+    const reply: Reply = {
+      id: 'r3',
+      emailId: 'e3',
+      rfcMessageId: '<e3@x>',
+      fromAddress: 'a@site1.com',
+      targetId: 't1',
+      matchMethod: 'fromAddress',
+      receivedAt: '2026-06-02T00:00:00Z',
+      text: 'summer promo',
+      extractionStatus: 'done',
+      parsed: { canPost: 'yes', optOut: false, offers: [] },
+    };
+    await h.store.putReply(reply);
+
+    const updated = await J(`${h.base}/api/replies/r3`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        offers: [
+          { postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$120' },
+          { postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$90', isSpecial: true },
+        ],
+      }),
+    });
+
+    const offers = updated.parsed.offers as Array<{ isSpecial?: boolean; price?: { amount?: number } }>;
+    assert.equal(offers.length, 2);
+    assert.equal(offers.find((o) => !o.isSpecial)?.price?.amount, 120);
+    assert.equal(offers.find((o) => o.isSpecial)?.price?.amount, 90);
+  } finally {
+    await h.close();
+  }
+});
+
+// The Domains view derives entirely from PriceRecords, so a hand correction that
+// only rewrote the reply would leave the price sheet serving the stale figure.
+test('PATCH /api/replies/:id re-syncs the price records the Domains view reads', async () => {
+  const h = await start();
+  try {
+    const reply: Reply = {
+      id: 'r4',
+      emailId: 'e4',
+      rfcMessageId: '<e4@x>',
+      fromAddress: 'a@site1.com',
+      targetId: 't1',
+      matchMethod: 'fromAddress',
+      receivedAt: '2026-06-02T00:00:00Z',
+      text: 'rates',
+      extractionStatus: 'done',
+      parsed: { canPost: 'yes', optOut: false, offers: [] },
+    };
+    await h.store.putReply(reply);
+    await h.store.putPriceRecord({
+      id: 'pr1',
+      domain: 'site1.com',
+      offers: [{ postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', price: { amount: 390, currency: 'USD', raw: '$390' } }],
+      observedAt: '2026-06-02T00:00:00Z',
+      sourceEmail: 'a@site1.com',
+      sourceMessageId: '<e4@x>',
+      replyId: 'r4',
+      targetId: 't1',
+      attribution: 'sender',
+    });
+
+    await J(`${h.base}/api/replies/r4`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        offers: [{ postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$450' }],
+      }),
+    });
+
+    const records = (await h.store.listPriceRecords()).filter((r) => r.replyId === 'r4');
+    assert.equal(records.length, 1); // updated in place, not appended
+    assert.equal(records[0]!.id, 'pr1'); // same identity
+    assert.equal(records[0]!.observedAt, '2026-06-02T00:00:00Z'); // original observation time kept
+    assert.equal(records[0]!.offers[0]?.price?.amount, 450); // the correction landed
+  } finally {
+    await h.close();
+  }
+});
+
+// Clearing a price must reach the price sheet too — the case that motivated this:
+// a rate we no longer trust should read "can post, price unknown" everywhere.
+test('PATCH /api/replies/:id propagates a cleared price into the price record', async () => {
+  const h = await start();
+  try {
+    const reply: Reply = {
+      id: 'r5', emailId: 'e5', rfcMessageId: '<e5@x>', fromAddress: 'a@site1.com',
+      targetId: 't1', matchMethod: 'fromAddress', receivedAt: '2026-06-02T00:00:00Z',
+      text: 'rates', extractionStatus: 'done',
+      parsed: { canPost: 'yes', optOut: false, offers: [] },
+    };
+    await h.store.putReply(reply);
+
+    await J(`${h.base}/api/replies/r5`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        offers: [{ postType: 'guest_post', category: 'casino', label: 'Casino', sensitive: true, canPost: 'yes', priceRaw: '' }],
+      }),
+    });
+
+    const rec = (await h.store.listPriceRecords()).find((r) => r.replyId === 'r5');
+    assert.equal(rec?.offers.length, 1);
+    assert.equal(rec?.offers[0]?.price, undefined); // unknown, not stale
+    assert.equal(rec?.offers[0]?.canPost, 'yes'); // willingness survives
+  } finally {
+    await h.close();
+  }
+});
+
+// Deleting every offer for a site leaves no observation behind it at all.
+test('PATCH /api/replies/:id deletes a price record whose offers were all removed', async () => {
+  const h = await start();
+  try {
+    const reply: Reply = {
+      id: 'r6', emailId: 'e6', rfcMessageId: '<e6@x>', fromAddress: 'a@site1.com',
+      targetId: 't1', matchMethod: 'fromAddress', receivedAt: '2026-06-02T00:00:00Z',
+      text: 'rates', extractionStatus: 'done',
+      parsed: { canPost: 'yes', optOut: false, offers: [] },
+    };
+    await h.store.putReply(reply);
+    await h.store.putPriceRecord({
+      id: 'pr2', domain: 'other.com',
+      offers: [{ postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', price: { amount: 99, currency: 'USD', raw: '$99' } }],
+      observedAt: '2026-06-02T00:00:00Z', sourceEmail: 'a@site1.com',
+      sourceMessageId: '<e6@x>', replyId: 'r6', attribution: 'named',
+    });
+
+    // The edit keeps only a site1.com offer — other.com is gone.
+    await J(`${h.base}/api/replies/r6`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        offers: [{ postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$50' }],
+      }),
+    });
+
+    const domains = (await h.store.listPriceRecords()).filter((r) => r.replyId === 'r6').map((r) => r.domain);
+    assert.deepEqual(domains, ['site1.com']); // other.com's orphaned record removed
+  } finally {
+    await h.close();
+  }
+});
+
 test('POST /api/run/send and /poll invoke the callbacks', async () => {
   const h = await start();
   try {

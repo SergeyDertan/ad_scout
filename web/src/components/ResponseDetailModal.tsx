@@ -1,3 +1,4 @@
+import { Fragment } from 'react';
 import {
   Badge,
   Box,
@@ -18,6 +19,7 @@ import {
   formatPrice,
   invertedPriceOffers,
   offerCellKey,
+  offerSite,
   postTypeLabel,
   type EmailAttachment,
   type PostOffer,
@@ -58,17 +60,49 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-/** Every AI-extracted offer (product × niche) with its price, flagging inverted
- *  price order. Rows are grouped by product for readability. */
-function OffersTable({ offers }: { offers?: PostOffer[] }) {
-  if (!offers || offers.length === 0) return <Text color="fg.subtle" fontSize="sm">No priced offers.</Text>;
-  const inverted = invertedPriceOffers(offers);
-  // Group by product so the two axes read clearly (all guest posts, then links…).
-  const sorted = [...offers].sort((a, b) =>
+/** Offers sorted by product, then regular before sensitive, then niche — so the
+ *  two axes read clearly (all guest posts, then links…). */
+function sortOffers(offers: PostOffer[]): PostOffer[] {
+  return [...offers].sort((a, b) =>
     (a.postType || 'guest_post').localeCompare(b.postType || 'guest_post') ||
     Number(a.sensitive) - Number(b.sensitive) ||
     a.category.localeCompare(b.category),
   );
+}
+
+/**
+ * Split offers into per-site rate cards. A single reply often prices a whole
+ * portfolio — the contacted site, plus other domains the owner tags via
+ * `offer.website` — and without this split the modal shows a stack of
+ * indistinguishable "Guest post / Regular" rows at different prices.
+ *
+ * The contacted site sorts first (untagged offers belong to it); the rest
+ * follow alphabetically.
+ */
+function groupOffersBySite(offers: PostOffer[], contactedSite?: string): { site: string; offers: PostOffer[] }[] {
+  const bySite = new Map<string, PostOffer[]>();
+  for (const o of offers) {
+    const site = offerSite(o);
+    (bySite.get(site) ?? bySite.set(site, []).get(site)!).push(o);
+  }
+  return [...bySite.entries()]
+    .map(([site, group]) => ({
+      // Untagged offers are the contacted site's own prices.
+      site: site || contactedSite?.trim().toLowerCase() || 'this site',
+      isOwn: site === '',
+      offers: sortOffers(group),
+    }))
+    .sort((a, b) => Number(b.isOwn) - Number(a.isOwn) || a.site.localeCompare(b.site))
+    .map(({ site, offers: group }) => ({ site, offers: group }));
+}
+
+/** Every AI-extracted offer (product × niche) with its price, flagging inverted
+ *  price order. Grouped by site, since one reply can price several domains. */
+function OffersTable({ offers, contactedSite }: { offers?: PostOffer[]; contactedSite?: string }) {
+  if (!offers || offers.length === 0) return <Text color="fg.subtle" fontSize="sm">No priced offers.</Text>;
+  const inverted = invertedPriceOffers(offers);
+  const groups = groupOffersBySite(offers, contactedSite);
+  const multiSite = groups.length > 1;
   return (
     <Box borderWidth="1px" borderColor="border" rounded="lg" overflow="hidden">
       <Table.Root size="sm" variant="line">
@@ -82,26 +116,42 @@ function OffersTable({ offers }: { offers?: PostOffer[] }) {
           </Table.Row>
         </Table.Header>
         <Table.Body>
-          {sorted.map((o) => {
-            const flagged = inverted.has(offerCellKey(o));
-            return (
-              <Table.Row key={offerCellKey(o)} bg={flagged ? 'red.subtle' : undefined}>
-                <Table.Cell color="fg.muted">{postTypeLabel(o.postType)}</Table.Cell>
-                <Table.Cell fontWeight="medium">{o.label}</Table.Cell>
-                <Table.Cell>
-                  {o.sensitive ? (
-                    <Badge size="xs" colorPalette="orange" variant="subtle">sensitive</Badge>
-                  ) : (
-                    <Text color="fg.subtle">—</Text>
-                  )}
-                </Table.Cell>
-                <Table.Cell><StatusBadge value={o.canPost} /></Table.Cell>
-                <Table.Cell textAlign="end" fontWeight="semibold" color={flagged ? 'red.fg' : 'fg'}>
-                  {formatPrice(o.price)}
-                </Table.Cell>
-              </Table.Row>
-            );
-          })}
+          {groups.map(({ site, offers: group }, gi) => (
+            <Fragment key={site}>
+              {multiSite && (
+                <Table.Row bg="bg.muted">
+                  <Table.Cell colSpan={5} py={1.5} borderTopWidth={gi === 0 ? undefined : '1px'} borderColor="border">
+                    <HStack gap={2}>
+                      <Text fontSize="xs" fontWeight="bold">{site}</Text>
+                      {gi === 0 && (
+                        <Badge size="xs" colorPalette="blue" variant="subtle">contacted site</Badge>
+                      )}
+                    </HStack>
+                  </Table.Cell>
+                </Table.Row>
+              )}
+              {group.map((o) => {
+                const flagged = inverted.has(offerCellKey(o));
+                return (
+                  <Table.Row key={offerCellKey(o)} bg={flagged ? 'red.subtle' : undefined}>
+                    <Table.Cell color="fg.muted">{postTypeLabel(o.postType)}</Table.Cell>
+                    <Table.Cell fontWeight="medium">{o.label}</Table.Cell>
+                    <Table.Cell>
+                      {o.sensitive ? (
+                        <Badge size="xs" colorPalette="orange" variant="subtle">sensitive</Badge>
+                      ) : (
+                        <Text color="fg.subtle">—</Text>
+                      )}
+                    </Table.Cell>
+                    <Table.Cell><StatusBadge value={o.canPost} /></Table.Cell>
+                    <Table.Cell textAlign="end" fontWeight="semibold" color={flagged ? 'red.fg' : 'fg'}>
+                      {formatPrice(o.price)}
+                    </Table.Cell>
+                  </Table.Row>
+                );
+              })}
+            </Fragment>
+          ))}
         </Table.Body>
       </Table.Root>
       {inverted.size > 0 && (
@@ -221,7 +271,7 @@ export function ResponseDetailModal({
 
                 {/* Prices */}
                 <Section title="Niche prices">
-                  <OffersTable offers={p?.offers} />
+                  <OffersTable offers={p?.offers} contactedSite={row.website ?? undefined} />
                 </Section>
 
                 <Attachments attachments={row.attachments} />

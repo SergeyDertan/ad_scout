@@ -293,6 +293,17 @@ export interface Suppression {
 
 // --- Per-domain price history (mirrors src/domain/price-sheet.ts) ------------
 
+/** A stripped standing cell carried on the domain list row — enough to power the
+ *  tier/niche filters and the domains export without a per-domain fetch. */
+export interface DomainCell {
+  postType: string;
+  category: string;
+  label: string;
+  sensitive: boolean;
+  canPost: CanPost;
+  price?: PriceValue;
+}
+
 /** A row in the known-domains list (GET /api/domains). */
 export interface DomainSummary {
   domain: string;
@@ -302,6 +313,8 @@ export interface DomainSummary {
   lastObservedAt?: string;
   optedOut: boolean;
   excluded: boolean;
+  /** Folded standing cells (omitted on legacy responses → treat as []). */
+  cells?: DomainCell[];
 }
 
 /** A folded standing/special price cell (GET /api/domains/:domain). */

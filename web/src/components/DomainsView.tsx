@@ -20,10 +20,12 @@ import { api } from '../api';
 import { DataPanel } from './DataPanel';
 import { Empty } from './Empty';
 import { useResource } from '../hooks/useResource';
-import { ChevronDownIcon, SearchIcon, TagIcon } from './icons';
+import { ChevronDownIcon, DownloadIcon, SearchIcon, TagIcon } from './icons';
+import { DomainsExportDialog } from './DomainsExportDialog';
 import {
   formatPrice,
   postTypeLabel,
+  type DomainCell,
   type DomainDetail,
   type DomainSummary,
   type EmailAttachment,
@@ -354,6 +356,24 @@ function DomainDetailModal({ domain, onClose, onChanged }: { domain: string; onC
 type SortKey = 'domain' | 'standingCells' | 'activeSpecials' | 'recordCount' | 'lastObservedAt';
 type StateFilter = 'all' | 'excluded' | 'optedOut' | 'active' | 'specials';
 
+// --- Offer filters (mutually exclusive): tier = product × sensitivity, category
+// = niche. A cell counts as "on offer" only when the publisher said yes.
+const POST_TYPE_ORDER = ['guest_post', 'link_insertion', 'banner'];
+const canOffer = (c: DomainCell) => c.canPost === 'yes';
+const cellPostType = (c: DomainCell) => c.postType || 'guest_post';
+
+function tierValue(c: DomainCell): string {
+  return `${cellPostType(c)}|${c.sensitive ? 'sens' : 'reg'}`;
+}
+function tierLabel(postType: string, sensitive: boolean): string {
+  return `${sensitive ? 'Sensitive' : 'Regular'} ${postTypeLabel(postType).toLowerCase()}`;
+}
+function tierRank(value: string): number {
+  const [pt, s] = value.split('|');
+  const i = POST_TYPE_ORDER.indexOf(pt);
+  return (i === -1 ? 99 : i) * 2 + (s === 'sens' ? 1 : 0);
+}
+
 // Domain | Prices | Specials | Records | Last quote | State
 const COLS = '1fr 90px 90px 90px 150px 170px';
 const ROW_H = 52;
@@ -438,25 +458,67 @@ export function DomainsView({ tick }: { tick: number }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [stateFilter, setStateFilter] = useState<StateFilter>('all');
+  const [tierFilter, setTierFilter] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('lastObservedAt');
   const [dir, setDir] = useState<'asc' | 'desc'>('desc');
+  const [showExport, setShowExport] = useState(false);
 
   const onSort = (col: SortKey) => {
     if (col === sortKey) setDir((d) => (d === 'asc' ? 'desc' : 'asc'));
     else { setSortKey(col); setDir(col === 'domain' ? 'asc' : 'desc'); }
   };
 
+  // Offer-filter dropdown options, derived from what the domains actually offer
+  // (canPost === 'yes'). Tier = product × sensitivity; category = niche.
+  const tierOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const d of rows as DomainSummary[]) {
+      for (const c of d.cells ?? []) {
+        if (!canOffer(c)) continue;
+        const value = tierValue(c);
+        if (!seen.has(value)) seen.set(value, tierLabel(cellPostType(c), c.sensitive));
+      }
+    }
+    return [...seen.entries()]
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => tierRank(a.value) - tierRank(b.value));
+  }, [rows]);
+
+  const categoryOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const d of rows as DomainSummary[]) {
+      for (const c of d.cells ?? []) {
+        if (!canOffer(c)) continue;
+        if (!seen.has(c.category)) seen.set(c.category, c.label || c.category);
+      }
+    }
+    return [...seen.entries()]
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [rows]);
+
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
+    const [tierPt, tierSens] = tierFilter ? tierFilter.split('|') : ['', ''];
     const filtered = (rows as DomainSummary[]).filter((d) => {
       if (q && !d.domain.toLowerCase().includes(q)) return false;
       switch (stateFilter) {
-        case 'excluded': return d.excluded;
-        case 'optedOut': return d.optedOut;
-        case 'specials': return d.activeSpecials > 0;
-        case 'active': return !d.excluded && !d.optedOut;
-        default: return true;
+        case 'excluded': if (!d.excluded) return false; break;
+        case 'optedOut': if (!d.optedOut) return false; break;
+        case 'specials': if (d.activeSpecials <= 0) return false; break;
+        case 'active': if (d.excluded || d.optedOut) return false; break;
+        default: break;
       }
+      if (tierFilter) {
+        const sens = tierSens === 'sens';
+        if (!(d.cells ?? []).some((c) => canOffer(c) && cellPostType(c) === tierPt && c.sensitive === sens))
+          return false;
+      }
+      if (categoryFilter) {
+        if (!(d.cells ?? []).some((c) => canOffer(c) && c.category === categoryFilter)) return false;
+      }
+      return true;
     });
     const factor = dir === 'asc' ? 1 : -1;
     return filtered.sort((a, b) => {
@@ -464,7 +526,7 @@ export function DomainsView({ tick }: { tick: number }) {
       if (sortKey === 'lastObservedAt') return factor * (a.lastObservedAt ?? '').localeCompare(b.lastObservedAt ?? '');
       return factor * ((a[sortKey] as number) - (b[sortKey] as number));
     });
-  }, [rows, search, stateFilter, sortKey, dir]);
+  }, [rows, search, stateFilter, tierFilter, categoryFilter, sortKey, dir]);
 
   const listHeight = Math.min(visible.length * ROW_H, MAX_LIST_H);
 
@@ -497,7 +559,43 @@ export function DomainsView({ tick }: { tick: number }) {
           </NativeSelect.Field>
           <NativeSelect.Indicator />
         </NativeSelect.Root>
-        <Text fontSize="xs" color="fg.subtle" ml="auto">
+
+        {/* Offer filters — only one at a time (a product tier and a niche would
+            usually contradict, e.g. "regular" post × "casino" niche → nothing). */}
+        <NativeSelect.Root size="sm" width="48" variant="plain" disabled={!!categoryFilter}>
+          <NativeSelect.Field
+            value={tierFilter}
+            onChange={(e) => { setTierFilter(e.target.value); if (e.target.value) setCategoryFilter(''); }}
+            fontWeight="medium"
+          >
+            <option value="">any product</option>
+            {tierOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </NativeSelect.Field>
+          <NativeSelect.Indicator />
+        </NativeSelect.Root>
+
+        <NativeSelect.Root size="sm" width="44" variant="plain" disabled={!!tierFilter}>
+          <NativeSelect.Field
+            value={categoryFilter}
+            onChange={(e) => { setCategoryFilter(e.target.value); if (e.target.value) setTierFilter(''); }}
+            fontWeight="medium"
+          >
+            <option value="">any niche</option>
+            {categoryOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </NativeSelect.Field>
+          <NativeSelect.Indicator />
+        </NativeSelect.Root>
+
+        <Button
+          size="sm"
+          variant="outline"
+          ml="auto"
+          onClick={() => setShowExport(true)}
+          disabled={visible.length === 0}
+        >
+          <DownloadIcon /> Export
+        </Button>
+        <Text fontSize="xs" color="fg.subtle">
           {visible.length} of {rows.length} domain{rows.length === 1 ? '' : 's'}
         </Text>
       </HStack>
@@ -546,6 +644,10 @@ export function DomainsView({ tick }: { tick: number }) {
           </Box>
         )}
       </DataPanel>
+
+      {showExport && (
+        <DomainsExportDialog domains={visible} onClose={() => setShowExport(false)} />
+      )}
 
       {selected && (
         <DomainDetailModal domain={selected} onClose={() => setSelected(null)} onChanged={reload} />

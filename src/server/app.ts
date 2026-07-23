@@ -681,6 +681,16 @@ async function handle(
           ...(sheet.lastObservedAt ? { lastObservedAt: sheet.lastObservedAt } : {}),
           optedOut: sheet.optedOut,
           excluded: excluded.has(domain),
+          // Stripped standing cells so the UI can filter (by product×sensitivity
+          // tier and by niche) and export price columns without a per-domain fetch.
+          cells: sheet.cells.map((c) => ({
+            postType: c.postType,
+            category: c.category,
+            label: c.label,
+            sensitive: c.sensitive,
+            canPost: c.canPost,
+            ...(c.price ? { price: c.price } : {}),
+          })),
         };
       });
       return sendJson(res, 200, domains);

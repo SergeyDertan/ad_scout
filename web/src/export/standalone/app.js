@@ -15,6 +15,7 @@
     { key: 'email', label: 'Contact email' },
     { key: 'batch', label: 'Batch' },
     { key: 'canPost', label: 'Can post' },
+    { key: 'currency', label: 'Currency' },
     { key: 'received', label: 'Received' },
   ];
 
@@ -23,7 +24,7 @@
   // ---- state ----
   var filters = { search: '', batch: '', niche: '', canpost: '' };
   var selection = {
-    meta: new Set(['website', 'email', 'batch', 'canPost']),
+    meta: new Set(['website', 'email', 'batch', 'canPost', 'currency']),
     combos: new Set(model.combos.map(function (c) { return c.key; })),
     includeCanPost: false,
     numericPrices: true,
@@ -75,6 +76,7 @@
       case 'email': return r.email;
       case 'batch': return r.batch;
       case 'canPost': return r.canPost;
+      case 'currency': return r.currency;
       case 'received': return r.receivedLabel;
       default: return '';
     }

@@ -186,7 +186,12 @@ export type CanPost = 'yes' | 'no' | 'maybe';
 /** A parsed price attached to a PostOffer. */
 export interface PriceValue {
   amount?: number;
+  /** Normalized ISO code (USD/EUR/GBP/…), set ONLY when the token maps confidently. */
   currency?: string;
+  /** The currency token EXACTLY as written ("£", "zł", "R$", "грн"), captured whenever
+   *  any currency indicator sits by the amount — even one we can't normalize yet, so it
+   *  can be resolved later. Superset of `currency`; absent only when no token was found. */
+  currencyRaw?: string;
   raw: string;
 }
 

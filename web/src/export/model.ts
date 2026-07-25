@@ -34,6 +34,7 @@ export const META_COLUMNS: MetaColumn[] = [
   { key: 'email', label: 'Contact email' },
   { key: 'batch', label: 'Batch' },
   { key: 'canPost', label: 'Can post' },
+  { key: 'currency', label: 'Currency' },
   { key: 'received', label: 'Received' },
 ];
 
@@ -52,6 +53,9 @@ export interface ExportRow {
   batch: string;
   batchId: string;
   canPost: string;
+  /** The website's quoting currency — first currency seen across its offers.
+   *  Disambiguates the bare price numbers in the sheet. '' when none carried one. */
+  currency: string;
   received: string;
   receivedLabel: string;
   categories: string[];
@@ -101,6 +105,9 @@ export function buildExportModel(rows: ResponseRow[], niches: Niche[]): ExportMo
     const cells: Record<string, ExportCell> = {};
     const cats = new Set<string>();
     let sensitive = false;
+    // Distinct currencies across the reply's offers. Usually one; a multi-site rate
+    // card that mixes them (rare) is joined ("GBP/USD") so no cell is mislabelled.
+    const currencies: string[] = [];
     for (const o of offers) {
       const postType = o.postType || 'guest_post';
       const key = `${postType}|${o.category}`;
@@ -116,9 +123,11 @@ export function buildExportModel(rows: ResponseRow[], niches: Niche[]): ExportMo
       cells[key] = {
         raw: formatPrice(o.price),
         amount: o.price?.amount ?? null,
-        currency: o.price?.currency ?? null,
+        currency: o.price?.currency ?? o.price?.currencyRaw ?? null,
         canPost: o.canPost ?? '',
       };
+      const cur = o.price?.currency ?? o.price?.currencyRaw;
+      if (cur && !currencies.includes(cur)) currencies.push(cur);
       cats.add(o.category);
       if (o.sensitive) sensitive = true;
     }
@@ -130,6 +139,7 @@ export function buildExportModel(rows: ResponseRow[], niches: Niche[]): ExportMo
       batch: r.batchName ?? '',
       batchId: r.batchId ?? '',
       canPost: r.parsed?.canPost ?? '',
+      currency: currencies.join('/'),
       received: r.receivedAt ?? '',
       receivedLabel: r.receivedAt ? new Date(r.receivedAt).toLocaleString() : '',
       categories: [...cats],
@@ -152,7 +162,7 @@ export function buildExportModel(rows: ResponseRow[], niches: Niche[]): ExportMo
 
 export function defaultSelection(model: ExportModel): ExportSelection {
   return {
-    meta: ['website', 'email', 'batch', 'canPost'],
+    meta: ['website', 'email', 'batch', 'canPost', 'currency'],
     combos: model.combos.map((c) => c.key),
     includeCanPost: false,
     numericPrices: true,
@@ -180,6 +190,7 @@ function metaValue(r: ExportRow, key: string): string {
     case 'email': return r.email;
     case 'batch': return r.batch;
     case 'canPost': return r.canPost;
+    case 'currency': return r.currency;
     case 'received': return r.receivedLabel;
     default: return '';
   }

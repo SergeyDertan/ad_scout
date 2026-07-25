@@ -33,6 +33,7 @@ test('buildExtractionSchema lists the universal requirements', () => {
     'priceRaw',
     'priceKind',
     'multiplier',
+    'addend',
     'relativeTo',
     'website',
     'isSpecial',
@@ -48,14 +49,54 @@ test('buildExtractionSchema lists the universal requirements', () => {
 });
 
 test('parsePrice extracts amount + currency, undefined when empty', () => {
-  assert.deepEqual(parsePrice('$150'), { amount: 150, currency: 'USD', raw: '$150' });
+  assert.deepEqual(parsePrice('$150'), { amount: 150, currency: 'USD', currencyRaw: '$', raw: '$150' });
   assert.deepEqual(parsePrice('around 250 EUR'), {
     amount: 250,
     currency: 'EUR',
+    currencyRaw: 'EUR',
     raw: 'around 250 EUR',
   });
   assert.equal(parsePrice(''), undefined);
   assert.equal(parsePrice('  '), undefined);
+});
+
+test('parsePrice captures unmapped currencies in currencyRaw for later resolution', () => {
+  // Unknown symbol (Sc): no ISO mapping, but the token is preserved.
+  assert.deepEqual(parsePrice('₹5000'), { amount: 5000, currencyRaw: '₹', raw: '₹5000' });
+  // Non-ASCII word token abutting the amount.
+  assert.deepEqual(parsePrice('250 zł/post'), { amount: 250, currency: 'PLN', currencyRaw: 'zł', raw: '250 zł/post' });
+  // Prefixed dollar disambiguates from USD.
+  assert.deepEqual(parsePrice('R$ 300'), { amount: 300, currency: 'BRL', currencyRaw: 'R$', raw: 'R$ 300' });
+  // An expanded ISO code normalizes.
+  assert.deepEqual(parsePrice('CHF 400'), { amount: 400, currency: 'CHF', currencyRaw: 'CHF', raw: 'CHF 400' });
+  // A plain number carries no currency token at all.
+  assert.deepEqual(parsePrice('150'), { amount: 150, raw: '150' });
+  // Spelled-out currency words normalize, keeping the verbatim word.
+  assert.deepEqual(parsePrice('350 euro'), { amount: 350, currency: 'EUR', currencyRaw: 'euro', raw: '350 euro' });
+  assert.deepEqual(parsePrice('90 euros plus VAT'), { amount: 90, currency: 'EUR', currencyRaw: 'euros', raw: '90 euros plus VAT' });
+  // An ISO code glued to the amount (no space) still resolves.
+  assert.deepEqual(parsePrice('105eur'), { amount: 105, currency: 'EUR', currencyRaw: 'eur', raw: '105eur' });
+});
+
+test('parsePrice reads European thousands separators and the price next to the currency', () => {
+  // Dot/space/nbsp thousands separators — not decimals.
+  assert.equal(parsePrice('12.000 SEK per year (1090 euro)')?.amount, 12000);
+  assert.equal(parsePrice('1.400 USD')?.amount, 1400);
+  assert.equal(parsePrice('1.800€')?.amount, 1800);
+  assert.equal(parsePrice('16 000 SEK')?.amount, 16000);
+  // Genuine decimals are preserved (dot with <3 trailing digits, or a decimal comma).
+  assert.equal(parsePrice('$19.99')?.amount, 19.99);
+  assert.equal(parsePrice('182,50 EUR')?.amount, 182.5);
+  // The amount is the currency-tagged figure, not a stray leading number.
+  assert.equal(parsePrice('12 months footer link = $2500')?.amount, 2500);
+});
+
+test('parsePrice prefers the 12-month tier, then 6-month, then whatever is left', () => {
+  assert.equal(parsePrice('6 months = $1500 / 12 months = $2500')?.amount, 2500);
+  assert.equal(parsePrice('6 months = $3000 / 12 months = $5000')?.amount, 5000);
+  assert.equal(parsePrice('1 year = €900 / 6 months = €500')?.amount, 900);
+  // No period tiers → first currency-tagged figure wins (unchanged behavior).
+  assert.equal(parsePrice('400€ (no-follow) / 640€ (do-follow)')?.amount, 400);
 });
 
 const offer = (o: Partial<RawOffer>): RawOffer => ({
@@ -78,7 +119,7 @@ test('assembleResult preserves prose and is gap-tolerant', () => {
   const { result } = assembleResult(raw, { niches: NICHES });
   assert.equal(result.optOut, false);
   assert.equal(result.conditions, 'must be original');
-  assert.deepEqual(result.offers[0].price, { amount: 120, currency: 'USD', raw: '$120' });
+  assert.deepEqual(result.offers[0].price, { amount: 120, currency: 'USD', currencyRaw: '$', raw: '$120' });
 });
 
 test('assembleResult captures every priced niche + summary canPost for the requested one', () => {
@@ -96,9 +137,9 @@ test('assembleResult captures every priced niche + summary canPost for the reque
   assert.equal(result.canPost, 'yes'); // summary = requested (casino) offer
   const casino = result.offers.find((o) => o.category === 'casino');
   const regular = result.offers.find((o) => o.category === 'regular');
-  assert.deepEqual(casino?.price, { amount: 150, currency: 'EUR', raw: '150 EUR' });
+  assert.deepEqual(casino?.price, { amount: 150, currency: 'EUR', currencyRaw: 'EUR', raw: '150 EUR' });
   assert.equal(casino?.sensitive, true);
-  assert.deepEqual(regular?.price, { amount: 60, currency: 'USD', raw: '$60' });
+  assert.deepEqual(regular?.price, { amount: 60, currency: 'USD', currencyRaw: '$', raw: '$60' });
   assert.equal(result.reasoning, 'Owner quoted casino €150 and regular $60');
 });
 
@@ -111,7 +152,7 @@ test('summary canPost falls back from a requested child to the sensitive umbrell
   };
   const { result } = assembleResult(raw, { niches: NICHES, requestedCategory: 'casino' });
   assert.equal(result.canPost, 'yes'); // resolved via umbrella
-  assert.deepEqual(result.offers[0].price, { amount: 40, currency: 'USD', raw: '$40' });
+  assert.deepEqual(result.offers[0].price, { amount: 40, currency: 'USD', currencyRaw: '$', raw: '$40' });
 });
 
 test('reconcileOffers carries website / isSpecial / specialUntil onto the offer', () => {
@@ -129,10 +170,10 @@ test('reconcileOffers carries website / isSpecial / specialUntil onto the offer'
   const own = offers.find((o) => !o.website && !o.isSpecial);
   const other = offers.find((o) => o.website === 'casik.ua');
   const special = offers.find((o) => o.isSpecial);
-  assert.deepEqual(own?.price, { amount: 100, currency: 'USD', raw: '$100' });
-  assert.deepEqual(other?.price, { amount: 80, currency: 'USD', raw: '$80' });
+  assert.deepEqual(own?.price, { amount: 100, currency: 'USD', currencyRaw: '$', raw: '$100' });
+  assert.deepEqual(other?.price, { amount: 80, currency: 'USD', currencyRaw: '$', raw: '$80' });
   assert.equal(special?.specialUntil, 'end of month');
-  assert.deepEqual(special?.price, { amount: 60, currency: 'USD', raw: '$60' });
+  assert.deepEqual(special?.price, { amount: 60, currency: 'USD', currencyRaw: '$', raw: '$60' });
 });
 
 test('assembleResult summary ignores offers tagged with a different site', () => {
@@ -160,7 +201,7 @@ test('reconcileOffers learns a new niche not in the registry', () => {
   assert.equal(discovered[0].key, 'short_term_loans');
   assert.equal(discovered[0].sensitive, true);
   assert.equal(offers[0].category, 'short_term_loans');
-  assert.deepEqual(offers[0].price, { amount: 99, currency: 'USD', raw: '$99' });
+  assert.deepEqual(offers[0].price, { amount: 99, currency: 'USD', currencyRaw: '$', raw: '$99' });
 });
 
 test('postType × niche: same niche in different products are distinct offers', () => {
@@ -235,9 +276,35 @@ test('relative price: casino = 1.5x regular is computed from the base (japan-zon
   assert.deepEqual(casino?.price, {
     amount: 375,
     currency: 'USD',
+    currencyRaw: '$',
     raw: 'additional 50% premium (1.5x standard rates)',
   });
   // NOT inverted anymore: casino (375) > regular (250).
+  assert.ok(casino!.price!.amount! > offers.find((o) => o.category === 'regular')!.price!.amount!);
+});
+
+test('relative price: a flat surcharge is ADDED to the base (jalta "€150 extra" case)', () => {
+  const { offers } = reconcileOffers(
+    [
+      offer({ category: 'regular', canPost: 'yes', priceRaw: '€325' }),
+      offer({
+        category: 'casino',
+        label: 'Casino',
+        sensitive: true,
+        canPost: 'yes',
+        priceRaw: '€150 extra',
+        priceKind: 'relative',
+        multiplier: 0,
+        addend: 150,
+        relativeTo: 'regular',
+      }),
+    ],
+    NICHES,
+  );
+  const casino = offers.find((o) => o.category === 'casino');
+  // 325 + 150 = 475 (base × 1 + addend), NOT a bare 150 (which would look cheaper).
+  assert.equal(casino?.price?.amount, 475);
+  assert.equal(casino?.price?.currency, 'EUR');
   assert.ok(casino!.price!.amount! > offers.find((o) => o.category === 'regular')!.price!.amount!);
 });
 
@@ -260,7 +327,7 @@ test('relative price: a range multiplier uses its lower bound (devopsschool 3-5x
   );
   const casino = offers.find((o) => o.category === 'casino');
   // base parses to its low end 50; 50 * 3 = 150 (was a bogus $3 before the fix).
-  assert.deepEqual(casino?.price, { amount: 150, currency: 'USD', raw: '3-5 times of the price listed' });
+  assert.deepEqual(casino?.price, { amount: 150, currency: 'USD', currencyRaw: '$', raw: '3-5 times of the price listed' });
 });
 
 test('relative price: "doubled" with a clean base (incomera case)', () => {
@@ -281,7 +348,7 @@ test('relative price: "doubled" with a clean base (incomera case)', () => {
     NICHES,
   );
   const casino = offers.find((o) => o.category === 'casino');
-  assert.deepEqual(casino?.price, { amount: 700, currency: 'USD', raw: 'grey niches price is doubled' });
+  assert.deepEqual(casino?.price, { amount: 700, currency: 'USD', currencyRaw: '$', raw: 'grey niches price is doubled' });
 });
 
 test('relative price with no resolvable base keeps the verbatim phrase, no amount', () => {

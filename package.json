@@ -19,6 +19,8 @@
     "fix:markdown-suppressions": "tsx src/scripts/fix-markdown-suppressions.ts",
     "reattribute:ambiguous": "tsx src/scripts/reattribute-ambiguous.ts",
     "correct:dj-sensitive": "tsx src/scripts/correct-dj-sensitive.ts",
+    "backfill:currency": "tsx src/scripts/backfill-currency.ts",
+    "reextract:broad-batch": "tsx src/scripts/reextract-broad-batch.ts",
     "assign:batch-ids": "tsx src/scripts/assign-batch-ids.ts",
     "reset:extractions": "tsx src/scripts/reset-extractions.ts",
     "reset:for-reingest": "tsx src/scripts/reset-for-reingest.ts",

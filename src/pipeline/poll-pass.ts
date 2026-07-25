@@ -7,6 +7,7 @@
 
 import { normalizeDomain } from '../domain/domain';
 import { LABELS, labelForResult, type OutcomeLabel } from '../domain/labels';
+import { pitchStyleForBatch } from '../domain/pitch';
 import {
   attributeOffers,
   detectBounce,
@@ -228,7 +229,7 @@ type IngestResult = { kind: 'done'; label: OutcomeLabel } | { kind: 'ignored' };
  * lift a domain exclusion on a positive record. Mutates `reply` in place (parsed,
  * review, extractionStatus). Throws on extractor failure so the caller can mark it.
  */
-async function ingestReply(
+export async function ingestReply(
   deps: PollDeps,
   reply: Reply,
   target: Target,
@@ -236,11 +237,15 @@ async function ingestReply(
 ): Promise<IngestResult> {
   const { store, extractor, clock, config } = deps;
   const knownNiches = await store.listNiches();
+  // The batch the target came from decides how a niche-less flat price is read:
+  // the historical casino-specific "first" batch ⇒ casino; everything else ⇒ broad.
+  const pitchStyle = pitchStyleForBatch(target.batchId);
   const outcome = await extractor.extract(
     config.pitch,
     reply.text,
     knownNiches,
     reply.attachments ?? [],
+    { pitchStyle },
   );
   await persistDiscovered(store, outcome.discovered, clock);
 

@@ -249,14 +249,16 @@ test('POST /api/preview renders the outreach email from the global pitch profile
     });
     assert.ok(preview.subject.length > 0);
     assert.match(preview.body, /rates for:/); // the broad pricing ask
+    assert.match(preview.body, /advertising manager/); // generic framing, no advertised site named
     assert.equal(preview.senderEmail, 'vlad@example.com');
-    // A per-import advertised override flows into the body.
+    // The message is deliberately generic now — a per-import advertised override is
+    // NOT injected into the body (we no longer name the site we represent).
     const overridden = await J(`${h.base}/api/preview`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ websiteUrl: 'target.example', advertised: { url: 'poker.example', description: 'a poker room' } }),
     });
-    assert.match(overridden.body, /poker\.example/);
+    assert.doesNotMatch(overridden.body, /poker\.example/);
   } finally {
     await h.close();
   }

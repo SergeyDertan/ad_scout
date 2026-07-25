@@ -43,6 +43,19 @@ function priceValue(price?: PriceValue): string | number {
   return price.raw || '';
 }
 
+/** A domain's quoting currency. A domain almost always quotes in one currency, so
+ *  this is usually a single code; when a domain genuinely mixes currencies across
+ *  its cells (rare) ALL distinct ones are joined ("GBP/USD") rather than silently
+ *  picking one, so the bare price numbers are never mislabelled. Blank when none. */
+function domainCurrency(cells: DomainCell[]): string {
+  const seen: string[] = [];
+  for (const c of cells) {
+    const cur = c.price?.currency ?? c.price?.currencyRaw;
+    if (cur && !seen.includes(cur)) seen.push(cur);
+  }
+  return seen.join('/');
+}
+
 /**
  * The one representative regular/sensitive price for a domain. Considers only
  * cells the publisher will post (canPost === 'yes'), prefers the generic
@@ -64,16 +77,24 @@ function pickPrice(cells: DomainCell[], sensitive: boolean): string | number {
   return priceValue(sorted[0].price);
 }
 
+/** Marks a domain whose prices come from more than one email source: the distinct
+ *  sender count when >1, blank otherwise (so multi-source rows stand out). */
+function sourcesMark(d: DomainSummary): string | number {
+  return (d.sourceCount ?? 0) > 1 ? d.sourceCount! : '';
+}
+
 /** Build the header + body the preview and the sheet share (no title row). */
 export function buildDomainsExport(domains: DomainSummary[], scope: DomainExportScope): DomainExportTable {
   if (scope !== 'all') {
     const columns = scope === 'regular'
-      ? ['Domain', 'Regular price']
-      : ['Domain', 'Regular price', 'Sensitive price'];
+      ? ['Domain', 'Regular price', 'Currency', 'Price sources']
+      : ['Domain', 'Regular price', 'Sensitive price', 'Currency', 'Price sources'];
     const body = domains.map((d) => {
       const cells = d.cells ?? [];
       const row: (string | number)[] = [d.domain, pickPrice(cells, false)];
       if (scope === 'both') row.push(pickPrice(cells, true));
+      row.push(domainCurrency(cells));
+      row.push(sourcesMark(d));
       return row;
     });
     return { columns, body };
@@ -102,15 +123,17 @@ export function buildDomainsExport(domains: DomainSummary[], scope: DomainExport
       a.label.localeCompare(b.label),
   );
 
-  const columns = ['Domain', 'Records', 'Specials', 'Last quote', ...combos.map((c) => c.label)];
+  const columns = ['Domain', 'Records', 'Price sources', 'Specials', 'Last quote', 'Currency', ...combos.map((c) => c.label)];
   const body = domains.map((d) => {
     const byKey = new Map<string, string | number>();
     for (const c of d.cells ?? []) byKey.set(cellKey(c), priceValue(c.price));
     return [
       d.domain,
       d.recordCount,
+      sourcesMark(d),
       d.activeSpecials || '',
       d.lastObservedAt ? new Date(d.lastObservedAt).toLocaleDateString() : '',
+      domainCurrency(d.cells ?? []),
       ...combos.map((c) => byKey.get(c.key) ?? ''),
     ];
   });

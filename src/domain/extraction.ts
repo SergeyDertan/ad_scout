@@ -34,12 +34,16 @@ export interface RawOffer {
   sensitive: boolean; // is this a grey/sensitive niche?
   canPost: CanPost;
   priceRaw: string;
-  /** How to read priceRaw. 'relative' = priced only as a multiple of another
-   *  niche's rate (e.g. casino = "+50% premium"); 'absolute' (default) = a real
-   *  figure. Keeps the LLM out of arithmetic — it names the multiplier, we compute. */
+  /** How to read priceRaw. 'relative' = priced only off another niche's rate — a
+   *  MULTIPLE (casino = "+50% premium") and/or a flat ADD-ON (casino = "€150 extra");
+   *  'absolute' (default) = a real figure. Keeps the LLM out of arithmetic — it names
+   *  the multiplier/addend, we compute base × multiplier + addend. */
   priceKind?: 'absolute' | 'relative';
-  /** For relative pricing: the factor (1.5 for "+50%", 2 for "double"). */
+  /** For relative pricing: the factor (1.5 for "+50%", 2 for "double"). 0 = none. */
   multiplier?: number;
+  /** For relative pricing: a FLAT surcharge added on top of the base ("€150 extra",
+   *  "$60 surcharge" → 150 / 60). 0 = none. total = base × multiplier + addend. */
+  addend?: number;
   /** For relative pricing: the base niche key it multiplies (usually 'regular'). */
   relativeTo?: string;
   /** The site this price is for, ONLY when the owner explicitly prices a
@@ -77,7 +81,7 @@ function coerceIntent(raw: string | undefined): ReplyIntent {
 const OFFER_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['postType', 'category', 'label', 'sensitive', 'canPost', 'priceRaw', 'priceKind', 'multiplier', 'relativeTo', 'website', 'isSpecial', 'specialUntil'],
+  required: ['postType', 'category', 'label', 'sensitive', 'canPost', 'priceRaw', 'priceKind', 'multiplier', 'addend', 'relativeTo', 'website', 'isSpecial', 'specialUntil'],
   properties: {
     postType: {
       type: 'string',
@@ -108,12 +112,17 @@ const OFFER_SCHEMA = {
       type: 'string',
       enum: ['absolute', 'relative'],
       description:
-        'absolute = priceRaw is a real figure ($150). relative = this niche has NO figure of its own and is priced only as a multiple of another rate (e.g. "casino +50% premium", "sensitive = 3-5x the listed price"). Use relative ONLY then.',
+        'absolute = priceRaw is a real figure ($150). relative = this niche has NO figure of its own and is priced only OFF another rate — a multiple ("casino +50% premium", "3-5x the listed price") AND/OR a flat add-on ("casino €150 extra", "$60 sensitive surcharge"). Use relative ONLY then; NEVER emit the bare surcharge/multiplier as an absolute figure.',
     },
     multiplier: {
       type: 'number',
       description:
-        'When priceKind=relative, the factor to multiply the base rate by: "+50% premium" → 1.5, "double" → 2, "3-5x" → use the lower bound 3. 0 when absolute.',
+        'When priceKind=relative, the factor to multiply the base rate by: "+50% premium" → 1.5, "double" → 2, "3-5x" → use the lower bound 3. 0 when there is no multiple (a pure flat add-on) or when absolute.',
+    },
+    addend: {
+      type: 'number',
+      description:
+        'When priceKind=relative, a FLAT surcharge ADDED on top of the base rate: "€150 extra" → 150, "$60 surcharge" → 60. 0 when there is no flat add-on (a pure multiple) or when absolute. Final price = base × multiplier + addend.',
     },
     relativeTo: {
       type: 'string',
@@ -174,34 +183,184 @@ export function buildExtractionSchema(): JsonSchema {
   };
 }
 
+// Prefixed dollar/other marks checked BEFORE the bare '$', so "R$ 300" reads as BRL
+// (not USD) and its verbatim mark is kept. Order matters: longer prefixes first.
+const PREFIXED_SYMBOLS: [string, string][] = [
+  ['US$', 'USD'], ['NZ$', 'NZD'], ['HK$', 'HKD'], ['A$', 'AUD'], ['C$', 'CAD'],
+  ['R$', 'BRL'], ['S$', 'SGD'], ['zł', 'PLN'], ['kr', undefined as unknown as string],
+];
+// Bare symbol → ISO. '$' is intentionally the dominant USD reading; a prefixed
+// A$/C$/R$ is disambiguated above.
 const CURRENCY_SYMBOLS: Record<string, string> = {
   $: 'USD',
   '€': 'EUR',
   '£': 'GBP',
   '₴': 'UAH',
 };
-const CURRENCY_CODES = ['USD', 'EUR', 'GBP', 'UAH', 'PLN', 'CAD', 'AUD'];
+// ISO codes we normalize `currency` to. Generous so common global currencies map
+// cleanly; anything outside still lands in currencyRaw for later resolution.
+const CURRENCY_CODES = [
+  'USD', 'EUR', 'GBP', 'UAH', 'PLN', 'CAD', 'AUD', 'CHF', 'SEK', 'NOK', 'DKK', 'CZK',
+  'HUF', 'RON', 'TRY', 'INR', 'JPY', 'CNY', 'BRL', 'MXN', 'ZAR', 'NZD', 'SGD', 'HKD',
+  'AED', 'ILS', 'RUB', 'BGN', 'NGN',
+];
 
-/** Parse a verbatim price string into { amount?, currency?, raw }. Undefined if empty. */
+// Currencies spelled out as words (very common: "350 euro", "90 euros plus VAT").
+// Normalized like the codes; the verbatim word is kept in currencyRaw. Ordered so
+// nothing shadows another. 'dollar' is USD to match the bare-'$' default.
+const CURRENCY_WORDS: [RegExp, string][] = [
+  [/\beuros?\b/i, 'EUR'],
+  [/\bdollars?\b/i, 'USD'],
+  [/\bpounds?\b/i, 'GBP'],
+  [/\bz[łl]otych?\b/i, 'PLN'],
+  [/\bhryvnias?\b/i, 'UAH'],
+  [/\brubles?\b/i, 'RUB'],
+];
+
+// Price-adjacent words that are NOT currencies — keeps the fallback below from
+// mistaking a unit/qualifier for an unknown currency token.
+const NON_CURRENCY_WORDS = new Set([
+  'per', 'post', 'posts', 'each', 'link', 'links', 'word', 'words', 'month', 'year',
+  'week', 'day', 'days', 'net', 'vat', 'tax', 'and', 'for', 'the', 'min', 'max', 'pcs', 'pc',
+]);
+// Lowercase ASCII currency abbreviations worth keeping despite looking like words.
+const KNOWN_LOWER_CURRENCIES = new Set(['kr', 'lei', 'kn', 'lv']);
+
+/**
+ * A currency indicator we do NOT normalize but still preserve: any Unicode
+ * currency-symbol char (¥ ₹ ₩ ₪ ฿ …), or a short letter token abutting the amount
+ * that looks currency-ish (non-ASCII like "грн", all-caps like an unlisted code, or
+ * a known lowercase abbrev). Undefined when nothing plausible sits by the number.
+ */
+function detectCurrencyToken(value: string): string | undefined {
+  const sc = value.match(/\p{Sc}/u);
+  if (sc) return sc[0];
+  // A 2–4 letter token directly before or (preferably) after the amount.
+  const m = value.match(/(?:(\p{L}{2,4})\s?)?\d[\d.,]*(?:\s?(\p{L}{2,4}))?/u);
+  const cand = (m?.[2] ?? m?.[1] ?? '').trim();
+  if (!cand || NON_CURRENCY_WORDS.has(cand.toLowerCase())) return undefined;
+  const nonAscii = /[^\x00-\x7f]/.test(cand);
+  if (nonAscii || cand === cand.toUpperCase() || KNOWN_LOWER_CURRENCIES.has(cand.toLowerCase())) {
+    return cand;
+  }
+  return undefined;
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// A currency indicator (prefixed mark, Unicode symbol, ISO code, or spelled word)
+// used to locate the number that IS the price, so a stray leading figure like the
+// "12" in "12 months … $2500" is never mistaken for the amount.
+const CUR_WORDS_ALT = 'euros?|dollars?|pounds?|z[łl]otych?|hryvnias?|rubles?';
+const CUR_IND = `(?:${PREFIXED_SYMBOLS.map(([m]) => escapeRe(m)).join('|')}|\\p{Sc}|\\b(?:${CURRENCY_CODES.join('|')}|${CUR_WORDS_ALT}|${[...KNOWN_LOWER_CURRENCIES].join('|')})\\b)`;
+const NUM = '\\d[\\d.]*';
+const CUR_BEFORE_NUM = new RegExp(`${CUR_IND}\\s?(${NUM})`, 'iu');
+const CUR_AFTER_NUM = new RegExp(`(${NUM})\\s?${CUR_IND}`, 'iu');
+
+/** The first plain number in a string, or undefined. */
+function firstNumber(s: string): number | undefined {
+  const m = s.match(/\d[\d.]*/);
+  const n = m ? Number(m[0]) : NaN;
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/** The number that sits next to a currency indicator (the actual price), earliest
+ *  in the string. Undefined when no currency-tagged figure is present. */
+function currencyAdjacentNumber(seg: string): number | undefined {
+  const a = CUR_BEFORE_NUM.exec(seg);
+  const b = CUR_AFTER_NUM.exec(seg);
+  let best: { idx: number; num: string } | undefined;
+  if (a) best = { idx: a.index, num: a[1]! };
+  if (b && (!best || b.index < best.idx)) best = { idx: b.index, num: b[1]! };
+  if (!best) return undefined;
+  const n = Number(best.num);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/** Billing-period preference for tiered prices: 12-month/annual (0) beats 6-month
+ *  (1) beats everything else (2) — lower wins. */
+function periodRank(s: string): number {
+  if (/\b(?:12\s*months?|1\s*year|annual(?:ly)?|yearly|per\s*year|a\s*year)\b/i.test(s)) return 0;
+  if (/\b(?:6\s*months?|half[-\s]*year)\b/i.test(s)) return 1;
+  return 2;
+}
+
+/** Select the amount from a (thousands-normalized) price string. Splits tiered
+ *  quotes on "/", takes each segment's currency-tagged figure (falling back to its
+ *  first number), then prefers the best billing period, ties broken by reading order. */
+function selectAmount(normalized: string): number | undefined {
+  const cands: { amount: number; rank: number }[] = [];
+  for (const seg of normalized.split(/\s*\/\s*/)) {
+    const amt = currencyAdjacentNumber(seg) ?? firstNumber(seg);
+    if (amt != null) cands.push({ amount: amt, rank: periodRank(seg) });
+  }
+  if (cands.length === 0) return firstNumber(normalized);
+  let best = cands[0]!;
+  for (const c of cands) if (c.rank < best.rank) best = c; // first of the best rank
+  return best.amount;
+}
+
+/** Parse a verbatim price string into { amount?, currency?, currencyRaw?, raw }.
+ *  Undefined if empty. `currency` is a normalized ISO code (only when confident);
+ *  `currencyRaw` is the token as written, captured even for currencies we can't map. */
 export function parsePrice(raw: string): PriceValue | undefined {
   const value = (raw ?? '').trim();
   if (!value) return undefined;
-  const num = value.replace(/[, ](?=\d{3}\b)/g, '').match(/\d+(?:[.,]\d+)?/);
-  const amount = num ? Number(num[0].replace(',', '.')) : undefined;
+  // Normalize number formatting first: strip thousands separators (dot/comma/space/
+  // nbsp before a 3-digit group so "12.000"/"16 000" → 12000), then turn a decimal
+  // comma into a dot ("182,50" → "182.50"). Currency detection still uses `value`.
+  const normalized = value
+    .replace(/(?<=\d)[.,  ](?=\d{3}\b)/g, '')
+    .replace(/(\d),(\d)/g, '$1.$2');
+  const amount = selectAmount(normalized);
+
   let currency: string | undefined;
-  for (const sym of Object.keys(CURRENCY_SYMBOLS)) {
-    if (value.includes(sym)) {
-      currency = CURRENCY_SYMBOLS[sym];
+  let currencyRaw: string | undefined;
+
+  // 1a. Prefixed marks (R$, A$, zł, kr, …) before the bare-symbol pass.
+  for (const [mark, iso] of PREFIXED_SYMBOLS) {
+    if (value.includes(mark)) {
+      currencyRaw = mark;
+      if (iso) currency = iso;
       break;
     }
   }
-  if (!currency) {
-    const code = CURRENCY_CODES.find((c) => new RegExp(`\\b${c}\\b`, 'i').test(value));
-    if (code) currency = code;
+  // 1b. Bare symbol → ISO + verbatim token.
+  if (!currencyRaw) {
+    for (const sym of Object.keys(CURRENCY_SYMBOLS)) {
+      if (value.includes(sym)) {
+        currency = CURRENCY_SYMBOLS[sym];
+        currencyRaw = sym;
+        break;
+      }
+    }
   }
+  // 2. ISO code written out. Leading guard is "not a letter" (not \b) so a code
+  //    glued to the amount still matches ("105eur", "600USD"); trailing \b stays.
+  if (!currency) {
+    const m = value.match(new RegExp(`(?<![A-Za-z])(${CURRENCY_CODES.join('|')})\\b`, 'i'));
+    if (m) {
+      currency = m[1]!.toUpperCase();
+      currencyRaw ??= m[1];
+    }
+  }
+  // 2b. Spelled-out currency word ("euro", "dollars", "pound").
+  if (!currency) {
+    for (const [re, iso] of CURRENCY_WORDS) {
+      const m = value.match(re);
+      if (m) {
+        currency = iso;
+        currencyRaw ??= m[0];
+        break;
+      }
+    }
+  }
+  // 3. currencyRaw only — an indicator we can't normalize yet, kept to resolve later.
+  currencyRaw ??= detectCurrencyToken(value);
+
   return {
     ...(amount !== undefined && Number.isFinite(amount) ? { amount } : {}),
     ...(currency ? { currency } : {}),
+    ...(currencyRaw ? { currencyRaw } : {}),
     raw: value,
   };
 }
@@ -273,18 +432,20 @@ export function reconcileOffers(
     }
   }
 
-  // Second pass: casino = 1.5 × regular. The LLM only named the multiplier and
-  // the base niche; the arithmetic stays here, in tested code, so nothing is
-  // hallucinated and every amount traces back to a base figure + a stated factor.
-  // The base is resolved WITHIN the same post type (a casino link-insertion
-  // premium multiplies the regular link-insertion, not the guest-post rate).
+  // Second pass: casino = 1.5 × regular, or regular + €150. The LLM only named the
+  // multiplier/addend and the base niche; the arithmetic stays here, in tested code,
+  // so nothing is hallucinated and every amount traces back to a base figure + a
+  // stated factor/surcharge. The base is resolved WITHIN the same post type (a casino
+  // link-insertion premium multiplies the regular link-insertion, not the guest-post).
   for (const [, rel] of relByCell) {
     const offer = byCell.get(makeCellKey(rel.website, rel.postType, rel.nicheKey, rel.special))!;
     const base = findBaseOffer(byCell, rel.website, rel.postType, rel.relativeTo, known);
     if (base?.price?.amount != null) {
+      const factor = rel.multiplier > 0 ? rel.multiplier : 1; // pure add-on ⇒ ×1
       offer.price = {
-        amount: Math.round(base.price.amount * rel.multiplier * 100) / 100,
+        amount: Math.round((base.price.amount * factor + rel.addend) * 100) / 100,
         ...(base.price.currency ? { currency: base.price.currency } : {}),
+        ...(base.price.currencyRaw ? { currencyRaw: base.price.currencyRaw } : {}),
         raw: rel.raw,
       };
     } else if (rel.raw) {
@@ -303,13 +464,15 @@ function makeCellKey(website: string, postType: string, nicheKey: string, specia
   return `${website}|${postType}|${nicheKey}|${special ? 'special' : ''}`;
 }
 
-/** A niche priced as a multiple of another (casino = 1.5× regular). */
+/** A niche priced off another: a multiple (casino = 1.5× regular) and/or a flat
+ *  surcharge (casino = regular + €150). total = base × multiplier + addend. */
 interface RelativeSpec {
   website: string; // the cell's website tag ('' = contacted site) — scopes base lookup
   postType: string; // the cell's post type (for base lookup + write-back)
   nicheKey: string; // the cell's niche key (for write-back)
   special: boolean; // the cell's special flag (for write-back)
-  multiplier: number;
+  multiplier: number; // 0 = no multiple (pure add-on)
+  addend: number; // 0 = no flat surcharge (pure multiple)
   relativeTo: string; // base niche wording/key; '' → default to 'regular'
   raw: string; // verbatim premium phrase, kept for provenance
 }
@@ -317,15 +480,22 @@ interface RelativeSpec {
 // Guards a plausibly-real factor: "3-5x" or "+50%" land in (0, 100]; anything
 // outside is treated as absent (fall back to whatever priceRaw parsing found).
 const MAX_MULTIPLIER = 100;
+// A flat surcharge is a real money amount; guard against a runaway parse.
+const MAX_ADDEND = 1_000_000;
 
-/** The multiplier/base/raw parts of a relative price. The caller stamps website +
- *  postType + the resolved nicheKey (so write-back hits the same cell). */
+/** The multiplier/addend/base/raw parts of a relative price. Valid when it carries
+ *  a usable multiplier OR a flat addend. The caller stamps website + postType + the
+ *  resolved nicheKey (so write-back hits the same cell). */
 function relativeSpec(raw: RawOffer): Omit<RelativeSpec, 'website' | 'postType' | 'nicheKey' | 'special'> | undefined {
   if (raw.priceKind !== 'relative') return undefined;
-  const m = Number(raw.multiplier);
-  if (!Number.isFinite(m) || m <= 0 || m > MAX_MULTIPLIER) return undefined;
+  const mRaw = Number(raw.multiplier);
+  const aRaw = Number(raw.addend);
+  const multiplier = Number.isFinite(mRaw) && mRaw > 0 && mRaw <= MAX_MULTIPLIER ? mRaw : 0;
+  const addend = Number.isFinite(aRaw) && aRaw > 0 && aRaw <= MAX_ADDEND ? aRaw : 0;
+  if (multiplier === 0 && addend === 0) return undefined; // neither factor nor add-on
   return {
-    multiplier: m,
+    multiplier,
+    addend,
     relativeTo: (raw.relativeTo ?? '').trim(),
     raw: (raw.priceRaw ?? '').trim(),
   };

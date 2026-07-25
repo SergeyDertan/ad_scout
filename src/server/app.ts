@@ -671,11 +671,21 @@ async function handle(
       const targetDomains = (await store.listTargets()).map((t) => normalizeDomain(t.websiteUrl));
       const excluded = new Set((await store.listDomainExclusions()).map((e) => e.domain));
       const now = deps.clock.now();
+      // Distinct sender addresses that have priced each domain — >1 flags a domain
+      // whose quotes come from more than one email source (cross-check / conflict).
+      const sourcesByDomain = new Map<string, Set<string>>();
+      for (const rec of records) {
+        if (!rec.sourceEmail) continue;
+        let set = sourcesByDomain.get(rec.domain);
+        if (!set) sourcesByDomain.set(rec.domain, (set = new Set()));
+        set.add(rec.sourceEmail.toLowerCase());
+      }
       const domains = knownDomains(records, targetDomains).map((domain) => {
         const sheet = buildPriceSheet(domain, records, now);
         return {
           domain,
           recordCount: sheet.recordCount,
+          sourceCount: sourcesByDomain.get(domain)?.size ?? 0,
           standingCells: sheet.cells.length,
           activeSpecials: sheet.specials.filter((s) => s.active).length,
           ...(sheet.lastObservedAt ? { lastObservedAt: sheet.lastObservedAt } : {}),

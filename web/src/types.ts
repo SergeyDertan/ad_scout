@@ -5,7 +5,11 @@ export type CanPost = 'yes' | 'no' | 'maybe';
 
 export interface PriceValue {
   amount?: number;
+  /** Normalized ISO code, set only when confidently mapped. */
   currency?: string;
+  /** Currency token as written — superset of `currency`, present even for currencies
+   *  we can't normalize yet. Prefer `currency ?? currencyRaw` when labelling a price. */
+  currencyRaw?: string;
   raw: string;
 }
 
@@ -46,7 +50,8 @@ export interface Niche {
 export function formatPrice(price?: PriceValue): string {
   if (!price) return '—';
   if (price.amount !== undefined) {
-    return price.currency ? `${price.amount} ${price.currency}` : String(price.amount);
+    const cur = price.currency ?? price.currencyRaw;
+    return cur ? `${price.amount} ${cur}` : String(price.amount);
   }
   return price.raw || '—';
 }
@@ -308,6 +313,8 @@ export interface DomainCell {
 export interface DomainSummary {
   domain: string;
   recordCount: number;
+  /** Distinct sender emails that have priced this domain. >1 ⇒ multiple price sources. */
+  sourceCount?: number;
   standingCells: number;
   activeSpecials: number;
   lastObservedAt?: string;

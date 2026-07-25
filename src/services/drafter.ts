@@ -1,7 +1,8 @@
-// Deterministic, template-based email drafter (no LLM). Renders from
-// senderName + advertised + format/topic + greeting, and always asks one broad
-// pricing question (regular / link insertion / grey niches). Pure.
-// (Optional LLM personalization of a single opening line is a later add-on.)
+// Deterministic, template-based email drafter (no LLM). Renders a broad,
+// agency-style pitch that does NOT name any advertised site or single topic — it
+// simply asks the publisher for their rate card (regular / link insertion / grey
+// niches). Only the sender name and the target greeting are personalized. This is
+// the standard message for every batch going forward. Pure.
 
 import type { Account, PitchProfile, Target } from '../domain/types';
 
@@ -19,40 +20,36 @@ export function siteName(url: string): string {
     .trim();
 }
 
-function indefinite(word: string): string {
-  return /^[aeiou]/i.test(word) ? `an ${word}` : `a ${word}`;
-}
-
 export function draftEmail(profile: PitchProfile, account: Account, target: Target): DraftedEmail {
   const greeting = target.contactName?.trim() || siteName(target.websiteUrl);
   const subject =
-    profile.subjectTemplate?.trim() ||
-    `Interest in publishing a post about ${indefinite(profile.topic)} on your website`;
+    profile.subjectTemplate?.trim() || 'Interest in publishing a sponsored post on your website';
 
   const sig = account.signature?.trim() || `Best regards,\n${account.senderName}`;
   const hook = target.notes?.trim() ? `\n${target.notes.trim()}\n` : '';
 
-  const manageLine = profile.advertised.description
-    ? `My name is ${account.senderName} and I manage ${profile.advertised.description} - ${profile.advertised.url}.`
-    : `My name is ${account.senderName} and I represent ${profile.advertised.url}.`;
+  // Generic manager framing — no advertised site, no single niche. We're gathering
+  // rate cards, so the ask is broad and the same for everyone.
+  const introLine =
+    `My name is ${account.senderName}, and I'm an advertising manager who helps brands ` +
+    'get featured through sponsored posts and paid links on quality websites like yours.';
 
-  // One broad ask that surfaces every price we care about, whatever the pitch
-  // topic — regular content, link insertions, and grey/sensitive niches.
+  // One broad ask that surfaces every price we care about — regular content, link
+  // insertions, and grey/sensitive niches.
   const questions = [
     '  - A regular guest post / sponsored article',
     '  - A link insertion (adding a link into an existing article)',
     '  - Gray / sensitive niches — please specify casino and VPN separately if their rates differ',
   ].join('\n');
 
-  const topicClause = profile.topic ? ` about ${profile.topic}` : '';
   const inquiryLine =
-    `I'm writing to inquire about the possibility of publishing ${indefinite(profile.format)}${topicClause} on your website. ` +
-    `Could you please share your rates for:\n\n${questions}`;
+    'I\'d like to know whether you accept paid publications — and if so, could you please ' +
+    `share your rates for:\n\n${questions}`;
 
   const body = [
     `Hello, ${greeting},`,
     '',
-    manageLine,
+    introLine,
     '',
     inquiryLine,
     hook,

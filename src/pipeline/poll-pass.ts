@@ -203,6 +203,11 @@ export async function extractPendingReplies(
       // later run resumes exactly here. State is per-reply, so this is safe.
       if (err instanceof UsageLimitError) {
         const when = err.resetAt ? ` — resets ${err.resetAt.toLocaleString()}` : '';
+        logger.warn('extraction stopped at usage limit', {
+          replyId: reply.id,
+          progress: `${i}/${work.length}`,
+          ...(err.resetAt ? { resetAt: err.resetAt.toISOString() } : {}),
+        });
         log(`[${i}/${work.length}] STOP claude usage limit reached${when}. Re-run to resume.`);
         return { extracted, failed, ignored, stoppedByLimit: true, ...(err.resetAt ? { resetAt: err.resetAt } : {}) };
       }
@@ -210,6 +215,17 @@ export async function extractPendingReplies(
       await store.putReply(reply);
       if (account) await applyLabel(deps, account, reply.emailId, LABELS.matched);
       failed++;
+      // Full detail (cause chain, code, stack) goes to the log sink; the console
+      // line stays a one-liner so a long run remains readable.
+      logger.error('extraction failed', {
+        replyId: reply.id,
+        emailId: reply.emailId,
+        fromAddress: reply.fromAddress,
+        targetId: target.id,
+        websiteUrl: target.websiteUrl,
+        progress: `${i}/${work.length}`,
+        ...describeError(err),
+      });
       log(`[${i}/${work.length}] FAIL ${target.websiteUrl} — ${err instanceof Error ? err.message : String(err)}`);
     }
     if (opts.sleepMs) await sleep(opts.sleepMs);

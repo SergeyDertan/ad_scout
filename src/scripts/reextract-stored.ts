@@ -26,6 +26,8 @@ import { loadConfig } from '../config';
 import { buildAgent } from '../lib/factory';
 import { extractPendingReplies } from '../pipeline/poll-pass';
 import { systemClock } from '../lib/clock';
+import { enableFileLogging, logger } from '../lib/logger';
+import { describeError } from '../lib/errors';
 import type { Reply, Target } from '../domain/types';
 
 async function main() {
@@ -35,7 +37,14 @@ async function main() {
   const limit = numArg('--limit');
   const sleepMs = numArg('--sleep');
   const config = loadConfig();
+
+  // A full re-extraction is a long unattended run — tee every line (and the full
+  // detail of each failure) to logs/adscout-<date>.log so a closed terminal or a
+  // crash doesn't erase the record. LOG_DIR=off opts out.
+  const logDir = process.env.LOG_DIR === 'off' ? null : enableFileLogging();
+
   const { store, email, extractor, llm } = buildAgent(config);
+  if (logDir) logger.info(`logging to ${logDir}/adscout-<date>.log`);
 
   const replies = await store.listReplies();
   const targets = await store.listTargets();
@@ -50,17 +59,17 @@ async function main() {
   const matched = replies.filter((r) => r.targetId).length;
   const stillPending = replies.filter((r) => r.targetId && r.extractionStatus !== 'done').length;
 
-  console.log(`store=${config.store}  llm=${llm.name}`);
+  logger.info(`store=${config.store}  llm=${llm.name}`);
   if (extractOnly) {
-    console.log(`${dryRun ? '[dry-run] ' : ''}--extract-only: re-extracting ${stillPending} pending/failed matched repl(y/ies) with ${llm.name} (no wipe, no fetch)…`);
+    logger.info(`${dryRun ? '[dry-run] ' : ''}--extract-only: re-extracting ${stillPending} pending/failed matched repl(y/ies) with ${llm.name} (no wipe, no fetch)…`);
   } else {
-    console.log(
+    logger.info(
       `${dryRun ? '[dry-run] ' : ''}clearing: ${repliesToClear.length} reply extraction(s), ` +
         `${targetsToClear.length} target result(s), ${niches.length} dynamic niche(s), ` +
         `${priceRecords.length} price record(s), ${declinedExclusions.length} declined exclusion(s). ` +
         `Keeping ${replies.length} raw repl(y/ies) + all outreaches + ignore/manual exclusions.`,
     );
-    if (!dryRun && !clearOnly) console.log(`then re-extracting ${matched} matched repl(y/ies) with ${llm.name} (no fetch)…`);
+    if (!dryRun && !clearOnly) logger.info(`then re-extracting ${matched} matched repl(y/ies) with ${llm.name} (no fetch)…`);
   }
 
   if (dryRun) {
@@ -91,10 +100,10 @@ async function main() {
       });
     }
 
-    console.log(`cleared: ${repliesToClear.length} reply(ies) → pending, ${targetsToClear.length} target(s) reset, ${niches.length} niche(s) deleted.`);
+    logger.info(`cleared: ${repliesToClear.length} reply(ies) → pending, ${targetsToClear.length} target(s) reset, ${niches.length} niche(s) deleted.`);
 
     if (clearOnly) {
-      console.log('--clear-only: skipping re-extraction.');
+      logger.info('--clear-only: skipping re-extraction.');
       await store.close?.();
       return;
     }
@@ -103,17 +112,17 @@ async function main() {
   // --- Phase 2: re-extract in place, no fetch -----------------------------
   const { extracted, failed, ignored, stoppedByLimit, resetAt } = await extractPendingReplies(
     { store, email, extractor, clock: systemClock, config },
-    { log: (m) => console.log(m), ...(limit != null ? { limit } : {}), ...(sleepMs != null ? { sleepMs } : {}) },
+    { log: (m) => logger.info(m), ...(limit != null ? { limit } : {}), ...(sleepMs != null ? { sleepMs } : {}) },
   );
   if (stoppedByLimit) {
-    console.log(
+    logger.info(
       `\nSTOPPED at the Claude usage limit — ${extracted} extracted, ${failed} failed, ${ignored} ignored this run.` +
         (resetAt ? ` Limit resets ${resetAt.toLocaleString()}.` : '') +
         `\nRe-run the same command to resume (already-done replies are skipped).`,
     );
     process.exitCode = 2; // distinct code so a wrapping loop can detect the pause
   } else {
-    console.log(`\nre-extraction complete: ${extracted} extracted, ${failed} failed, ${ignored} ignored (spam).`);
+    logger.info(`\nre-extraction complete: ${extracted} extracted, ${failed} failed, ${ignored} ignored (spam).`);
   }
 
   await store.close?.();
@@ -128,6 +137,8 @@ function numArg(flag: string): number | undefined {
 }
 
 main().catch((err) => {
-  console.error(err);
+  // Fatal: capture the full chain + stack in the log file before dying, otherwise
+  // an overnight crash leaves nothing behind but a closed terminal.
+  logger.error('reextract:stored aborted', { ...describeError(err) });
   process.exit(1);
 });

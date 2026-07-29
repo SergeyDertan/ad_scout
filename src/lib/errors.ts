@@ -59,6 +59,10 @@ interface ErrnoLike {
 export interface ErrorDetail {
   /** Top-level message, e.g. "fetch failed". */
   error: string;
+  /** Error subclass name, e.g. "TypeError", "UsageLimitError". Absent for thrown non-Errors. */
+  name?: string;
+  /** Stack of the outermost error — the only pointer back to the throwing line. */
+  stack?: string;
   /** Deepest OS/undici error code, e.g. "ENOTFOUND", "ECONNRESET", "UND_ERR_CONNECT_TIMEOUT". */
   code?: string;
   /** Failing syscall, e.g. "getaddrinfo", "connect". */
@@ -112,6 +116,10 @@ function nextCause(node: ErrnoLike): unknown {
 export function describeError(err: unknown): ErrorDetail {
   const rootMessage = err instanceof Error ? err.message : String(err);
   const detail: ErrorDetail = { error: rootMessage };
+  if (err instanceof Error) {
+    detail.name = err.name;
+    if (err.stack) detail.stack = err.stack;
+  }
 
   const chain: string[] = [];
   const seen = new Set<unknown>();

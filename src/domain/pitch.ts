@@ -7,8 +7,8 @@ import type { Batch, PitchProfile } from './types';
  *  the extractor reads a niche-less flat price:
  *   - 'casino': we asked specifically about casino (the historical "first" batch),
  *     so a bare price IS the casino price.
- *   - 'broad': we asked for the standard/regular rate + link insertions + grey
- *     niches (every other batch, and all new ones), so a bare price is REGULAR. */
+ *   - 'broad': we asked for the standard/regular guest-post rate + grey niches
+ *     (every other batch, and all new ones), so a bare price is REGULAR. */
 export type PitchStyle = 'casino' | 'broad';
 
 /** The one historical batch ("first") whose message asked specifically about

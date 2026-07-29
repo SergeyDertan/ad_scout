@@ -2,11 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { buildPriceSheet, knownDomains } from './price-sheet';
+import { parseTerm, TERM_NONE } from './terms';
 import type { PostOffer, PriceRecord } from './types';
 
-const offer = (o: Partial<PostOffer>): PostOffer => ({
-  postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', ...o,
-});
+const offer = (o: Partial<PostOffer> & { termRaw?: string }): PostOffer => {
+  const { termRaw, ...rest } = o;
+  return {
+    category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes',
+    term: termRaw ? parseTerm(termRaw) : TERM_NONE,
+    ...rest,
+  };
+};
 
 const rec = (o: Partial<PriceRecord>): PriceRecord => ({
   id: `pr_${Math.random()}`,
@@ -68,17 +74,72 @@ test('price sheet: specials are a parallel layer; expired ones drop from active'
   });
   const promoExpired = rec({
     observedAt: '2026-05-03T00:00:00Z',
-    offers: [offer({ postType: 'link_insertion', category: 'regular', price: { amount: 40, raw: '40' }, isSpecial: true, specialUntil: '2026-05-10' })],
+    offers: [offer({ category: 'casino', label: 'Casino', sensitive: true, price: { amount: 40, raw: '40' }, isSpecial: true, specialUntil: '2026-05-10' })],
   });
   const sheet = buildPriceSheet('casik.com', [standing, promoActive, promoExpired], new Date('2026-06-01T00:00:00Z'));
 
   // The standing regular price is untouched by the promo.
   assert.equal(sheet.cells.find((c) => c.category === 'regular')?.price?.amount, 100);
   assert.equal(sheet.specials.length, 2);
-  const active = sheet.specials.find((s) => s.postType === 'guest_post');
-  const expired = sheet.specials.find((s) => s.postType === 'link_insertion');
+  const active = sheet.specials.find((s) => s.category === 'regular');
+  const expired = sheet.specials.find((s) => s.category === 'casino');
   assert.equal(active?.active, true);
   assert.equal(expired?.active, false);
+});
+
+test('price sheet: each placement term folds independently', () => {
+  // The publisher's monthly rate changes; the 3-month rate is untouched and must
+  // carry forward at its own price rather than being overwritten.
+  const A = rec({
+    observedAt: '2026-01-01T00:00:00Z',
+    sourceMessageId: '<A>',
+    offers: [
+      offer({ category: 'regular', termRaw: '1 month', price: { amount: 99, raw: '99$' } }),
+      offer({ category: 'regular', termRaw: '3 months', price: { amount: 150, raw: '150$' } }),
+    ],
+  });
+  const B = rec({
+    observedAt: '2026-03-01T00:00:00Z',
+    sourceMessageId: '<B>',
+    offers: [offer({ category: 'regular', termRaw: 'for a month', price: { amount: 120, raw: '120$' } })],
+  });
+
+  const sheet = buildPriceSheet('casik.com', [A, B], new Date('2026-03-02T00:00:00Z'));
+  const at = (key: string) => sheet.cells.find((c) => c.term.key === key);
+  assert.equal(sheet.cells.length, 2); // one niche, two durations, two cells
+  // The 1-month cell moved to the new quote...
+  assert.equal(at('1m')?.price?.amount, 120);
+  assert.equal(at('1m')?.stale, false);
+  // ...while the 3-month cell kept its own price and is flagged carried-over.
+  assert.equal(at('3m')?.price?.amount, 150);
+  assert.equal(at('3m')?.stale, true);
+  assert.equal(at('3m')?.sourceMessageId, '<A>');
+});
+
+test('price sheet: an unstated duration never collides with a termed one', () => {
+  const A = rec({
+    observedAt: '2026-01-01T00:00:00Z',
+    offers: [
+      offer({ category: 'regular', price: { amount: 50, raw: '$50' } }),
+      offer({ category: 'regular', termRaw: '12 months', price: { amount: 400, raw: '$400' } }),
+    ],
+  });
+  const sheet = buildPriceSheet('casik.com', [A]);
+  assert.equal(sheet.cells.length, 2);
+  // Cells sort shortest-term-first, with the unstated one at the far end.
+  assert.deepEqual(sheet.cells.map((c) => c.term.key), ['12m', 'none']);
+});
+
+test('price sheet: a record written before terms existed folds as unstated', () => {
+  // Back-compat: legacy PriceRecords carry no `term` on their offers.
+  const legacy = rec({
+    observedAt: '2026-01-01T00:00:00Z',
+    offers: [{ category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', price: { amount: 80, raw: '$80' } } as PostOffer],
+  });
+  const sheet = buildPriceSheet('casik.com', [legacy]);
+  assert.equal(sheet.cells.length, 1);
+  assert.equal(sheet.cells[0].term.key, 'none');
+  assert.equal(sheet.cells[0].price?.amount, 80);
 });
 
 test('knownDomains unions record domains with target domains, sorted + deduped', () => {

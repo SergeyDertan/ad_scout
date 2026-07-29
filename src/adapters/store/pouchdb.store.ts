@@ -18,6 +18,7 @@ import type {
   Niche,
   Outreach,
   PriceRecord,
+  PromptSnapshot,
   Reply,
   Suppression,
   Target,
@@ -229,6 +230,19 @@ export class PouchDbStore implements Store {
   async putNiche(n: Niche) {
     await this.put('niche', { ...n, id: n.key });
     return n;
+  }
+
+  // prompt archive (doc id = hash)
+  async listPromptSnapshots() {
+    const list = await this.listByType<PromptSnapshot>('prompt');
+    return list.map((p) => ({ ...p, id: p.hash }));
+  }
+  async putPromptSnapshot(p: PromptSnapshot) {
+    // Content-addressed: an existing doc under this hash already holds the same
+    // text, so the first write wins and `firstSeenAt` is never disturbed.
+    const existing = await this.get<PromptSnapshot>('prompt', p.hash);
+    if (existing) return;
+    await this.put('prompt', { ...p, id: p.hash });
   }
 
   // suppression

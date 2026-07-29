@@ -74,7 +74,7 @@ async function main() {
         attribution: group.attribution,
         ...(reply.parsed?.optOut ? { optOut: true } : {}),
       };
-      const cells = group.offers.map((o) => `${o.postType}/${o.category}=${o.price?.raw ?? '—'}`);
+      const cells = group.offers.map((o) => `${o.category}=${o.price?.raw ?? '—'}`);
       console.log(`    -> ${group.domain}: write record, ${group.offers.length} cell(s) [${cells.join(', ')}]`);
       if (apply) await store.putPriceRecord(record);
     }

@@ -176,7 +176,7 @@ interface Campaign {
   name: string;
   advertised: { url: string; description: string }; // casinoslists.com, "rapidly growing online casino platform"
   topic: string;             // "casino"
-  format: string;            // "article" | "sponsored post" | "banner" | "link insertion"
+  format: string;            // "article" | "sponsored post" — a guest post, whatever it is called
   inquiryFields: InquiryField[];   // questions asked == fields extracted
   referenceEmail?: string;   // a real outreach email → template/tone anchor
   subjectTemplate?: string;

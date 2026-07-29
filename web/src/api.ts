@@ -5,6 +5,7 @@ import type {
   DomainDetail,
   DomainExclusion,
   DomainSummary,
+  ExtractionDebug,
   IgnoreEntry,
   NewAccount,
   NewBatch,
@@ -72,13 +73,14 @@ export const api = {
     req<Batch>('/batches', { method: 'POST', body: JSON.stringify(body) }),
 
   getReply: (id: string) => req<ResponseRow>(`/replies/${encodeURIComponent(id)}`),
+  /** Everything needed to debug one extraction (email + prompt + run + records). */
+  getReplyDebug: (id: string) => req<ExtractionDebug>(`/replies/${encodeURIComponent(id)}/debug`),
   deleteReply: (id: string) => req<{ ok: boolean }>(`/replies/${id}`, { method: 'DELETE' }),
 
   patchReply: (
     id: string,
     body: {
       offers: {
-        postType?: string;
         category: string;
         label?: string;
         sensitive?: boolean;

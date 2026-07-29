@@ -27,6 +27,7 @@ interface AnthropicLike {
 
 export class ClaudeLlmProvider implements LlmProvider {
   readonly name = 'claude';
+  get model(): string { return this.opts.model; }
   private client?: AnthropicLike;
 
   constructor(private readonly opts: ClaudeOptions) {}

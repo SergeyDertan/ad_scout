@@ -29,6 +29,7 @@ import type {
   AccountStatus,
   Batch,
   CanPost,
+  ExtractionProvenance,
   OutreachResult,
   PriceRecord,
   ProviderType,
@@ -42,7 +43,7 @@ import { normalizeDomain } from '../domain/domain';
 import { buildPriceSheet, knownDomains } from '../domain/price-sheet';
 import { accountSendState } from '../domain/account-state';
 import { assembleResult, type RawExtraction, type RawOffer } from '../domain/extraction';
-import { resolveProfile } from '../domain/pitch';
+import { pitchStyleForBatch, resolveProfile } from '../domain/pitch';
 import type { Clock } from '../lib/clock';
 import { newId } from '../lib/ids';
 import { draftEmail } from '../services/drafter';
@@ -139,6 +140,22 @@ function deriveCredentialRef(email: string): string {
  * A domain whose offers the edit removed entirely no longer has an observation
  * behind it, so its record is deleted rather than left as an empty husk.
  */
+/** Flag a result as human-corrected, preserving the run that originally produced
+ *  it. When there is no prior provenance (a record written before provenance
+ *  existed), record the edit alone rather than inventing a model/prompt. */
+function markEdited(prev: ExtractionProvenance | undefined, clock: Clock): ExtractionProvenance {
+  const at = clock.now().toISOString();
+  return {
+    provider: prev?.provider ?? 'human',
+    ...(prev?.model ? { model: prev.model } : {}),
+    promptHash: prev?.promptHash ?? '',
+    promptStyle: prev?.promptStyle ?? '',
+    extractedAt: prev?.extractedAt ?? at,
+    editedByHuman: true,
+    editedAt: at,
+  };
+}
+
 async function syncPriceRecords(
   store: Store,
   reply: Reply,
@@ -173,6 +190,10 @@ async function syncPriceRecords(
       ...(group.domain === own ? { targetId: target.id } : {}),
       attribution: group.attribution,
       ...(result.optOut ? { optOut: true } : {}),
+      // The record now reflects a human's judgement, not the model's — say so on
+      // the record itself, since that is what the price history reads.
+      extraction: markEdited(prev?.extraction ?? reply.extraction, clock),
+      ...(result.aiExplanation ? { aiExplanation: result.aiExplanation } : {}),
     };
     await store.putPriceRecord(record);
     stale.delete(group.domain);
@@ -561,6 +582,49 @@ async function handle(
       return sendJson(res, 200, reply);
     }
 
+    // GET /api/replies/:id/debug — everything needed to debug ONE extraction, in
+    // one payload: the inbound email (which mailbox, which ids), the exact prompt
+    // that was sent, which model ran it, what came back, and which price records
+    // it ultimately wrote. Assembled here rather than in the client so the UI
+    // does not have to make five calls and join them itself.
+    if (method === 'GET' && seg[1] === 'replies' && seg[2] && seg[3] === 'debug' && seg.length === 4) {
+      const id = decodeURIComponent(seg[2]);
+      const reply = (await store.listReplies()).find((r) => r.id === id);
+      if (!reply) return sendJson(res, 404, { error: 'reply not found' });
+
+      const target = reply.targetId ? await store.getTarget(reply.targetId) : undefined;
+      const account = reply.accountId ? await store.getAccount(reply.accountId) : undefined;
+      const batch = target?.batchId ? await store.getBatch(target.batchId) : undefined;
+      // The prompt behind this run — resolvable only if the run recorded a hash
+      // (records written before provenance existed carry none).
+      const promptHash = reply.extraction?.promptHash;
+      const prompt = promptHash
+        ? (await store.listPromptSnapshots()).find((p) => p.hash === promptHash)
+        : undefined;
+      // What the extraction actually produced downstream.
+      const records = (await store.listPriceRecords()).filter((r) => r.replyId === reply.id);
+
+      return sendJson(res, 200, {
+        reply,
+        mailbox: account ? { id: account.id, email: account.email, providerType: account.providerType } : undefined,
+        target: target
+          ? {
+              id: target.id,
+              websiteUrl: target.websiteUrl,
+              contactEmail: target.contactEmail,
+              status: target.status,
+              batchId: target.batchId,
+              batchName: batch?.name,
+            }
+          : undefined,
+        // The pitch style is what decides how a niche-less price is read, so it
+        // belongs next to the prompt when explaining an odd classification.
+        pitchStyle: pitchStyleForBatch(target?.batchId),
+        prompt,
+        priceRecords: records.sort((a, b) => a.domain.localeCompare(b.domain)),
+      });
+    }
+
     // DELETE /api/replies/:id
     if (method === 'DELETE' && seg[1] === 'replies' && seg[2] && seg.length === 3) {
       await store.deleteReply(seg[2]);
@@ -568,7 +632,7 @@ async function handle(
     }
 
     // PATCH /api/replies/:id — human correction of the AI extraction.
-    // Body: { offers: [{ postType?, category, label?, sensitive?, canPost, priceRaw,
+    // Body: { offers: [{ category, label?, sensitive?, canPost, priceRaw,
     //                    website?, isSpecial?, specialUntil? }], optOut? }
     // Rebuilt through assembleResult so price parsing / niche reconciliation /
     // canPost summary match a normal extraction. Clears the `review` flag.
@@ -584,17 +648,18 @@ async function handle(
             // A newly-added offer may carry only a label; use it as the category
             // seed (reconcileOffers normalizes it into a niche key).
             const category = str(off.category) ?? str(off.label) ?? '';
-            // website/isSpecial/specialUntil scope the reconcile cell key
-            // (website|postType|niche|special). Dropping them here merges cells
-            // that must stay distinct — a portfolio reply pricing 11 domains
-            // would collapse to one site's worth of offers on save.
+            // website/isSpecial/specialUntil/termRaw scope the reconcile cell key
+            // (website|niche|special|term). Dropping them here merges cells that
+            // must stay distinct — a portfolio reply pricing 11 domains would
+            // collapse to one site's worth of offers on save, and a publisher's
+            // monthly and yearly rates would overwrite each other.
             return {
-              ...(str(off.postType) ? { postType: str(off.postType) } : {}),
               category,
               label: str(off.label) ?? category,
               sensitive: Boolean(off.sensitive),
               canPost: (str(off.canPost) as CanPost) ?? 'maybe',
               priceRaw: typeof off.priceRaw === 'string' ? off.priceRaw : '',
+              ...(str(off.termRaw) ? { termRaw: str(off.termRaw) } : {}),
               ...(str(off.website) ? { website: str(off.website) } : {}),
               ...(off.isSpecial ? { isSpecial: true } : {}),
               ...(str(off.specialUntil) ? { specialUntil: str(off.specialUntil) } : {}),
@@ -623,6 +688,10 @@ async function handle(
 
       reply.parsed = result;
       reply.review = undefined; // corrected by a human
+      // Keep the original run's identity (which model/prompt produced the result
+      // that needed fixing) and mark that a person changed it, so an edited price
+      // is never mistaken for the model's own output.
+      reply.extraction = markEdited(reply.extraction, deps.clock);
       reply.extractionStatus = 'done';
       await store.putReply(reply);
       if (target) {
@@ -660,6 +729,22 @@ async function handle(
       return sendJson(res, 200, await store.listSuppressions());
     }
 
+    // GET /api/prompts — the archived extraction prompts, newest first. Resolves
+    // an ExtractionProvenance.promptHash back to the exact instructions that
+    // produced a result, long after the source has moved on.
+    if (method === 'GET' && seg[1] === 'prompts' && seg.length === 2) {
+      const list = await store.listPromptSnapshots();
+      return sendJson(res, 200, [...list].sort((a, b) => b.firstSeenAt.localeCompare(a.firstSeenAt)));
+    }
+
+    // GET /api/prompts/:hash — one archived prompt, full text.
+    if (method === 'GET' && seg[1] === 'prompts' && seg[2] && seg.length === 3) {
+      const hash = decodeURIComponent(seg[2]);
+      const found = (await store.listPromptSnapshots()).find((p) => p.hash === hash);
+      if (!found) return sendJson(res, 404, { error: 'prompt not found' });
+      return sendJson(res, 200, found);
+    }
+
     // GET /api/niches — seed + learned post-category registry (drives the response filter)
     if (method === 'GET' && seg[1] === 'niches' && seg.length === 2) {
       return sendJson(res, 200, allNiches(await store.listNiches()));
@@ -691,15 +776,18 @@ async function handle(
           ...(sheet.lastObservedAt ? { lastObservedAt: sheet.lastObservedAt } : {}),
           optedOut: sheet.optedOut,
           excluded: excluded.has(domain),
-          // Stripped standing cells so the UI can filter (by product×sensitivity
-          // tier and by niche) and export price columns without a per-domain fetch.
+          // Stripped standing cells so the UI can filter (by sensitivity tier and
+          // by niche) and export price columns without a per-domain fetch.
           cells: sheet.cells.map((c) => ({
-            postType: c.postType,
             category: c.category,
             label: c.label,
             sensitive: c.sensitive,
             canPost: c.canPost,
             ...(c.price ? { price: c.price } : {}),
+            // The term is part of the cell identity, so the row can carry the same
+            // niche several times (1 month / 3 months); without it the UI would
+            // show duplicate-looking niches it cannot tell apart.
+            term: c.term,
           })),
         };
       });

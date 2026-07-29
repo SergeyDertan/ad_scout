@@ -33,6 +33,10 @@ export interface LlmTextRequest {
 export interface LlmProvider {
   /** Short identifier for logging (e.g. "dummy", "ollama", "openai", "claude"). */
   readonly name: string;
+  /** The exact model id this provider is configured with, when it has one
+   *  (`dummy` does not). Recorded on every extraction so a stored price can be
+   *  traced to the model that produced it — see ExtractionProvenance. */
+  readonly model?: string;
   /** True if the provider can act on `attachments` / `allowWebFetch` (i.e. Read
    *  files and WebFetch links). Only claude-code today; others ignore them. */
   readonly supportsResearch?: boolean;

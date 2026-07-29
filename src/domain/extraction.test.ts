@@ -19,18 +19,19 @@ test('buildExtractionSchema lists the universal requirements', () => {
     'intent',
     'offers',
     'reasoning',
+    'aiExplanation',
     'conditions',
     'notes',
     'isSpam',
   ]);
   assert.equal(schema.properties.offers.type, 'array');
   assert.deepEqual(schema.properties.offers.items.required, [
-    'postType',
     'category',
     'label',
     'sensitive',
     'canPost',
     'priceRaw',
+    'termRaw',
     'priceKind',
     'multiplier',
     'addend',
@@ -39,11 +40,8 @@ test('buildExtractionSchema lists the universal requirements', () => {
     'isSpecial',
     'specialUntil',
   ]);
-  assert.deepEqual(schema.properties.offers.items.properties.postType.enum, [
-    'guest_post',
-    'link_insertion',
-    'banner',
-  ]);
+  // The product axis is gone — a guest post is the only thing we buy.
+  assert.equal(schema.properties.offers.items.properties.postType, undefined);
   assert.equal(schema.properties.offers.items.properties.canPost.enum.length, 3);
   assert.equal(schema.properties.fields, undefined); // inquiry fields removed
 });
@@ -204,54 +202,207 @@ test('reconcileOffers learns a new niche not in the registry', () => {
   assert.deepEqual(offers[0].price, { amount: 99, currency: 'USD', currencyRaw: '$', raw: '$99' });
 });
 
-test('postType × niche: same niche in different products are distinct offers', () => {
+test('one cell per niche: a niche appears at most once', () => {
   const { offers } = reconcileOffers(
     [
-      offer({ postType: 'guest_post', category: 'regular', priceRaw: '$250' }),
-      offer({ postType: 'link_insertion', category: 'regular', priceRaw: '$150' }),
-      offer({ postType: 'banner', category: 'regular', priceRaw: '$100/month' }),
-      offer({ postType: 'guest_post', category: 'casino', label: 'Casino', sensitive: true, priceRaw: '$400' }),
+      offer({ category: 'regular', priceRaw: '$250' }),
+      offer({ category: 'casino', label: 'Casino', sensitive: true, priceRaw: '$400' }),
     ],
     NICHES,
   );
-  assert.equal(offers.length, 4);
-  const cell = (pt: string, cat: string) => offers.find((o) => o.postType === pt && o.category === cat);
-  assert.equal(cell('guest_post', 'regular')?.price?.amount, 250);
-  assert.equal(cell('link_insertion', 'regular')?.price?.amount, 150);
-  assert.equal(cell('banner', 'regular')?.price?.amount, 100);
-  assert.equal(cell('guest_post', 'casino')?.price?.amount, 400);
+  assert.equal(offers.length, 2);
+  const cell = (cat: string) => offers.find((o) => o.category === cat);
+  assert.equal(cell('regular')?.price?.amount, 250);
+  assert.equal(cell('casino')?.price?.amount, 400);
 });
 
-test('postType defaults to guest_post and dedupes within a cell (richer wins)', () => {
+test('offers for products we do not buy are dropped, never filed under a niche', () => {
+  // The prompt tells the model to skip these; this is the deterministic backstop.
+  // A $99 link insertion must NOT become the regular guest-post rate.
+  const { offers, discovered } = reconcileOffers(
+    [
+      offer({ category: 'regular', priceRaw: '$250' }),
+      offer({ category: 'link_insertion', label: 'Link insertion', priceRaw: '$99' }),
+      offer({ category: 'banner', label: 'Banner', priceRaw: '$100/month' }),
+      offer({ category: 'casino_link_insertion', label: 'Casino link insertion', sensitive: true, priceRaw: '$300' }),
+      offer({ category: 'niche_edit', label: 'Niche edit', priceRaw: '$80' }),
+    ],
+    NICHES,
+  );
+  assert.equal(offers.length, 1);
+  assert.equal(offers[0].category, 'regular');
+  assert.equal(offers[0].price?.amount, 250);
+  assert.equal(discovered.length, 0); // and none of them leaked into the registry
+});
+
+test('a reply pricing ONLY a link insertion yields no offers at all', () => {
+  const { offers } = reconcileOffers(
+    [offer({ category: 'link_insertion', label: 'Link insertion', canPost: 'yes', priceRaw: '$99' })],
+    NICHES,
+  );
+  assert.deepEqual(offers, []);
+});
+
+test('dedupes within a cell (richer wins)', () => {
   const { offers } = reconcileOffers(
     [
       offer({ category: 'casino', label: 'Casino', sensitive: true, priceRaw: '' }), // no price
       offer({ category: 'casino', label: 'Casino', sensitive: true, priceRaw: '$600' }), // priced → wins
-      offer({ postType: 'link_insertion', category: 'casino', label: 'Casino', sensitive: true, priceRaw: '$300' }),
     ],
     NICHES,
   );
-  const guestCasino = offers.filter((o) => o.postType === 'guest_post' && o.category === 'casino');
-  assert.equal(guestCasino.length, 1); // deduped
-  assert.equal(guestCasino[0].price?.amount, 600);
-  assert.equal(offers.find((o) => o.postType === 'link_insertion' && o.category === 'casino')?.price?.amount, 300);
+  const casino = offers.filter((o) => o.category === 'casino');
+  assert.equal(casino.length, 1); // deduped
+  assert.equal(casino[0].price?.amount, 600);
 });
 
-test('relative price resolves within the SAME post type', () => {
-  // regular guest post $250, regular link insertion $100; casino is "double" for
-  // BOTH products → casino guest post 500, casino link insertion 200.
+test('a niche quoted at several durations becomes one cell per duration', () => {
+  // "regular post is 99$ for a month and 150$ for 3 months, we also got a super
+  // offer of 400$ for the whole year!"
   const { offers } = reconcileOffers(
     [
-      offer({ postType: 'guest_post', category: 'regular', priceRaw: '$250' }),
-      offer({ postType: 'link_insertion', category: 'regular', priceRaw: '$100' }),
-      offer({ postType: 'guest_post', category: 'casino', label: 'Casino', sensitive: true, priceRaw: 'double', priceKind: 'relative', multiplier: 2, relativeTo: 'regular' }),
-      offer({ postType: 'link_insertion', category: 'casino', label: 'Casino', sensitive: true, priceRaw: 'double', priceKind: 'relative', multiplier: 2, relativeTo: 'regular' }),
+      offer({ category: 'regular', priceRaw: '99$', termRaw: 'for a month' }),
+      offer({ category: 'regular', priceRaw: '150$', termRaw: 'for 3 months' }),
+      offer({ category: 'regular', priceRaw: '400$', termRaw: 'the whole year', isSpecial: true }),
     ],
     NICHES,
   );
-  const cell = (pt: string, cat: string) => offers.find((o) => o.postType === pt && o.category === cat);
-  assert.equal(cell('guest_post', 'casino')?.price?.amount, 500); // 250 × 2
-  assert.equal(cell('link_insertion', 'casino')?.price?.amount, 200); // 100 × 2, NOT 250 × 2
+  assert.equal(offers.length, 3);
+  const at = (key: string) => offers.find((o) => o.term.key === key);
+  assert.equal(at('1m')?.price?.amount, 99);
+  assert.equal(at('3m')?.price?.amount, 150);
+  // "the whole year" is known to be 12 months, and stays a promo cell (D5).
+  assert.equal(at('12m')?.price?.amount, 400);
+  assert.equal(at('12m')?.term.months, 12);
+  assert.equal(at('12m')?.isSpecial, true);
+  // Each keeps the publisher's own wording for display/provenance.
+  assert.equal(at('3m')?.term.raw, 'for 3 months');
+});
+
+test('an unstated duration is its own cell, never merged with a termed one', () => {
+  const { offers } = reconcileOffers(
+    [
+      offer({ category: 'regular', priceRaw: '$50' }), // "we can do a guest post for $50"
+      offer({ category: 'regular', priceRaw: '$120', termRaw: '12 months' }),
+    ],
+    NICHES,
+  );
+  assert.equal(offers.length, 2);
+  assert.equal(offers.find((o) => o.term.key === 'none')?.price?.amount, 50);
+  assert.equal(offers.find((o) => o.term.key === '12m')?.price?.amount, 120);
+});
+
+test('a sub-month duration is stored exactly but carries no months', () => {
+  // "we can do 1 week post for 5$" — usable for display/sorting, excluded from
+  // month-based filters by construction (no `months`).
+  const { offers } = reconcileOffers(
+    [offer({ category: 'regular', priceRaw: '5$', termRaw: '1 week' })],
+    NICHES,
+  );
+  assert.equal(offers[0].term.key, '7d');
+  assert.equal(offers[0].term.days, 7);
+  assert.equal(offers[0].term.months, undefined);
+  assert.equal(offers[0].term.raw, '1 week');
+});
+
+test('a relative premium fans out across EVERY duration of its base niche', () => {
+  // "regular post is 100$ for a month, 150$ for 2 months, casino is double"
+  const { offers } = reconcileOffers(
+    [
+      offer({ category: 'regular', priceRaw: '100$', termRaw: 'for a month' }),
+      offer({ category: 'regular', priceRaw: '150$', termRaw: '2 months' }),
+      offer({
+        category: 'casino',
+        label: 'Casino',
+        sensitive: true,
+        priceRaw: 'double',
+        priceKind: 'relative',
+        multiplier: 2,
+        relativeTo: 'regular',
+      }),
+    ],
+    NICHES,
+  );
+  const casino = offers.filter((o) => o.category === 'casino');
+  assert.equal(casino.length, 2); // one derived cell per base duration
+  assert.equal(casino.find((o) => o.term.key === '1m')?.price?.amount, 200);
+  assert.equal(casino.find((o) => o.term.key === '2m')?.price?.amount, 300);
+  // Each derived cell inherits the base's term wholesale, so it sorts and filters
+  // exactly like the regular one it came from.
+  assert.equal(casino.find((o) => o.term.key === '2m')?.term.months, 2);
+  // The verbatim premium is kept on every derived cell for provenance.
+  assert.equal(casino[0].price?.raw, 'double');
+});
+
+test('a flat surcharge fans out per placement, not per month', () => {
+  const { offers } = reconcileOffers(
+    [
+      offer({ category: 'regular', priceRaw: '€100', termRaw: '1 month' }),
+      offer({ category: 'regular', priceRaw: '€150', termRaw: '3 months' }),
+      offer({
+        category: 'casino',
+        label: 'Casino',
+        sensitive: true,
+        priceRaw: '€50 extra',
+        priceKind: 'relative',
+        multiplier: 0,
+        addend: 50,
+        relativeTo: 'regular',
+      }),
+    ],
+    NICHES,
+  );
+  const casino = offers.filter((o) => o.category === 'casino');
+  assert.equal(casino.find((o) => o.term.key === '1m')?.price?.amount, 150);
+  assert.equal(casino.find((o) => o.term.key === '3m')?.price?.amount, 200);
+});
+
+test('an explicitly quoted duration beats one derived from a premium', () => {
+  // "casino is double, but casino for 12 months is a flat $500".
+  const { offers } = reconcileOffers(
+    [
+      offer({ category: 'regular', priceRaw: '$100', termRaw: '1 month' }),
+      offer({ category: 'regular', priceRaw: '$300', termRaw: '12 months' }),
+      offer({
+        category: 'casino',
+        label: 'Casino',
+        sensitive: true,
+        priceRaw: 'double',
+        priceKind: 'relative',
+        multiplier: 2,
+        relativeTo: 'regular',
+      }),
+      offer({ category: 'casino', label: 'Casino', sensitive: true, priceRaw: '$500', termRaw: '12 months' }),
+    ],
+    NICHES,
+  );
+  const casino = offers.filter((o) => o.category === 'casino');
+  assert.equal(casino.find((o) => o.term.key === '1m')?.price?.amount, 200); // derived
+  assert.equal(casino.find((o) => o.term.key === '12m')?.price?.amount, 500); // explicit wins
+});
+
+test('a relative premium that names its own duration targets only that duration', () => {
+  const { offers } = reconcileOffers(
+    [
+      offer({ category: 'regular', priceRaw: '$100', termRaw: '1 month' }),
+      offer({ category: 'regular', priceRaw: '$300', termRaw: '12 months' }),
+      offer({
+        category: 'casino',
+        label: 'Casino',
+        sensitive: true,
+        priceRaw: 'double',
+        termRaw: '12 months',
+        priceKind: 'relative',
+        multiplier: 2,
+        relativeTo: 'regular',
+      }),
+    ],
+    NICHES,
+  );
+  const casino = offers.filter((o) => o.category === 'casino');
+  assert.equal(casino.length, 1);
+  assert.equal(casino[0].term.key, '12m');
+  assert.equal(casino[0].price?.amount, 600);
 });
 
 test('relative price: casino = 1.5x regular is computed from the base (japan-zone case)', () => {

@@ -1,8 +1,9 @@
 // Cleanup the self-learned niche registry: remove entries that never should have
-// been niches. Two classes the old prompt produced before the postType axis +
-// tighter minting rules landed:
+// been niches. Two classes the old prompt produced before the tighter minting
+// rules landed:
 //   - POST_TYPE  — a product masquerading as a niche (link_insertion,
-//     sensitive_link_insertion, banner). Products are a separate axis now.
+//     sensitive_link_insertion, banner). We only buy guest posts, so these are
+//     not niches and not offers either.
 //   - COMPOSITE  — a mashup key naming several niches at once
 //     (trading_vpn_finance, gaming="Prediction, Gaming-Related Posts").
 //
@@ -22,9 +23,8 @@ import { loadConfig } from '../config';
 import { buildStore } from '../lib/factory';
 import {
   DEFAULT_NICHES,
-  DEFAULT_POST_TYPE,
+  isNonGuestProduct,
   matchNiche,
-  matchPostType,
   REGULAR_KEY,
   SENSITIVE_KEY,
 } from '../domain/niches';
@@ -34,9 +34,9 @@ type Verdict = 'keep' | 'post_type' | 'composite' | 'forced';
 
 const SEED_KEYS = new Set(DEFAULT_NICHES.map((n) => n.key));
 
-/** A product (link insertion / banner) mis-stored as a niche. */
+/** A product we don't buy (link insertion / banner) mis-stored as a niche. */
 function isPostTypeLike(n: Niche): boolean {
-  return matchPostType(n.label) !== DEFAULT_POST_TYPE || matchPostType(n.key) !== DEFAULT_POST_TYPE;
+  return isNonGuestProduct(n.label) || isNonGuestProduct(n.key);
 }
 
 /** A mashup naming ≥2 distinct real niches (excludes the regular/sensitive umbrellas). */
@@ -71,7 +71,7 @@ async function main() {
   for (const n of learned) {
     if (forced.has(n.key)) plan.push({ n, verdict: 'forced', reason: 'named on --keys' });
     else if (SEED_KEYS.has(n.key)) continue; // never delete a seed (even if overridden)
-    else if (isPostTypeLike(n)) plan.push({ n, verdict: 'post_type', reason: `product, not a niche → ${matchPostType(n.label)}` });
+    else if (isPostTypeLike(n)) plan.push({ n, verdict: 'post_type', reason: 'a product we do not buy, not a niche' });
     else {
       const comp = compositeReason(n, known);
       if (comp) plan.push({ n, verdict: 'composite', reason: comp });

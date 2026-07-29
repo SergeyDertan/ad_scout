@@ -8,6 +8,7 @@ import { MemoryStore } from '../adapters/store/memory.store';
 import type { Account, Batch, Reply, Target } from '../domain/types';
 import { systemClock } from '../lib/clock';
 import { createApiServer, type ServerDeps } from './app';
+import { TERM_NONE } from '../domain/terms';
 
 const config = loadConfig({} as NodeJS.ProcessEnv);
 
@@ -130,15 +131,15 @@ test('GET /api/status engagement funnel splits replies by intent', async () => {
         intent === 'answer'
           ? [
               {
-                postType: 'guest_post',
                 category: 'casino',
                 label: 'Casino',
                 sensitive: false,
                 canPost: 'yes',
+                term: TERM_NONE,
                 price: { amount: 120, currency: 'USD', raw: '$120' },
               },
             ]
-          : [{ postType: 'guest_post', category: 'casino', label: 'Casino', sensitive: false, canPost: 'no' }],
+          : [{ category: 'casino', label: 'Casino', sensitive: false, canPost: 'no', term: TERM_NONE }],
     });
     const reply = (id: string, targetId: string): Reply => ({
       id,
@@ -348,14 +349,14 @@ test('GET /api/domains + /api/domains/:domain expose the derived price sheet', a
       id: 'pr1', domain: 'site1.com', attribution: 'sender', sourceEmail: 'a@site1.com',
       sourceMessageId: '<A>', observedAt: '2026-02-01T00:00:00Z',
       offers: [
-        { postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', price: { amount: 500, raw: '500' } },
-        { postType: 'guest_post', category: 'sensitive', label: 'Sensitive', sensitive: true, canPost: 'yes', price: { amount: 600, raw: '600' } },
+        { category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', term: TERM_NONE, price: { amount: 500, raw: '500' } },
+        { category: 'sensitive', label: 'Sensitive', sensitive: true, canPost: 'yes', term: TERM_NONE, price: { amount: 600, raw: '600' } },
       ],
     });
     await h.store.putPriceRecord({
       id: 'pr2', domain: 'site1.com', attribution: 'sender', sourceEmail: 'a@site1.com',
       sourceMessageId: '<B>', observedAt: '2026-04-04T00:00:00Z',
-      offers: [{ postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', price: { amount: 550, raw: '550' } }],
+      offers: [{ category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', term: TERM_NONE, price: { amount: 550, raw: '550' } }],
     });
 
     const domains = await J(`${h.base}/api/domains`);
@@ -508,6 +509,151 @@ test('PATCH /api/replies/:id applies a human correction and clears review', asyn
   }
 });
 
+test('GET /api/replies/:id/debug assembles everything needed to debug one extraction', async () => {
+  const h = await start();
+  try {
+    await h.store.putPromptSnapshot({
+      id: 'hash123',
+      hash: 'hash123',
+      style: 'broad',
+      text: 'You extract structured information…',
+      firstSeenAt: '2026-06-01T00:00:00Z',
+    });
+    await h.store.putReply({
+      id: 'r1',
+      emailId: 'gm-9911',
+      threadId: 'thr-77',
+      rfcMessageId: '<e1@x>',
+      fromAddress: 'owner@site1.com',
+      accountId: 'a1',
+      subject: 'Re: guest post rates',
+      targetId: 't1',
+      matchMethod: 'threadId',
+      receivedAt: '2026-06-02T00:00:00Z',
+      text: 'Sure, $120 per post.',
+      extractionStatus: 'done',
+      parsed: { canPost: 'yes', optOut: false, offers: [], aiExplanation: 'One flat rate, no niche named.' },
+      extraction: {
+        provider: 'claude-code',
+        model: 'claude-opus-5',
+        promptHash: 'hash123',
+        promptStyle: 'broad',
+        extractedAt: '2026-06-02T01:00:00Z',
+      },
+    });
+    await h.store.putPriceRecord({
+      id: 'pr1',
+      domain: 'site1.com',
+      offers: [],
+      observedAt: '2026-06-02T00:00:00Z',
+      sourceEmail: 'owner@site1.com',
+      sourceMessageId: '<e1@x>',
+      replyId: 'r1',
+      attribution: 'sender',
+    });
+
+    const d = await J(`${h.base}/api/replies/r1/debug`);
+
+    // The email, with the ids you need to find it in the mailbox.
+    assert.equal(d.reply.emailId, 'gm-9911');
+    assert.equal(d.reply.threadId, 'thr-77');
+    assert.equal(d.reply.subject, 'Re: guest post rates');
+    assert.equal(d.reply.text, 'Sure, $120 per post.');
+    // Which mailbox it landed in.
+    assert.equal(d.mailbox.id, 'a1');
+    assert.ok(d.mailbox.email);
+    // Who we were writing to, and under which framing.
+    assert.equal(d.target.id, 't1');
+    assert.equal(d.pitchStyle, 'broad');
+    // The exact prompt that ran, resolved from the archive by hash.
+    assert.equal(d.prompt.hash, 'hash123');
+    assert.match(d.prompt.text, /You extract structured information/);
+    // What produced the result, and what it said.
+    assert.equal(d.reply.extraction.model, 'claude-opus-5');
+    assert.equal(d.reply.parsed.aiExplanation, 'One flat rate, no niche named.');
+    // …and what it ultimately wrote.
+    assert.equal(d.priceRecords.length, 1);
+    assert.equal(d.priceRecords[0].domain, 'site1.com');
+  } finally {
+    await h.close();
+  }
+});
+
+test('GET /api/prompts resolves a promptHash back to the exact instructions', async () => {
+  const h = await start();
+  try {
+    await h.store.putPromptSnapshot({
+      id: 'abc123def456',
+      hash: 'abc123def456',
+      style: 'broad',
+      text: 'You extract structured information…',
+      firstSeenAt: '2026-06-01T00:00:00Z',
+    });
+    const list = await J(`${h.base}/api/prompts`);
+    assert.equal(list.length, 1);
+    assert.equal(list[0].hash, 'abc123def456');
+
+    const one = await J(`${h.base}/api/prompts/abc123def456`);
+    assert.match(one.text, /You extract structured information/);
+
+    const missing = await fetch(`${h.base}/api/prompts/nope`);
+    assert.equal(missing.status, 404);
+  } finally {
+    await h.close();
+  }
+});
+
+test('PATCH /api/replies/:id marks the result as human-edited, keeping the original run', async () => {
+  const h = await start();
+  try {
+    const reply: Reply = {
+      id: 'r1',
+      emailId: 'e1',
+      rfcMessageId: '<e1@x>',
+      fromAddress: 'a@site1.com',
+      targetId: 't1',
+      matchMethod: 'fromAddress',
+      receivedAt: '2026-06-02T00:00:00Z',
+      text: 'our rate is 50',
+      extractionStatus: 'done',
+      parsed: { canPost: 'yes', optOut: false, offers: [] },
+      extraction: {
+        provider: 'claude-code',
+        model: 'claude-opus-5',
+        promptHash: 'abc123def456',
+        promptStyle: 'broad',
+        extractedAt: '2026-06-02T01:00:00Z',
+      },
+    };
+    await h.store.putReply(reply);
+
+    const updated = await J(`${h.base}/api/replies/r1`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        offers: [{ category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$75' }],
+      }),
+    });
+
+    // The correction is visible, and the run that produced the bad value is kept
+    // rather than overwritten — otherwise an edited price looks like model output.
+    assert.equal(updated.extraction.editedByHuman, true);
+    assert.ok(updated.extraction.editedAt);
+    assert.equal(updated.extraction.provider, 'claude-code');
+    assert.equal(updated.extraction.model, 'claude-opus-5');
+    assert.equal(updated.extraction.promptHash, 'abc123def456');
+    assert.equal(updated.extraction.extractedAt, '2026-06-02T01:00:00Z');
+
+    // The price record the Domains view reads carries the same flag.
+    const records = await h.store.listPriceRecords();
+    assert.equal(records.length, 1);
+    assert.equal(records[0]!.extraction?.editedByHuman, true);
+    assert.equal(records[0]!.extraction?.model, 'claude-opus-5');
+  } finally {
+    await h.close();
+  }
+});
+
 // A portfolio reply prices several domains the owner runs, distinguished only by
 // `website`. That field scopes the reconcile cell key, so if the edit round-trip
 // drops it every domain's guest-post cell merges into the contacted site's and
@@ -535,9 +681,9 @@ test('PATCH /api/replies/:id keeps per-site offers distinct', async () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         offers: [
-          { postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$120', website: '' },
-          { postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$180', website: 'turbogeek.org' },
-          { postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$200', website: 'tomoson.com' },
+          { category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$120', website: '' },
+          { category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$180', website: 'turbogeek.org' },
+          { category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$200', website: 'tomoson.com' },
         ],
       }),
     });
@@ -576,8 +722,8 @@ test('PATCH /api/replies/:id keeps a special distinct from the standing price', 
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         offers: [
-          { postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$120' },
-          { postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$90', isSpecial: true },
+          { category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$120' },
+          { category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$90', isSpecial: true },
         ],
       }),
     });
@@ -612,7 +758,7 @@ test('PATCH /api/replies/:id re-syncs the price records the Domains view reads',
     await h.store.putPriceRecord({
       id: 'pr1',
       domain: 'site1.com',
-      offers: [{ postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', price: { amount: 390, currency: 'USD', raw: '$390' } }],
+      offers: [{ category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', term: TERM_NONE, price: { amount: 390, currency: 'USD', raw: '$390' } }],
       observedAt: '2026-06-02T00:00:00Z',
       sourceEmail: 'a@site1.com',
       sourceMessageId: '<e4@x>',
@@ -625,7 +771,7 @@ test('PATCH /api/replies/:id re-syncs the price records the Domains view reads',
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        offers: [{ postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$450' }],
+        offers: [{ category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$450' }],
       }),
     });
 
@@ -655,7 +801,7 @@ test('PATCH /api/replies/:id propagates a cleared price into the price record', 
     await J(`${h.base}/api/replies/r5`, {
       method: 'PATCH', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        offers: [{ postType: 'guest_post', category: 'casino', label: 'Casino', sensitive: true, canPost: 'yes', priceRaw: '' }],
+        offers: [{ category: 'casino', label: 'Casino', sensitive: true, canPost: 'yes', priceRaw: '' }],
       }),
     });
 
@@ -681,7 +827,7 @@ test('PATCH /api/replies/:id deletes a price record whose offers were all remove
     await h.store.putReply(reply);
     await h.store.putPriceRecord({
       id: 'pr2', domain: 'other.com',
-      offers: [{ postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', price: { amount: 99, currency: 'USD', raw: '$99' } }],
+      offers: [{ category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', term: TERM_NONE, price: { amount: 99, currency: 'USD', raw: '$99' } }],
       observedAt: '2026-06-02T00:00:00Z', sourceEmail: 'a@site1.com',
       sourceMessageId: '<e6@x>', replyId: 'r6', attribution: 'named',
     });
@@ -690,7 +836,7 @@ test('PATCH /api/replies/:id deletes a price record whose offers were all remove
     await J(`${h.base}/api/replies/r6`, {
       method: 'PATCH', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        offers: [{ postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$50' }],
+        offers: [{ category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$50' }],
       }),
     });
 

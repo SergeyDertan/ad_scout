@@ -1,6 +1,6 @@
 // Deterministic, template-based email drafter (no LLM). Renders a broad,
 // agency-style pitch that does NOT name any advertised site or single topic — it
-// simply asks the publisher for their rate card (regular / link insertion / grey
+// simply asks the publisher for their guest-post rate card (regular / grey
 // niches). Only the sender name and the target greeting are personalized. This is
 // the standard message for every batch going forward. Pure.
 
@@ -32,19 +32,18 @@ export function draftEmail(profile: PitchProfile, account: Account, target: Targ
   // rate cards, so the ask is broad and the same for everyone.
   const introLine =
     `My name is ${account.senderName}, and I'm an advertising manager who helps brands ` +
-    'get featured through sponsored posts and paid links on quality websites like yours.';
+    'get featured through sponsored posts on quality websites like yours.';
 
-  // One broad ask that surfaces every price we care about — regular content, link
-  // insertions, and grey/sensitive niches.
+  // One broad ask covering every price we care about. Guest posts only — we don't
+  // buy link insertions or banners, so we never invite a quote for them.
   const questions = [
     '  - A regular guest post / sponsored article',
-    '  - A link insertion (adding a link into an existing article)',
     '  - Gray / sensitive niches — please specify casino and VPN separately if their rates differ',
   ].join('\n');
 
   const inquiryLine =
     'I\'d like to know whether you accept paid publications — and if so, could you please ' +
-    `share your rates for:\n\n${questions}`;
+    `share your guest-post rates for:\n\n${questions}`;
 
   const body = [
     `Hello, ${greeting},`,

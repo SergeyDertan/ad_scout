@@ -85,7 +85,7 @@ export function ExportDialog({
                 <Text fontSize="sm" color="fg.muted">
                   Exports the <b>{websites}</b> website{websites === 1 ? '' : 's'} matching your current
                   filters, one row each with <b>{priceCols}</b> price column{priceCols === 1 ? '' : 's'}{' '}
-                  (product × niche).
+                  (one per niche).
                 </Text>
 
                 <Field.Root>
@@ -122,7 +122,7 @@ export function ExportDialog({
                   </HStack>
                   <Text fontSize="xs" color="fg.subtle" mt={2}>
                     XLSX includes every price column. The HTML page lets you re-filter and pick exactly
-                    which niches/products to export before saving an XLSX — all offline.
+                    which niches to export before saving an XLSX — all offline.
                   </Text>
                 </Box>
               </VStack>

@@ -30,7 +30,7 @@ import { logger } from '../../lib/logger';
 const execFileAsync = promisify(execFile);
 
 // Structured JSON extraction can be slow even without tools — a large price
-// matrix (many postType×niche cells) is a lot of constrained output — and slower
+// list (many niche cells) is a lot of constrained output — and slower
 // still when the model may use tools (Read/WebFetch) across several turns. Give
 // every generateJson call this headroom; pure text completions keep the short default.
 const JSON_TIMEOUT_MS = 300_000;
@@ -50,6 +50,7 @@ interface ClaudeCliResult {
 
 export class ClaudeCodeLlmProvider implements LlmProvider {
   readonly name = 'claude-code';
+  get model(): string { return this.opts.model; }
   readonly supportsResearch = true;
 
   constructor(private readonly opts: ClaudeCodeOptions) {}
@@ -127,9 +128,11 @@ export class ClaudeCodeLlmProvider implements LlmProvider {
     if (hasAttachments) {
       tmpDir = await mkdtemp(join(tmpdir(), 'adscout-att-'));
       const paths = await stageAttachments(tmpDir, req.attachments!);
-      allowedTools.push('Read');
+      // Grep alongside Read: a publisher's price list can be thousands of rows,
+      // well past Read's line cap, so the row we need is only findable by search.
+      allowedTools.push('Read', 'Grep');
       extraArgs.push('--add-dir', tmpDir);
-      prompt = `${prompt}\n\nFILES you may Read (absolute paths):\n${paths
+      prompt = `${prompt}\n\nFILES you may Read/Grep (absolute paths):\n${paths
         .map((p) => `- ${p}`)
         .join('\n')}`;
     }

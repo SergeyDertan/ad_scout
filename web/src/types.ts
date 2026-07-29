@@ -13,28 +13,51 @@ export interface PriceValue {
   raw: string;
 }
 
+/** How long a price buys the placement for (mirrors domain PlacementTerm).
+ *  `key` is identity, `days` orders, `months` is set ONLY for exact whole months
+ *  so a month filter can't match a 1-week placement, `raw` is what they wrote. */
+export interface PlacementTerm {
+  key: string;
+  days?: number;
+  months?: number;
+  raw: string;
+}
+
+/** A price for one niche AT one placement term. Guest posts are the only product
+ *  we buy, so niche + term identifies a cell — there is no product axis. */
 export interface PostOffer {
-  postType: string; // 'guest_post' | 'link_insertion' | 'banner' (fixed enum, may be absent on legacy rows)
   category: string;
   label: string;
   sensitive: boolean;
   canPost: CanPost;
   price?: PriceValue;
+  /** Absent only on records written before terms existed — read as "unstated". */
+  term?: PlacementTerm;
   website?: string;
   isSpecial?: boolean;
   specialUntil?: string;
 }
 
-/** Display labels for the fixed product enum. */
-export const POST_TYPE_LABELS: Record<string, string> = {
-  guest_post: 'Guest post',
-  link_insertion: 'Link insertion',
-  banner: 'Banner',
-};
+/** Human label for a term: the publisher's own words, else a canonical rendering,
+ *  else "—" when no duration was stated. */
+export function formatTerm(term?: PlacementTerm): string {
+  if (!term || term.key === 'none') return '—';
+  if (term.raw) return term.raw;
+  if (term.key === 'perm') return 'permanent';
+  if (term.months != null) return `${term.months} month${term.months === 1 ? '' : 's'}`;
+  if (term.days != null) return `${term.days} day${term.days === 1 ? '' : 's'}`;
+  return term.key;
+}
 
-export function postTypeLabel(key?: string): string {
-  if (!key) return POST_TYPE_LABELS.guest_post; // legacy rows had no product axis
-  return POST_TYPE_LABELS[key] ?? key;
+/** Sort by duration: shortest first, indefinite terms (unstated, permanent,
+ *  unparseable) at the far end. Mirrors domain/terms.ts compareTerms. */
+export function compareTerms(a?: PlacementTerm, b?: PlacementTerm): number {
+  const rank = (t?: PlacementTerm) => (!t || t.key === 'none' ? 2 : t.days != null ? 0 : 1);
+  const ra = rank(a);
+  const rb = rank(b);
+  if (ra !== rb) return ra - rb;
+  if (ra === 0) return a!.days! - b!.days!;
+  return (a?.key ?? '').localeCompare(b?.key ?? '');
 }
 
 /** A post-category the taxonomy knows about (seed or learned). Mirrors domain Niche. */
@@ -71,47 +94,35 @@ export function offerMatchesFilter(offer: PostOffer, filterKey: string, niches: 
 }
 
 /**
- * The product ladder an offer is priced against — guest post vs link insertion
- * vs banner. Publishers price these separately, so a sensitive/grey offer only
- * compares to its own product. Reads the real postType axis (legacy rows without
- * one fall back to the guest-post ladder).
- */
-function offerProductTier(offer: PostOffer): string {
-  return offer.postType || 'guest_post';
-}
-
-/**
- * Sensitive (grey-niche) offers should never be cheaper than a regular offer of
- * the SAME product tier — a sensitive post ≥ a regular post, a sensitive link
- * insertion ≥ a regular link insertion. When a non-sensitive offer is priced
- * ABOVE its sensitive counterpart, that ordering is inverted — usually an
- * extraction error (e.g. a flattened price table read the two tiers backwards),
+ * Sensitive (grey-niche) offers should never be cheaper than a regular offer —
+ * a sensitive post ≥ a regular post. When a non-sensitive offer is priced ABOVE
+ * its sensitive counterpart, that ordering is inverted — usually an extraction
+ * error (e.g. a flattened price table read the two tiers backwards),
  * occasionally a genuinely odd publisher. Either way it's worth a human glance.
  *
- * Crucially the comparison is per-tier: a full post (say $170) must NOT be
- * compared against a sensitive *link insertion* ($150), or an ordinary
- * post-cheaper-than-its-sensitive-post listing would wrongly trip the flag.
+ * Returns the set of non-sensitive offer cells that exceed the cheapest
+ * sensitive price (empty = no anomaly). Skipped when the priced offers mix
+ * currencies, since cross-currency amounts aren't comparable.
  *
- * Returns the set of non-sensitive offer categories that exceed the cheapest
- * sensitive price in their tier (empty = no anomaly). Skipped when the priced
- * offers mix currencies, since cross-currency amounts aren't comparable.
+ * Comparison is per-SITE: one reply often prices a whole portfolio (the sender's
+ * site plus other domains they own, tagged via `offer.website`), and those are
+ * independent rate cards. A $180 regular post on one domain says nothing about a
+ * $130 sensitive post on another, so bucketing by site keeps a pricier site from
+ * flagging a cheaper one.
  *
- * Comparison is also per-SITE: one reply often prices a whole portfolio (the
- * sender's site plus other domains they own, tagged via `offer.website`), and
- * those are independent rate cards. A $180 regular post on one domain says
- * nothing about a $130 sensitive post on another, so bucketing by site keeps
- * a pricier site from flagging a cheaper one.
- *
- * Returns a set of CELL keys ("site|postType|category") so only the offending
- * cell is flagged — a regular guest post priced above a sensitive guest post
- * must not also highlight the regular link-insertion row. Use `offerCellKey`.
+ * Returns a set of CELL keys ("site|category") so only the offending cell is
+ * flagged. Use `offerCellKey`.
  */
 export function offerSite(offer: PostOffer): string {
   return offer.website?.trim().toLowerCase() ?? '';
 }
 
+export function offerTermKey(offer: PostOffer): string {
+  return offer.term?.key ?? 'none';
+}
+
 export function offerCellKey(offer: PostOffer): string {
-  return `${offerSite(offer)}|${offer.postType || 'guest_post'}|${offer.category}`;
+  return `${offerSite(offer)}|${offer.category}|${offerTermKey(offer)}`;
 }
 
 export function invertedPriceOffers(offers?: PostOffer[]): Set<string> {
@@ -122,10 +133,13 @@ export function invertedPriceOffers(offers?: PostOffer[]): Set<string> {
   const currencies = new Set(priced.map((o) => o.price?.currency).filter(Boolean));
   if (currencies.size > 1) return flagged; // not comparable
 
-  // Bucket by site × product tier, then compare regular vs sensitive within each.
+  // Bucket by site AND placement term, then compare regular vs sensitive within
+  // each. A $99 one-month regular says nothing about a $150 three-month
+  // sensitive — different durations are different rate cards, exactly like
+  // different sites, so mixing them would flag ordinary pricing as inverted.
   const tiers = new Map<string, PostOffer[]>();
   for (const o of priced) {
-    const tier = `${offerSite(o)}|${offerProductTier(o)}`;
+    const tier = `${offerSite(o)}|${offerTermKey(o)}`;
     (tiers.get(tier) ?? tiers.set(tier, []).get(tier)!).push(o);
   }
 
@@ -252,14 +266,77 @@ export interface ResponseRow {
   receivedAt?: string;
   text?: string;
   attachments?: EmailAttachment[];
+  /** The mailbox that received it, and the subject line — both needed to find the
+   *  message again when debugging. Absent on replies stored before they were kept. */
+  accountId?: string;
+  subject?: string;
+  /** Mailbox-level ids, needed to find the original message when debugging. */
+  emailId?: string;
+  rfcMessageId?: string;
   parsed?: {
     canPost: string;
     requestedCategory?: string;
     offers?: PostOffer[];
     reasoning?: string;
+    /** The AI's fuller account of how it read the reply (a few sentences). */
+    aiExplanation?: string;
+    conditions?: string;
+    notes?: string;
     optOut?: boolean;
     intent?: string;
   };
+  /** Which run produced `parsed` — model/provider/prompt, and whether a human
+   *  has since corrected it. */
+  extraction?: ExtractionProvenance;
+}
+
+/** An archived system prompt, resolvable from ExtractionProvenance.promptHash. */
+export interface PromptSnapshot {
+  hash: string;
+  style: string;
+  text: string;
+  firstSeenAt: string;
+}
+
+/** GET /api/replies/:id/debug — everything about one extraction, pre-joined. */
+export interface ExtractionDebug {
+  reply: ResponseRow;
+  mailbox?: { id: string; email: string; providerType: string };
+  target?: {
+    id: string;
+    websiteUrl: string;
+    contactEmail: string;
+    status: string;
+    batchId?: string;
+    batchName?: string;
+  };
+  /** How the outreach framed the ask — decides how a niche-less price is read. */
+  pitchStyle: 'casino' | 'broad';
+  prompt?: PromptSnapshot;
+  priceRecords: PriceRecordRow[];
+}
+
+/** Which extraction produced a stored result (mirrors domain ExtractionProvenance). */
+export interface ExtractionProvenance {
+  provider: string;
+  model?: string;
+  promptHash: string;
+  promptStyle: string;
+  extractedAt: string;
+  editedByHuman?: boolean;
+  editedAt?: string;
+}
+
+/** One-line summary of a run, for a tooltip or a muted caption. */
+export function formatProvenance(p?: ExtractionProvenance): string {
+  if (!p) return 'No extraction record (predates provenance tracking).';
+  const model = p.model ? `${p.provider}/${p.model}` : p.provider;
+  const when = p.extractedAt ? new Date(p.extractedAt).toLocaleString() : 'unknown time';
+  const prompt = p.promptHash ? `prompt ${p.promptHash} (${p.promptStyle})` : 'prompt unknown';
+  const edited = p.editedByHuman
+    ? ` · edited by hand${p.editedAt ? ` ${new Date(p.editedAt).toLocaleString()}` : ''}`
+    : '';
+  return `${model} · ${prompt} · extracted ${when}${edited}`;
 }
 
 /** True when a reply warrants a human look: the AI flagged unprocessable content,
@@ -301,12 +378,14 @@ export interface Suppression {
 /** A stripped standing cell carried on the domain list row — enough to power the
  *  tier/niche filters and the domains export without a per-domain fetch. */
 export interface DomainCell {
-  postType: string;
   category: string;
   label: string;
   sensitive: boolean;
   canPost: CanPost;
   price?: PriceValue;
+  /** The duration this price buys — part of the cell identity, so one niche can
+   *  appear several times (1 month, 3 months, …). Absent on legacy rows. */
+  term?: PlacementTerm;
 }
 
 /** A row in the known-domains list (GET /api/domains). */
@@ -326,12 +405,12 @@ export interface DomainSummary {
 
 /** A folded standing/special price cell (GET /api/domains/:domain). */
 export interface PriceCell {
-  postType: string;
   category: string;
   label: string;
   sensitive: boolean;
   canPost: CanPost;
   price?: PriceValue;
+  term?: PlacementTerm;
   asOf: string;
   sourceMessageId: string;
   replyId?: string;
@@ -351,6 +430,10 @@ export interface PriceRecordRow {
   attribution: 'sender' | 'named';
   targetId?: string;
   optOut?: boolean;
+  /** Which run produced this record (absent on records predating provenance). */
+  extraction?: ExtractionProvenance;
+  /** The AI's account of why it read the reply this way. */
+  aiExplanation?: string;
 }
 
 export interface DomainDetail {

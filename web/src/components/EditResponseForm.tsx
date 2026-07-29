@@ -12,13 +12,12 @@ import {
 } from '@chakra-ui/react';
 import { useState } from 'react';
 import { api } from '../api';
-import { POST_TYPE_LABELS, type ResponseRow } from '../types';
+import { type ResponseRow } from '../types';
 import { Panel } from './Panel';
 import { toaster, toastError } from './Toaster';
 import { PlusIcon, TrashIcon } from './icons';
 
 interface OfferRow {
-  postType: string; // product ladder: guest_post | link_insertion | banner
   category: string; // '' for a new offer — server derives it from the label
   label: string;
   sensitive: boolean;
@@ -26,9 +25,13 @@ interface OfferRow {
   priceRaw: string;
   /** The site this price is for; '' = the contacted site. One reply often prices
    *  a whole portfolio, and this is what keeps those rows distinct — the server
-   *  cell key is website|postType|niche|special, so blanking it MERGES rows and
+   *  cell key is website|niche|special, so blanking it MERGES rows and
    *  silently drops every domain but the first. */
   website: string;
+  /** The placement duration this price buys, in the publisher's own words ('' =
+   *  none stated). Also part of the server cell key (website|niche|special|term),
+   *  so blanking it merges a publisher's monthly and yearly rates into one row. */
+  termRaw: string;
   /** Promo flags. Not editable here, but they also scope the server cell key, so
    *  they must round-trip or a special collapses into the standing price. */
   isSpecial?: boolean;
@@ -37,13 +40,13 @@ interface OfferRow {
 
 function toRows(row: ResponseRow): OfferRow[] {
   return (row.parsed?.offers ?? []).map((o) => ({
-    postType: o.postType || 'guest_post',
     category: o.category,
     label: o.label,
     sensitive: o.sensitive,
     canPost: o.canPost,
     priceRaw: o.price?.raw ?? '',
     website: o.website ?? '',
+    termRaw: o.term?.raw ?? '',
     ...(o.isSpecial ? { isSpecial: true } : {}),
     ...(o.specialUntil ? { specialUntil: o.specialUntil } : {}),
   }));
@@ -70,7 +73,7 @@ export function EditResponseForm({
   const add = () =>
     setOffers((prev) => [
       ...prev,
-      { postType: 'guest_post', category: '', label: '', sensitive: false, canPost: 'yes', priceRaw: '', website: '' },
+      { category: '', label: '', sensitive: false, canPost: 'yes', priceRaw: '', website: '', termRaw: '' },
     ]);
 
   const valid = offers.every((o) => o.label.trim() !== '');
@@ -82,13 +85,13 @@ export function EditResponseForm({
       await api.patchReply(row.id, {
         optOut,
         offers: offers.map((o) => ({
-          postType: o.postType,
           category: o.category,
           label: o.label.trim(),
           sensitive: o.sensitive,
           canPost: o.canPost,
           priceRaw: o.priceRaw.trim(),
           website: o.website.trim(),
+          termRaw: o.termRaw.trim(),
           ...(o.isSpecial ? { isSpecial: true } : {}),
           ...(o.specialUntil ? { specialUntil: o.specialUntil } : {}),
         })),
@@ -123,25 +126,17 @@ export function EditResponseForm({
 
       <VStack align="stretch" gap={2} mt={3}>
         <HStack fontSize="xs" color="fg.muted" fontWeight="medium" px={1}>
-          <Box w="36">Product</Box>
           <Box flex="1">Niche</Box>
           <Box flex="1">Site</Box>
           <Box w="20">Sensitive</Box>
           <Box w="28">Willing</Box>
           <Box w="32">Price</Box>
+          <Box w="28">Term</Box>
           <Box w="8" />
         </HStack>
 
         {offers.map((o, i) => (
           <HStack key={i} gap={2}>
-            <NativeSelect.Root size="sm" w="36">
-              <NativeSelect.Field value={o.postType} onChange={(e) => update(i, { postType: e.target.value })}>
-                {Object.entries(POST_TYPE_LABELS).map(([key, label]) => (
-                  <option key={key} value={key}>{label}</option>
-                ))}
-              </NativeSelect.Field>
-              <NativeSelect.Indicator />
-            </NativeSelect.Root>
             <Input
               flex="1"
               size="sm"
@@ -179,6 +174,14 @@ export function EditResponseForm({
               placeholder="$150"
               value={o.priceRaw}
               onChange={(e) => update(i, { priceRaw: e.target.value })}
+            />
+            <Input
+              w="28"
+              size="sm"
+              placeholder="1 month"
+              title="How long this price buys the placement for. Leave blank for a normal one-off post."
+              value={o.termRaw}
+              onChange={(e) => update(i, { termRaw: e.target.value })}
             />
             <IconButton aria-label="Remove offer" size="sm" variant="ghost" onClick={() => remove(i)}>
               <TrashIcon boxSize={4} />

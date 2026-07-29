@@ -2,6 +2,7 @@ import {
   Badge,
   Box,
   Button,
+  Checkbox,
   CloseButton,
   Dialog,
   Field,
@@ -31,26 +32,39 @@ const PREVIEW_ROWS = 8;
  * sheet's shape and the table below previews the exact columns/rows that will be
  * written (first {@link PREVIEW_ROWS} rows), so the user sees the result before
  * downloading.
+ *
+ * Excluded domains are dropped by default — an export is an outreach/buying
+ * list, and excluded domains are exactly the ones we don't want on it.
  */
 export function DomainsExportDialog({
   domains,
+  defaultIncludeExcluded = false,
   onClose,
 }: {
   domains: DomainSummary[];
+  /** Start with excluded domains kept — used when the list is already filtered to them. */
+  defaultIncludeExcluded?: boolean;
   onClose: () => void;
 }) {
   const [scope, setScope] = useState<DomainExportScope>('both');
   const [header, setHeader] = useState(() => defaultDomainsHeader());
+  const [includeExcluded, setIncludeExcluded] = useState(defaultIncludeExcluded);
   const [busy, setBusy] = useState(false);
 
-  const table = useMemo(() => buildDomainsExport(domains, scope), [domains, scope]);
+  const excludedCount = useMemo(() => domains.filter((d) => d.excluded).length, [domains]);
+  const rows = useMemo(
+    () => (includeExcluded ? domains : domains.filter((d) => !d.excluded)),
+    [domains, includeExcluded],
+  );
+
+  const table = useMemo(() => buildDomainsExport(rows, scope), [rows, scope]);
   const previewRows = table.body.slice(0, PREVIEW_ROWS);
   const overflow = table.body.length - previewRows.length;
 
   const doExport = async () => {
     setBusy(true);
     try {
-      await exportDomainsXlsx(domains, scope, header);
+      await exportDomainsXlsx(rows, scope, header);
       toaster.create({ type: 'success', title: 'Spreadsheet downloaded' });
       onClose();
     } catch (e) {
@@ -75,9 +89,24 @@ export function DomainsExportDialog({
             <Dialog.Body>
               <VStack align="stretch" gap={4}>
                 <Text fontSize="sm" color="fg.muted">
-                  Exports the <b>{domains.length}</b> domain{domains.length === 1 ? '' : 's'} matching your
-                  current filters. A price shows only when the publisher will post it.
+                  Exports <b>{rows.length}</b> of the {domains.length} domain{domains.length === 1 ? '' : 's'} matching
+                  your current filters. A price shows only when the publisher will post it.
                 </Text>
+
+                <Checkbox.Root
+                  checked={includeExcluded}
+                  onCheckedChange={(d) => setIncludeExcluded(Boolean(d.checked))}
+                  disabled={excludedCount === 0}
+                >
+                  <Checkbox.HiddenInput />
+                  <Checkbox.Control />
+                  <Checkbox.Label fontSize="sm">
+                    Include excluded domains
+                    <Text as="span" color="fg.subtle" ml={1.5}>
+                      ({excludedCount} excluded in this selection)
+                    </Text>
+                  </Checkbox.Label>
+                </Checkbox.Root>
 
                 <Field.Root>
                   <Field.Label>Columns</Field.Label>
@@ -158,7 +187,7 @@ export function DomainsExportDialog({
 
             <Dialog.Footer>
               <Button variant="ghost" onClick={onClose} disabled={busy}>Close</Button>
-              <Button colorPalette="brand" onClick={doExport} loading={busy} disabled={domains.length === 0}>
+              <Button colorPalette="brand" onClick={doExport} loading={busy} disabled={rows.length === 0}>
                 <DownloadIcon /> Download XLSX
               </Button>
             </Dialog.Footer>

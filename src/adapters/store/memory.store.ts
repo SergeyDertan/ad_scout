@@ -10,6 +10,7 @@ import type {
   Niche,
   Outreach,
   PriceRecord,
+  PromptSnapshot,
   Reply,
   Suppression,
   Target,
@@ -39,6 +40,7 @@ export class MemoryStore implements Store {
   private repliesByEmailId = new Map<string, string>(); // emailId -> reply id
   private suppressions = new Map<string, Suppression>(); // keyed by normalized email
   private niches = new Map<string, Niche>(); // keyed by niche.key
+  private prompts = new Map<string, PromptSnapshot>(); // keyed by prompt hash
   private priceRecords = new Map<string, PriceRecord>(); // keyed by id
   private ignores = new Map<string, IgnoreEntry>(); // keyed by `${kind}:${value}`
   private domainExclusions = new Map<string, DomainExclusion>(); // keyed by domain
@@ -168,6 +170,16 @@ export class MemoryStore implements Store {
   }
   async deleteNiche(key: string) {
     if (this.niches.delete(key)) this.emit('niche', 'delete', key);
+  }
+
+  // prompt archive (doc id = hash; content-addressed, so first write wins)
+  async listPromptSnapshots() {
+    return [...this.prompts.values()].map(clone);
+  }
+  async putPromptSnapshot(p: PromptSnapshot) {
+    if (this.prompts.has(p.hash)) return;
+    this.prompts.set(p.hash, clone(p));
+    this.emit('prompt', 'put', p.hash);
   }
 
   // suppression

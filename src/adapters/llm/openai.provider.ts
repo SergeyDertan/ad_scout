@@ -16,6 +16,7 @@ interface ChatResponse {
 
 export class OpenAiLlmProvider implements LlmProvider {
   readonly name = 'openai';
+  get model(): string { return this.opts.model; }
   private readonly baseUrl: string;
   constructor(private readonly opts: OpenAiOptions) {
     this.baseUrl = opts.baseUrl ?? 'https://api.openai.com/v1';

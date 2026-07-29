@@ -11,7 +11,7 @@
 > - **`website` also lives on `PostOffer`** (not only `RawOffer`, cf. §3.4) so the
 >   ingest phase can group offers by domain; it's implied by a record's `domain`
 >   afterward but kept for provenance. The extraction cell key is
->   `website|postType|niche|special` so a named-site price, an own-site price, and
+>   `website|niche|special` so a named-site price, an own-site price, and
 >   a promo never merge.
 > - **Requirement 2 (append after resolved):** the `isTargetResolved` extraction
 >   *skip* was removed. Every matched, non-empty, non-ignored reply is extracted;
@@ -153,7 +153,7 @@ Add `'pricerecord' | 'ignore' | 'domainexclusion'`.
 
 ### 4.1 Domain price sheet (the "current prices" view)
 
-For a domain, fold its `PriceRecord`s: for each `(postType × niche)` cell, take the
+For a domain, fold its `PriceRecord`s: for each niche cell, take the
 **most recent record that mentioned that cell**. Each cell in the result carries its
 own `asOf` (the record's `observedAt`) + `sourceMessageId`/`replyId`. Cells whose
 newest mention is older than the domain's newest record are **flagged stale**
@@ -380,3 +380,206 @@ reintroduces the window problem.
   price, but do we also resume *active outreach*? Default: no (we already have their
   price). Revisit if desired.
 - **`ignored` mailbox label:** nice-to-have; skip if it complicates the Gmail label set.
+
+---
+
+## 11. Placement terms (added 2026-07-28)
+
+A publisher may price the SAME niche at several durations ("regular post is 99$ for
+a month and 150$ for 3 months, 400$ for the whole year"). Previously only one number
+survived: `selectAmount` picked a single figure out of the packed string and the rest
+was lost. Terms make each duration a first-class cell.
+
+### 11.1 `PlacementTerm` (`src/domain/terms.ts`)
+
+```ts
+interface PlacementTerm { key: string; days?: number; months?: number; raw: string }
+```
+
+Four fields, four jobs — the split is the whole point:
+
+| field | job |
+|---|---|
+| `key` | identity + cell-key component: `none` \| `perm` \| `${n}m` \| `${n}d` \| `other:<slug>` |
+| `days` | ordering, for any term with a measurable length |
+| `months` | exact-month filtering — set **only** for whole months |
+| `raw` | provenance: what the publisher actually wrote |
+
+Normalization (`parseTerm`, derived ONCE at extraction and frozen into the record):
+years fold into months (`1 year` → `12m`), weeks fold into days (`1 week` → `7d`),
+and an exact multiple of 30 days collapses to months (`30 days` → `1m`), so one
+duration is always one cell however it was phrased. A range takes its lower bound
+(`3-6 months` → `3m`), matching the existing `3-5x` multiplier convention.
+
+`months` is deliberately absent for sub-month terms. That is what lets a "1 week for
+$5" quote be stored, sorted and exported in full while being **invisible** to a
+month-based filter — the guarantee is enforced by the type, not by discipline.
+Unparseable-but-stated terms ("until we rotate it") keep a slug key so two different
+odd terms never share a cell, and carry no `days`/`months` at all.
+
+`none` (nothing said — the common case for a guest post) and `perm` (an explicit
+forever-placement promise) are **distinct** cells: saying nothing is not the same as
+promising permanence.
+
+### 11.2 Cell identity
+
+`makeCellKey` is now `website|niche|special|term`, and the price sheet folds on
+`category|term.key`. Each duration therefore keeps its **own independent price
+history** for free — "their 3-month rate rose in March but the monthly held" is
+derivable with no new storage. Cells sort niche-first, then shortest term first,
+with the indefinite terms at the far end.
+
+### 11.3 Relative pricing fans out (D-new)
+
+A premium applies PER TERM. Given regular $100/month and $150/2 months, "casino is
+double" yields casino $200/month **and** $300/2 months: a relative offer naming no
+term of its own expands across every term its base niche was quoted at, inheriting
+each base's term wholesale. A flat surcharge fans out the same way — a surcharge is
+per placement, not per month. Two rules follow:
+
+- **An explicit absolute beats a derived one.** "casino is double, but casino
+  12-month is a flat $500" leaves the 12-month cell at $500.
+- **A relative that names a term targets only that term**; with no matching base
+  cell, it keeps the verbatim premium and no amount, as before.
+
+### 11.4 Extraction contract
+
+`RawOffer` gains `termRaw` only — the LLM quotes the duration verbatim and never
+converts it to a number, exactly as it names a multiplier but never does the
+arithmetic. The prompt requires one offer per duration quoted.
+
+`periodRank`/`selectAmount` are demoted to a **fallback** for the degraded case where
+the model packed several tiers into one `priceRaw` anyway.
+
+### 11.5 Note on scope
+
+Term-priced *guest posts* are now captured. A term-priced **link insertion**
+("$50/month for a link") is still dropped by `isNonGuestProduct` — unchanged, and a
+separate decision if it should ever change.
+
+---
+
+## 12. Domain cap per reply (added 2026-07-28)
+
+**Rule:** a reply may price at most `MAX_DOMAINS_PER_REPLY` (10) distinct domains.
+At or under the cap, every domain is stored. Over it, only the site we actually
+asked about survives.
+
+A publisher naming a few of their own sites is an ordinary, useful reply:
+
+> "Guest post 400$. Also casik_super.ua for 350$ and ultra_casik.net for 500$."
+
+→ three PriceRecords (contacted site + both named sites), no review flag.
+
+A reply that resolves to hundreds of domains is a different animal — a bulk rate
+card behind a link ("check our prices at example.net/price" → 2500 rows). We asked
+about one site; that row is the only one we have any reason to trust. Storing the
+rest would flood the known-domains list with sites we never researched, never
+contacted, and cannot vouch for.
+
+### 12.1 Where it lives
+
+`capDomains` in `src/domain/reply-matching.ts`, applied at the end of
+`attributeOffers` — pure, unit-tested, and the single place domain groups are
+formed. "The site we asked about" is the matched target's domain; failing that,
+the sender's domain when unambiguous. If neither appears among the priced
+domains, **nothing** is kept: a bulk list that never mentions the contacted site
+has told us nothing about it, and guessing which of 500 rows to believe is worse
+than recording none.
+
+Capping is never silent — a review reason naming the count is pushed onto
+`reply.review[]`, so the reply surfaces for a human.
+
+### 12.2 The snapshot is trimmed too
+
+`AttributionResult.capped` tells poll-pass the cap fired, and it then snapshots
+only the kept offers onto `reply.parsed` / `target.result`. Without this the price
+records would be capped while every UI and export still rendered the 300 discarded
+sites. An **uncapped** reply keeps all its offers, including ones too ambiguous to
+attribute (D11) — a human still needs to see those.
+
+### 12.3 Prompt side
+
+`RESEARCH_ADDENDUM` and the `website` field description both tell the model not to
+walk a price list emitting one offer per row, and to set `website` only for a site
+the owner personally offers in the reply body. The cap is the deterministic
+backstop for when it does not comply, in the same spirit as `isNonGuestProduct`.
+
+---
+
+## 13. Extraction provenance (added 2026-07-28)
+
+`replyId`/`sourceMessageId` already said which EMAIL a price came from. This says
+which RUN read that email — the missing half when the whole inbox is re-extracted
+under a new model or a reworked prompt, which otherwise leaves every record
+looking identical to the one it replaced.
+
+### 13.1 `ExtractionProvenance`
+
+```ts
+{ provider, model?, promptHash, promptStyle, extractedAt, editedByHuman?, editedAt? }
+```
+
+Stamped on **`Reply.extraction`** and on **every `PriceRecord.extraction`**. The
+record carries its own copy rather than joining through `replyId` on purpose: a
+later re-extraction overwrites `reply.parsed`, and an append-only fact has to stay
+self-describing or the history rewrites itself.
+
+`extractedAt` is when the extraction RAN — distinct from `observedAt`, which is
+when the publisher said it.
+
+### 13.2 The prompt fingerprint
+
+`promptHash` = sha256 of `buildSystem(style)`, first 12 hex chars
+(`promptFingerprint()` in `src/services/extractor.ts`). It hashes **only** the
+system instructions, which depend on nothing but the pitch style — not the niche
+registry (which grows constantly), not the reply, not the research addendum. So
+it is stable across replies and moves exactly when the rules change, which is what
+makes it usable for comparing two runs.
+
+The full text is archived as a **`PromptSnapshot`** doc under that hash
+(`DocType 'prompt'`), written idempotently on every extraction: first run stores
+it, the rest are no-ops. Without the archive the hash would be an opaque string
+nobody could resolve once the source had changed. Readable via
+`GET /api/prompts` and `GET /api/prompts/:hash`.
+
+### 13.3 `aiExplanation`
+
+A few sentences (2-4, ~80 words) in the AI's own words: which figure it took for
+which niche and why, how it read each duration, which SITE each price belongs to,
+where the numbers came from (body / attachment / linked list), and what it
+deliberately discarded. Distinct from `reasoning`, which stays a one-line label
+for lists — this is what a human reads when a number looks wrong. Copied onto each
+`PriceRecord` for the same self-describing reason as the provenance.
+
+### 13.4 Human edits
+
+`PATCH /api/replies/:id` sets `editedByHuman` + `editedAt` while **keeping** the
+original run's provider/model/prompt/extractedAt (`markEdited` in `app.ts`), so an
+edited price is never mistaken for model output and you can still see which run
+produced the value that needed fixing. The flag lands on both the reply and the
+re-synced price records; the UI shows an "edited by hand" badge.
+
+Note this remains an in-place rewrite of the record (§13.4 does not make the edit
+path append-only) — the flag makes the edit *visible*, it does not preserve the
+prior value.
+
+### 13.5 Debugging one extraction
+
+`GET /api/replies/:id/debug` returns everything about a single extraction,
+pre-joined server-side so the UI does not make five calls: the reply (body,
+attachments, emailId/threadId/Message-Id, subject, match method, review flags),
+the **mailbox** it arrived in, the target/batch it belongs to, the **pitch style**
+that framed the ask, the **full prompt text** resolved from the archive by hash,
+the provenance, and the **price records the extraction ultimately wrote**.
+
+`Reply` gained `accountId` and `subject` for this — both were already in scope at
+reply creation (poll-pass) and simply dropped, and without the mailbox there is no
+way to know which inbox to go look in.
+
+The UI is `web/src/components/ExtractionDebugModal.tsx`, opened from the responses
+detail modal ("Debug extraction") and from every record in the domain price
+history. It is laid out as the four questions you ask in order: what arrived →
+what did we send → what ran it → what came out. Replies predating provenance
+render explicit fallbacks ("this reply predates extraction provenance") rather
+than blank fields.

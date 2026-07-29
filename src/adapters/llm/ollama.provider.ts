@@ -17,6 +17,7 @@ interface OllamaChatResponse {
 
 export class OllamaLlmProvider implements LlmProvider {
   readonly name = 'ollama';
+  get model(): string { return this.opts.model; }
   constructor(private readonly opts: OllamaOptions) {}
 
   private async chat(

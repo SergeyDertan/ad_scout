@@ -23,8 +23,8 @@ const REPLY_ID = 'reply_473e0621-b21c-4848-8d53-c7c080dab2e3';
 const SITE = 'digitaljournal.com';
 
 /** The one cell to blank: DigitalJournal's sensitive guest post. */
-function isTarget(o: { website?: string; postType: string; sensitive: boolean }): boolean {
-  return (o.website ?? '').toLowerCase() === SITE && o.postType === 'guest_post' && o.sensitive;
+function isTarget(o: { website?: string; sensitive: boolean }): boolean {
+  return (o.website ?? '').toLowerCase() === SITE && o.sensitive;
 }
 
 async function main() {
@@ -40,7 +40,7 @@ async function main() {
     if (!isTarget(o)) continue;
     hits++;
     console.log(`reply ${reply.id}`);
-    console.log(`  ${o.website} ${o.postType}/${o.category}: ${o.price?.raw ?? '—'} -> (unknown), canPost=${o.canPost}`);
+    console.log(`  ${o.website} ${o.category}: ${o.price?.raw ?? '—'} -> (unknown), canPost=${o.canPost}`);
     delete (o as { price?: unknown }).price;
   }
   if (apply && hits) await store.putReply(reply);
@@ -56,7 +56,7 @@ async function main() {
     for (const o of rec.offers) {
       if (!isTarget(o)) continue;
       console.log(`pricerecord ${rec.id}`);
-      console.log(`  ${o.postType}/${o.category}: ${o.price?.raw ?? '—'} -> (unknown), canPost=${o.canPost}`);
+      console.log(`  ${o.category}: ${o.price?.raw ?? '—'} -> (unknown), canPost=${o.canPost}`);
       delete (o as { price?: unknown }).price;
       touched = true;
     }

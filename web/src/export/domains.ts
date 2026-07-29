@@ -4,21 +4,21 @@
 //
 //   • 'regular' — Domain, Regular price
 //   • 'both'    — Domain, Regular price, Sensitive price   (the default)
-//   • 'all'     — Domain + Records/Specials/Last quote + one column per
-//                 (product × niche), the full price matrix
+//   • 'all'     — Domain + Records/Specials/Last quote + one column per niche,
+//                 the full price matrix
 //
 // A price shows only when the publisher will post it (canPost === 'yes'), so the
 // collapsed columns read as an actionable rate card rather than raw quotes.
 
 import { fileStem } from './model';
-import { postTypeLabel, type DomainCell, type DomainSummary, type PriceValue } from '../types';
+import { compareTerms, formatTerm, type DomainCell, type DomainSummary, type PriceValue } from '../types';
 
 export type DomainExportScope = 'regular' | 'both' | 'all';
 
 export const DOMAIN_EXPORT_SCOPES: { value: DomainExportScope; label: string; hint: string }[] = [
   { value: 'both', label: 'Regular + sensitive', hint: 'Domain, regular price, sensitive price' },
   { value: 'regular', label: 'Regular only', hint: 'Domain, regular price' },
-  { value: 'all', label: 'All data', hint: 'Every product × niche price column' },
+  { value: 'all', label: 'All data', hint: 'Every niche price column' },
 ];
 
 export interface DomainExportTable {
@@ -26,15 +26,7 @@ export interface DomainExportTable {
   body: (string | number)[][];
 }
 
-const POST_TYPE_ORDER = ['guest_post', 'link_insertion', 'banner'];
-
-function ptRank(postType: string): number {
-  const i = POST_TYPE_ORDER.indexOf(postType || 'guest_post');
-  return i === -1 ? 99 : i;
-}
-
 const canOffer = (c: DomainCell) => c.canPost === 'yes';
-const cellPostType = (c: DomainCell) => c.postType || 'guest_post';
 
 /** Numeric amount when known, else the raw quote, else '' (blank cell). */
 function priceValue(price?: PriceValue): string | number {
@@ -59,22 +51,44 @@ function domainCurrency(cells: DomainCell[]): string {
 /**
  * The one representative regular/sensitive price for a domain. Considers only
  * cells the publisher will post (canPost === 'yes'), prefers the generic
- * 'regular'/'sensitive' bucket, then the primary product (guest post), then a
- * cell that actually carries a number. Blank when nothing qualifies.
+ * 'regular'/'sensitive' bucket, then a cell that actually carries a number.
+ * Blank when nothing qualifies.
  */
-function pickPrice(cells: DomainCell[], sensitive: boolean): string | number {
+function pickCell(cells: DomainCell[], sensitive: boolean): DomainCell | undefined {
   const pool = cells.filter((c) => canOffer(c) && c.sensitive === sensitive);
-  if (pool.length === 0) return '';
+  if (pool.length === 0) return undefined;
   const preferredCat = sensitive ? 'sensitive' : 'regular';
   const sorted = [...pool].sort((a, b) => {
     const ac = a.category === preferredCat ? 0 : 1;
     const bc = b.category === preferredCat ? 0 : 1;
     if (ac !== bc) return ac - bc;
-    const r = ptRank(cellPostType(a)) - ptRank(cellPostType(b));
-    if (r !== 0) return r;
-    return (a.price?.amount == null ? 1 : 0) - (b.price?.amount == null ? 1 : 0);
+    const ap = a.price?.amount == null ? 1 : 0;
+    const bp = b.price?.amount == null ? 1 : 0;
+    if (ap !== bp) return ap - bp;
+    // Among equals, the SHORTEST placement term is the representative rate: a
+    // 12-month figure isn't comparable to another publisher's one-off article
+    // price, so ranking on it would punish publishers who quote annually.
+    return compareTerms(a.term, b.term);
   });
-  return priceValue(sorted[0].price);
+  return sorted[0];
+}
+
+function pickPrice(cells: DomainCell[], sensitive: boolean): string | number {
+  return priceValue(pickCell(cells, sensitive)?.price);
+}
+
+/** The placement term behind the representative regular price, so the collapsed
+ *  columns can never be read as a flat rate when they are in fact a rental. */
+function pickTerm(cells: DomainCell[], sensitive: boolean): string {
+  const cell = pickCell(cells, sensitive);
+  return cell?.term && cell.term.key !== 'none' ? formatTerm(cell.term) : '';
+}
+
+/** Exact whole months for the representative regular price — blank for terms we
+ *  can't express in months ("1 week"), so a spreadsheet filter on this column
+ *  inherits the same guarantee the data model gives: no accidental matches. */
+function pickTermMonths(cells: DomainCell[], sensitive: boolean): string | number {
+  return pickCell(cells, sensitive)?.term?.months ?? '';
 }
 
 /** Marks a domain whose prices come from more than one email source: the distinct
@@ -86,12 +100,19 @@ function sourcesMark(d: DomainSummary): string | number {
 /** Build the header + body the preview and the sheet share (no title row). */
 export function buildDomainsExport(domains: DomainSummary[], scope: DomainExportScope): DomainExportTable {
   if (scope !== 'all') {
+    // Term/Months sit next to the price they qualify: blank on the ordinary
+    // one-off guest post, filled when the quote buys a fixed-length placement.
     const columns = scope === 'regular'
-      ? ['Domain', 'Regular price', 'Currency', 'Price sources']
-      : ['Domain', 'Regular price', 'Sensitive price', 'Currency', 'Price sources'];
+      ? ['Domain', 'Regular price', 'Term', 'Months', 'Currency', 'Price sources']
+      : ['Domain', 'Regular price', 'Term', 'Months', 'Sensitive price', 'Currency', 'Price sources'];
     const body = domains.map((d) => {
       const cells = d.cells ?? [];
-      const row: (string | number)[] = [d.domain, pickPrice(cells, false)];
+      const row: (string | number)[] = [
+        d.domain,
+        pickPrice(cells, false),
+        pickTerm(cells, false),
+        pickTermMonths(cells, false),
+      ];
       if (scope === 'both') row.push(pickPrice(cells, true));
       row.push(domainCurrency(cells));
       row.push(sourcesMark(d));
@@ -100,27 +121,26 @@ export function buildDomainsExport(domains: DomainSummary[], scope: DomainExport
     return { columns, body };
   }
 
-  // 'all' — every (product × niche) column present across the exported domains.
-  const comboMap = new Map<string, { key: string; postType: string; label: string; sensitive: boolean }>();
-  const cellKey = (c: DomainCell) => `${cellPostType(c)}|${c.category}`;
+  // 'all' — one column per niche × TERM present across the exported domains. The
+  // term belongs in the column identity: a publisher's monthly and yearly rates
+  // are different products, and sharing a column would let one overwrite the other.
+  const comboMap = new Map<string, { key: string; label: string; sensitive: boolean; cell: DomainCell }>();
+  const cellKey = (c: DomainCell) => `${c.category}|${c.term?.key ?? 'none'}`;
   for (const d of domains) {
     for (const c of d.cells ?? []) {
       const key = cellKey(c);
       if (!comboMap.has(key)) {
-        comboMap.set(key, {
-          key,
-          postType: cellPostType(c),
-          sensitive: c.sensitive,
-          label: `${postTypeLabel(cellPostType(c))} — ${c.label || c.category}`,
-        });
+        const niche = c.label || c.category;
+        const term = c.term && c.term.key !== 'none' ? ` (${formatTerm(c.term)})` : '';
+        comboMap.set(key, { key, sensitive: c.sensitive, label: `${niche}${term}`, cell: c });
       }
     }
   }
   const combos = [...comboMap.values()].sort(
     (a, b) =>
-      ptRank(a.postType) - ptRank(b.postType) ||
       Number(a.sensitive) - Number(b.sensitive) ||
-      a.label.localeCompare(b.label),
+      (a.cell.label || a.cell.category).localeCompare(b.cell.label || b.cell.category) ||
+      compareTerms(a.cell.term, b.cell.term),
   );
 
   const columns = ['Domain', 'Records', 'Price sources', 'Specials', 'Last quote', 'Currency', ...combos.map((c) => c.label)];

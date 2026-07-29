@@ -3,22 +3,23 @@ import assert from 'node:assert/strict';
 import {
   allNiches,
   categorizeTopic,
+  isNonGuestProduct,
   matchNiche,
-  matchPostType,
   normalizeKey,
   offerMatchesFilter,
   resolveOffer,
 } from './niches';
 import type { Niche, PostOffer } from './types';
+import { TERM_NONE } from './terms';
 
 const NICHES = allNiches();
 
 const mkOffer = (o: Partial<PostOffer>): PostOffer => ({
-  postType: 'guest_post',
   category: 'regular',
   label: 'Regular',
   sensitive: false,
   canPost: 'yes',
+  term: TERM_NONE,
   ...o,
 });
 
@@ -37,15 +38,21 @@ test('allNiches merges learned entries over the seed set by key', () => {
   assert.ok(withNew.some((n) => n.key === 'pharma'));
 });
 
-test('matchPostType resolves the fixed product enum, defaulting to guest_post', () => {
-  assert.equal(matchPostType('guest_post'), 'guest_post');
-  assert.equal(matchPostType('sponsored article'), 'guest_post');
-  assert.equal(matchPostType('link insertion'), 'link_insertion');
-  assert.equal(matchPostType('niche edit'), 'link_insertion');
-  assert.equal(matchPostType('casino link insertion price'), 'link_insertion'); // loose contains
-  assert.equal(matchPostType('banner ad'), 'banner');
-  assert.equal(matchPostType(''), 'guest_post'); // default
-  assert.equal(matchPostType('something unrelated'), 'guest_post'); // default
+test('isNonGuestProduct flags products we do not buy, passes everything else', () => {
+  assert.equal(isNonGuestProduct('link insertion'), true);
+  assert.equal(isNonGuestProduct('link_insertion'), true);
+  assert.equal(isNonGuestProduct('niche edit'), true);
+  assert.equal(isNonGuestProduct('casino link insertion price'), true); // loose contains
+  assert.equal(isNonGuestProduct('banner ad'), true);
+  assert.equal(isNonGuestProduct('Banner'), true);
+  // The guest post, under any of its names, is what we DO buy.
+  assert.equal(isNonGuestProduct('guest post'), false);
+  assert.equal(isNonGuestProduct('sponsored article'), false);
+  assert.equal(isNonGuestProduct('publication'), false);
+  // Real niches are never mistaken for products.
+  assert.equal(isNonGuestProduct('casino'), false);
+  assert.equal(isNonGuestProduct('short_term_loans'), false);
+  assert.equal(isNonGuestProduct(''), false);
 });
 
 test('matchNiche resolves by key, label, and alias', () => {

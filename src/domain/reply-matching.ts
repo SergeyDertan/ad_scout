@@ -83,7 +83,30 @@ export interface AttributionResult {
   groups: DomainGroup[];
   /** D11 ambiguity reasons to push onto reply.review[]. */
   reviewReasons: string[];
+  /** True when MAX_DOMAINS_PER_REPLY fired and domains were dropped. The caller
+   *  uses it to trim the reply/target snapshot to what was actually stored — an
+   *  uncapped reply keeps every offer, including ones too ambiguous to attribute,
+   *  because a human still needs to see those. */
+  capped: boolean;
 }
+
+/**
+ * How many distinct domains one reply may price before we stop believing it is a
+ * genuine per-site answer.
+ *
+ * A publisher naming a handful of their own sites ("we can also post on
+ * casik_super.ua and ultra_casik.net") is an ordinary, useful reply — we want all
+ * of those. A reply that resolves to hundreds of domains is a different animal: a
+ * bulk rate card ("check our prices at example.net/price" → 2500 rows), where the
+ * only thing we actually asked about is the contacted site. Storing the rest
+ * would flood the known-domains list with sites we never researched, never
+ * contacted, and cannot vouch for.
+ *
+ * The prompt already tells the model to extract only the contacted site's row
+ * from a multi-site list (see RESEARCH_ADDENDUM); this is the deterministic
+ * backstop for when it does not comply, in the same spirit as isNonGuestProduct.
+ */
+export const MAX_DOMAINS_PER_REPLY = 10;
 
 /**
  * Split a reply's offers into per-domain groups (PRICE-HISTORY-PLAN.md §5.2):
@@ -92,6 +115,10 @@ export interface AttributionResult {
  *  - untagged offer + sender→exactly 1 domain → that domain, 'sender' (M1);
  *  - untagged offer + sender→2+ domains → ambiguous, push a review reason, skip;
  *  - untagged offer + sender→0 domains → nothing to attribute.
+ *
+ * Then caps the result at MAX_DOMAINS_PER_REPLY distinct domains: past that, the
+ * reply is a bulk rate card rather than an answer about specific sites, so only
+ * the contacted site survives (see `capDomains`).
  *
  * `ownDomain` is the domain of the target the reply was matched to. It takes
  * precedence because a matched reply is an answer to the mail we sent ABOUT that
@@ -138,7 +165,41 @@ export function attributeOffers(
     // 0 domains, no website → nothing to attribute.
   }
 
-  return { groups: [...groups.values()], reviewReasons };
+  return capDomains([...groups.values()], senderDomains, ownDomain, reviewReasons);
+}
+
+/**
+ * Enforce MAX_DOMAINS_PER_REPLY. Under the cap, everything stands. Over it, we
+ * keep ONLY the site we actually asked about and drop the rest — the reply is a
+ * price list, and the one row we can trust is the one we wrote to them about.
+ *
+ * "The site we asked about" is the matched target's domain; failing that, the
+ * sender's domain when it is unambiguous. If neither is among the priced
+ * domains, nothing is kept: a bulk list that does not even mention the contacted
+ * site has told us nothing about it, and guessing which of 500 rows to believe
+ * would be worse than recording none.
+ *
+ * Either way a review reason is pushed, so the reply surfaces for a human rather
+ * than silently losing data.
+ */
+function capDomains(
+  groups: DomainGroup[],
+  senderDomains: string[],
+  ownDomain: string | undefined,
+  reviewReasons: string[],
+): AttributionResult {
+  if (groups.length <= MAX_DOMAINS_PER_REPLY) return { groups, reviewReasons, capped: false };
+
+  const has = (d?: string) => (d ? groups.find((g) => g.domain === d) : undefined);
+  const kept = has(ownDomain) ?? (senderDomains.length === 1 ? has(senderDomains[0]) : undefined);
+
+  reviewReasons.push(
+    `Reply priced ${groups.length} sites (cap is ${MAX_DOMAINS_PER_REPLY}) — looks like a bulk price list, not an answer about specific sites. ` +
+      (kept
+        ? `Kept only the contacted site (${kept.domain}); the other ${groups.length - 1} were ignored.`
+        : `None of them is the contacted site, so no prices were recorded.`),
+  );
+  return { groups: kept ? [kept] : [], reviewReasons, capped: true };
 }
 
 /**

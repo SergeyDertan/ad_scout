@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { attributeOffers, detectBounce, emailToDomains, matchReply } from './reply-matching';
+import { attributeOffers, detectBounce, emailToDomains, matchReply, MAX_DOMAINS_PER_REPLY } from './reply-matching';
 import type { PostOffer } from './types';
+import { TERM_NONE } from './terms';
 
 const po = (o: Partial<PostOffer>): PostOffer => ({
-  postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', ...o,
+  category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', term: TERM_NONE, ...o,
 });
 
 test('emailToDomains maps normalized contact emails to their distinct site domains', () => {
@@ -54,6 +55,88 @@ test('attributeOffers: matched target wins over an ambiguous multi-domain sender
 test('attributeOffers: matched target takes the untagged offer even when the sender maps to one other site', () => {
   const { groups } = attributeOffers([po({})], ['other.com'], 'own.com');
   assert.deepEqual(groups.map((g) => g.domain), ['own.com']);
+});
+
+// A publisher naming a few of their own sites is an ordinary, useful reply.
+test('attributeOffers: a handful of named sites are all kept', () => {
+  // "Guest post 400$. Also casik_super.ua for 350$ and ultra_casik.net for 500$."
+  const { groups, reviewReasons } = attributeOffers(
+    [
+      po({ price: { raw: '$400' } }),
+      po({ price: { raw: '$350' }, website: 'casik_super.ua' }),
+      po({ price: { raw: '$500' }, website: 'ultra_casik.net' }),
+    ],
+    ['casik.com'],
+    'casik.com',
+  );
+  assert.equal(groups.length, 3); // contacted site + both named sites
+  assert.equal(reviewReasons.length, 0);
+  assert.deepEqual(
+    groups.map((g) => g.domain).sort(),
+    ['casik.com', 'casik_super.ua', 'ultra_casik.net'],
+  );
+});
+
+test('attributeOffers: exactly at the cap is still stored in full', () => {
+  const offers = [
+    po({ price: { raw: '$100' } }), // the contacted site
+    ...Array.from({ length: MAX_DOMAINS_PER_REPLY - 1 }, (_, i) =>
+      po({ price: { raw: '$50' }, website: `site${i}.com` }),
+    ),
+  ];
+  const { groups, reviewReasons } = attributeOffers(offers, ['own.com'], 'own.com');
+  assert.equal(groups.length, MAX_DOMAINS_PER_REPLY);
+  assert.equal(reviewReasons.length, 0);
+});
+
+// The bulk-price-list case: "check our prices at example.net/price" → hundreds of
+// rows. We asked about one site; that is the only row we have any reason to trust.
+test('attributeOffers: a bulk price list collapses to the contacted site', () => {
+  const offers = [
+    po({ price: { raw: '$500' } }), // untagged → the contacted site
+    ...Array.from({ length: 500 }, (_, i) =>
+      po({ price: { raw: '$20' }, website: `bulk${i}.com` }),
+    ),
+  ];
+  const { groups, reviewReasons } = attributeOffers(offers, ['omega_casik.net'], 'omega_casik.net');
+  assert.deepEqual(groups.map((g) => g.domain), ['omega_casik.net']);
+  assert.equal(groups[0].offers.length, 1);
+  assert.equal(groups[0].offers[0].price?.raw, '$500');
+  // Dropping 500 domains is never silent — it surfaces for a human.
+  assert.equal(reviewReasons.length, 1);
+  assert.match(reviewReasons[0], /501 sites/);
+  assert.match(reviewReasons[0], /omega_casik\.net/);
+});
+
+test('attributeOffers: the contacted site is kept even when the list tags it explicitly', () => {
+  // A price sheet usually lists the publisher's own site as just another row.
+  const offers = Array.from({ length: 60 }, (_, i) =>
+    po({ price: { raw: '$20' }, website: `bulk${i}.com` }),
+  );
+  offers.splice(30, 0, po({ price: { raw: '$500' }, website: 'omega_casik.net' }));
+  const { groups } = attributeOffers(offers, ['omega_casik.net'], 'omega_casik.net');
+  assert.deepEqual(groups.map((g) => g.domain), ['omega_casik.net']);
+  assert.equal(groups[0].offers[0].price?.raw, '$500');
+});
+
+test('attributeOffers: a bulk list that never mentions the contacted site records nothing', () => {
+  const offers = Array.from({ length: 40 }, (_, i) =>
+    po({ price: { raw: '$20' }, website: `bulk${i}.com` }),
+  );
+  const { groups, reviewReasons } = attributeOffers(offers, ['omega_casik.net'], 'omega_casik.net');
+  // Guessing which of 40 unrelated rows to believe is worse than recording none.
+  assert.equal(groups.length, 0);
+  assert.equal(reviewReasons.length, 1);
+  assert.match(reviewReasons[0], /None of them is the contacted site/);
+});
+
+test('attributeOffers: an unmatched bulk reply falls back to the unambiguous sender domain', () => {
+  const offers = [
+    po({ price: { raw: '$500' }, website: 'sender.com' }),
+    ...Array.from({ length: 30 }, (_, i) => po({ price: { raw: '$20' }, website: `bulk${i}.com` })),
+  ];
+  const { groups } = attributeOffers(offers, ['sender.com']); // no matched target
+  assert.deepEqual(groups.map((g) => g.domain), ['sender.com']);
 });
 
 test('attributeOffers: zero sender domains + untagged offer → nothing attributed', () => {

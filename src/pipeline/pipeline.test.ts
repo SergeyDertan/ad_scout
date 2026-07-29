@@ -142,7 +142,7 @@ function pricingLlm(prices: (string | null)[]): LlmProvider {
         intent: 'answer',
         offers: [
           {
-            postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false,
+            category: 'regular', label: 'Regular', sensitive: false,
             canPost: 'yes', priceRaw: price, priceKind: 'absolute', multiplier: 0, relativeTo: '',
             website: '', isSpecial: false, specialUntil: '',
           },
@@ -333,6 +333,7 @@ test('opt-out reply excludes the target and adds a persistent suppression', asyn
 function stubLlm(raw: Record<string, unknown>): LlmProvider {
   return {
     name: 'stub',
+    model: 'stub-model-v1',
     async generateJson() {
       return raw;
     },
@@ -343,7 +344,7 @@ function stubLlm(raw: Record<string, unknown>): LlmProvider {
 }
 
 const rawOffer = (o: Record<string, unknown>) => ({
-  postType: 'guest_post', category: 'regular', label: 'Regular', sensitive: false,
+  category: 'regular', label: 'Regular', sensitive: false,
   canPost: 'yes', priceRaw: '', priceKind: 'absolute', multiplier: 0, relativeTo: '',
   website: '', isSpecial: false, specialUntil: '', ...o,
 });
@@ -406,6 +407,117 @@ test('untagged offer with a multi-domain sender goes to the site we contacted', 
   // …and it is no longer flagged as ambiguous.
   const reply = (await store.listReplies()).find((r) => r.targetId === 't1');
   assert.equal(reply?.review?.some((r) => /associated with 2 sites/.test(r)) ?? false, false);
+});
+
+test('a few extra owned sites are all recorded (under the domain cap)', async () => {
+  const store = new MemoryStore();
+  const email = new DummyEmailProvider();
+  const extractor = new Extractor(stubLlm({
+    optOut: false, intent: 'answer', reasoning: 'three sites', conditions: '', notes: '', isSpam: false,
+    offers: [
+      rawOffer({ priceRaw: '$400' }),
+      rawOffer({ priceRaw: '$350', website: 'casik_super.ua' }),
+      rawOffer({ priceRaw: '$500', website: 'ultra_casik.net' }),
+    ],
+  }));
+  await seed(store);
+  await sendAndReply(store, email, 'Guest post $400. Also casik_super.ua $350 and ultra_casik.net $500.');
+  await runPollPass({ store, email, extractor, clock, config });
+
+  const records = await store.listPriceRecords();
+  assert.deepEqual(records.map((r) => r.domain).sort(), ['casik_super.ua', 't1.com', 'ultra_casik.net']);
+  const reply = (await store.listReplies()).find((r) => r.targetId === 't1');
+  assert.equal(reply?.review, undefined); // an ordinary multi-site answer, no flag
+});
+
+test('a bulk price list is stored only for the site we asked about', async () => {
+  const store = new MemoryStore();
+  const email = new DummyEmailProvider();
+  // "Check prices at example.net/price" → the model came back with 300 sites.
+  const extractor = new Extractor(stubLlm({
+    optOut: false, intent: 'answer', reasoning: 'price list', conditions: '', notes: '', isSpam: false,
+    offers: [
+      rawOffer({ priceRaw: '$500' }), // untagged → the site we contacted
+      ...Array.from({ length: 300 }, (_, i) => rawOffer({ priceRaw: '$20', website: `bulk${i}.com` })),
+    ],
+  }));
+  await seed(store);
+  await sendAndReply(store, email, 'Yeah, sure. Check prices at example.net/price');
+  await runPollPass({ store, email, extractor, clock, config });
+
+  // Exactly one record, for the contacted domain — the other 300 never land.
+  const records = await store.listPriceRecords();
+  assert.equal(records.length, 1);
+  assert.equal(records[0]!.domain, 't1.com');
+  assert.equal(records[0]!.offers[0]?.price?.amount, 500);
+  assert.equal((await store.listPriceRecords({ domain: 'bulk0.com' })).length, 0);
+
+  // The reply snapshot is trimmed too, so the UI and exports don't carry the
+  // 300 sites we deliberately discarded.
+  const reply = (await store.listReplies()).find((r) => r.targetId === 't1');
+  assert.equal(reply?.parsed?.offers.length, 1);
+  assert.ok(reply?.review?.some((r) => /bulk price list/.test(r)));
+  const t1 = await store.getTarget('t1');
+  assert.equal(t1?.result?.offers.length, 1);
+});
+
+test('every price record records which run produced it, and the AI explanation', async () => {
+  const store = new MemoryStore();
+  const email = new DummyEmailProvider();
+  const extractor = new Extractor(stubLlm({
+    optOut: false, intent: 'answer', reasoning: 'regular $400', conditions: '', notes: '', isSpam: false,
+    aiExplanation: 'Owner gave one flat rate, "400$ per article", with no niche named; we asked broadly so that is the regular rate. Their $99 link-insertion price was discarded.',
+    offers: [
+      rawOffer({ priceRaw: '$400' }),
+      rawOffer({ priceRaw: '$350', website: 'casik_super.ua' }),
+    ],
+  }));
+  await seed(store);
+  await sendAndReply(store, email, 'Guest post 400$. Also casik_super.ua 350$. Link insertion 99$.');
+  await runPollPass({ store, email, extractor, clock, config });
+
+  // Each of the 5-domains-in-one-email case: every record is self-describing.
+  const records = await store.listPriceRecords();
+  assert.equal(records.length, 2);
+  for (const r of records) {
+    assert.equal(r.extraction?.provider, 'stub');
+    assert.equal(r.extraction?.model, 'stub-model-v1');
+    assert.equal(r.extraction?.promptStyle, 'broad');
+    assert.ok(r.extraction?.promptHash);
+    assert.ok(r.extraction?.extractedAt);
+    assert.equal(r.extraction?.editedByHuman, undefined);
+    assert.match(r.aiExplanation ?? '', /400\$ per article/);
+  }
+  // Both records came from one run, so they share a prompt fingerprint.
+  assert.equal(records[0]!.extraction!.promptHash, records[1]!.extraction!.promptHash);
+
+  // The reply carries the same stamp…
+  const reply = (await store.listReplies()).find((r) => r.targetId === 't1');
+  assert.equal(reply?.extraction?.promptHash, records[0]!.extraction!.promptHash);
+
+  // …and the prompt text itself is archived under that hash, so the fingerprint
+  // stays resolvable long after the source has changed.
+  const prompts = await store.listPromptSnapshots();
+  assert.equal(prompts.length, 1);
+  assert.equal(prompts[0]!.hash, records[0]!.extraction!.promptHash);
+  assert.equal(prompts[0]!.style, 'broad');
+  assert.match(prompts[0]!.text, /WE BUY EXACTLY ONE PRODUCT/);
+});
+
+test('the prompt archive is written once, not once per reply', async () => {
+  const store = new MemoryStore();
+  const email = new DummyEmailProvider();
+  const extractor = new Extractor(stubLlm({
+    optOut: false, intent: 'answer', reasoning: 'x', conditions: '', notes: '', isSpam: false,
+    offers: [rawOffer({ priceRaw: '$100' })],
+  }));
+  await seed(store);
+  await sendAndReply(store, email, 'Sure, $100.');
+  await runPollPass({ store, email, extractor, clock, config });
+  await sendAndReply(store, email, 'Actually now $150.');
+  await runPollPass({ store, email, extractor, clock, config });
+
+  assert.equal((await store.listPromptSnapshots()).length, 1); // content-addressed
 });
 
 test('AI-detected spam adds the sender to the ignore list and writes no records', async () => {

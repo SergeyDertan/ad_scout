@@ -10,6 +10,7 @@ import type {
   Niche,
   Outreach,
   PriceRecord,
+  PromptSnapshot,
   Reply,
   Suppression,
   Target,
@@ -26,7 +27,8 @@ export type DocType =
   | 'niche'
   | 'pricerecord'
   | 'ignore'
-  | 'domainexclusion';
+  | 'domainexclusion'
+  | 'prompt';
 
 export interface ChangeEvent {
   type: DocType;
@@ -90,6 +92,14 @@ export interface Store {
   listNiches(): Promise<Niche[]>;
   putNiche(n: Niche): Promise<Niche>;
   deleteNiche(key: string): Promise<void>;
+
+  // prompt archive (keyed by hash) — makes ExtractionProvenance.promptHash
+  // resolvable back to the exact instructions that produced a result.
+  listPromptSnapshots(): Promise<PromptSnapshot[]>;
+  /** Idempotent: the first extraction under a given prompt stores it, the rest
+   *  are no-ops (the hash IS the content, so re-writing can only rewrite it the
+   *  same). Never overwrites `firstSeenAt`. */
+  putPromptSnapshot(p: PromptSnapshot): Promise<void>;
 
   // suppression (persistent do-not-contact)
   isSuppressed(email: string): Promise<boolean>;

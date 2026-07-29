@@ -3,24 +3,32 @@
 // (web/src/export/html.ts). It flattens the response feed into a wide,
 // spreadsheet-friendly shape:
 //
-//   one row per website  ×  one price column per (product × niche)
+//   one row per website  ×  one price column per niche
 //
-// e.g. columns "Guest post — Regular", "Guest post — Casino", "Link insertion — VPN".
+// e.g. columns "Regular", "Casino", "VPN". Guest posts are the only product we
+// buy, so a niche alone names a column.
 // The normalized ExportModel is what gets embedded into the standalone HTML, so
 // the vanilla-JS mini-app in web/src/export/standalone/app.js re-filters and
 // re-exports the SAME data with no server round-trip. Keep buildAoa() here in
 // sync with the copy in app.js.
 
-import { formatPrice, postTypeLabel, type Niche, type ResponseRow } from '../types';
+import { compareTerms, formatPrice, formatTerm, type Niche, type PlacementTerm, type ResponseRow } from '../types';
 
-/** A (product × niche) pairing that becomes one price column. Key matches the
- *  `offerCellKey` convention "postType|category". */
+/** A niche AT a placement term, which is what becomes one price column. The term
+ *  belongs in the key: a publisher quoting $99/month and $150/3 months has two
+ *  different products, and sharing a column would let one overwrite the other. */
 export interface ComboColumn {
   key: string;
-  postType: string;
   category: string;
+  /** Display header — the niche, plus the term when one was stated ("Casino (3 months)"). */
   label: string;
+  /** The niche name alone. Sorting uses this so a niche's durations group together
+   *  and then order by LENGTH; sorting on `label` would put "(12 months)" before
+   *  "(3 months)" alphabetically. */
+  baseLabel: string;
   sensitive: boolean;
+  /** Absent ⇒ no duration stated (the ordinary one-off guest post). */
+  term?: PlacementTerm;
 }
 
 export interface MetaColumn {
@@ -79,19 +87,15 @@ export interface ExportSelection {
   numericPrices: boolean;
 }
 
-const POST_TYPE_ORDER = ['guest_post', 'link_insertion', 'banner'];
-
 function nicheLabel(key: string, niches: Niche[], fallback: string): string {
   return niches.find((n) => n.key === key)?.label ?? fallback ?? key;
 }
 
 function comboSort(a: ComboColumn, b: ComboColumn): number {
-  const pa = POST_TYPE_ORDER.indexOf(a.postType);
-  const pb = POST_TYPE_ORDER.indexOf(b.postType);
   return (
-    (pa === -1 ? 99 : pa) - (pb === -1 ? 99 : pb) ||
     Number(a.sensitive) - Number(b.sensitive) ||
-    a.label.localeCompare(b.label)
+    a.baseLabel.localeCompare(b.baseLabel) ||
+    compareTerms(a.term, b.term)
   );
 }
 
@@ -109,15 +113,19 @@ export function buildExportModel(rows: ResponseRow[], niches: Niche[]): ExportMo
     // card that mixes them (rare) is joined ("GBP/USD") so no cell is mislabelled.
     const currencies: string[] = [];
     for (const o of offers) {
-      const postType = o.postType || 'guest_post';
-      const key = `${postType}|${o.category}`;
+      // Niche + term is the column identity, so a reply quoting the same niche at
+      // several durations contributes one column each instead of overwriting itself.
+      const termKey = o.term?.key ?? 'none';
+      const key = `${o.category}|${termKey}`;
       if (!comboMap.has(key)) {
+        const baseLabel = nicheLabel(o.category, niches, o.label);
         comboMap.set(key, {
           key,
-          postType,
           category: o.category,
-          label: `${postTypeLabel(postType)} — ${nicheLabel(o.category, niches, o.label)}`,
+          baseLabel,
+          label: termKey === 'none' ? baseLabel : `${baseLabel} (${formatTerm(o.term)})`,
           sensitive: o.sensitive,
+          ...(o.term ? { term: o.term } : {}),
         });
       }
       cells[key] = {

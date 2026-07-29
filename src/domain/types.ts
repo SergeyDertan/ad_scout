@@ -154,17 +154,73 @@ export interface Reply {
   threadId?: string;
   rfcMessageId: string;
   fromAddress: string;
+  /** The mailbox (our Account) that received it. Needed to debug an extraction:
+   *  without it there is no way to know which inbox to go look in. */
+  accountId?: ID;
+  /** The email's subject line, as received. */
+  subject?: string;
   targetId?: ID;
   matchMethod: MatchMethod;
   receivedAt: ISO;
   text: string;
   attachments?: EmailAttachment[];
   parsed?: OutreachResult;
+  /** Which run produced `parsed` (model/provider/prompt + when). */
+  extraction?: ExtractionProvenance;
   extractionStatus: ExtractionStatus;
   /** Human-readable reasons the AI could not fully process this reply (e.g. an
    *  unreadable attachment type, an unreachable link). Present ⇒ needs a human
    *  to review/correct it. Cleared when someone edits the result by hand. */
   review?: string[];
+}
+
+// --- Extraction provenance --------------------------------------------------
+
+/**
+ * Which extraction produced a stored result — the answer to "where did this
+ * price come from, and can I trust it?".
+ *
+ * `sourceMessageId`/`replyId` already say which EMAIL a price came from. This
+ * says which RUN read that email: re-extracting the whole inbox under a new
+ * model or a reworked prompt otherwise leaves every record looking identical to
+ * the ones it replaced, with no way to compare runs or roll one back.
+ *
+ * `promptHash` fingerprints the system instructions only (not the per-reply
+ * context), so it is stable across replies and changes exactly when the rules
+ * change. The full text is archived under that hash as a PromptSnapshot, so the
+ * hash stays resolvable long after the code has moved on.
+ */
+export interface ExtractionProvenance {
+  /** LlmProvider.name — 'claude-code', 'ollama', 'dummy', … */
+  provider: string;
+  /** Exact model id the provider was configured with, when it has one. */
+  model?: string;
+  /** Fingerprint of the system prompt (see PromptSnapshot). */
+  promptHash: string;
+  /** Which prompt variant ran — the PitchStyle ('casino' | 'broad'). Typed as a
+   *  string here to keep domain/types.ts free of a cycle with domain/pitch.ts. */
+  promptStyle: string;
+  /** When the extraction RAN — distinct from observedAt, which is when the
+   *  publisher said it. */
+  extractedAt: ISO;
+  /** Set once a human corrected this result by hand. The AI fields are left as
+   *  they were, so the correction is visible rather than silently overwriting. */
+  editedByHuman?: boolean;
+  editedAt?: ISO;
+}
+
+/**
+ * The full system prompt text, archived under its own hash (doc id = hash).
+ * Written idempotently on every extraction: the first run with a given prompt
+ * stores it, later ones are no-ops. Without this, `promptHash` would be an
+ * opaque string nobody could resolve once the source had changed.
+ */
+export interface PromptSnapshot {
+  id: ID; // = hash
+  hash: string;
+  style: string;
+  text: string;
+  firstSeenAt: ISO;
 }
 
 // --- Suppression (persistent do-not-contact list) ---------------------------
@@ -207,14 +263,41 @@ export interface Niche {
   createdAt?: ISO; // set when learned (seed niches have none)
 }
 
-/** Willingness + price for ONE (post type × niche) the owner addressed. */
+/**
+ * How long a price buys the placement for. Derived ONCE at extraction time by
+ * parseTerm() (domain/terms.ts) and frozen into the record — never recomputed on
+ * read. The fields are deliberately separate:
+ *   `key`    identity + the cell-key component ('none' | 'perm' | `${n}m` | `${n}d`
+ *            | `other:<slug>`). Years fold into months, weeks into days, so one
+ *            duration is always one cell however the publisher phrased it.
+ *   `days`   ordering, for every term with a measurable length.
+ *   `months` set ONLY for exact whole months — a month filter must never
+ *            silently match a 1-week or 45-day placement.
+ *   `raw`    what the publisher wrote, verbatim.
+ * A "1 week for $5" quote is therefore stored, sorted and exported in full while
+ * staying out of month-based queries.
+ */
+export interface PlacementTerm {
+  key: string;
+  days?: number;
+  months?: number;
+  raw: string;
+}
+
+/** Willingness + price for ONE niche the owner addressed, at ONE placement term.
+ *  Guest posts only — other products (link insertions, banners) are not a
+ *  business we track, so they are dropped at extraction time and never become
+ *  offers. The same niche quoted at several durations yields several offers. */
 export interface PostOffer {
-  postType: string; // product ladder: 'guest_post' | 'link_insertion' | 'banner' (fixed enum)
   category: string; // niche key
   label: string; // niche label at extraction time (display convenience)
   sensitive: boolean; // copied from the niche — lets the UI filter without the registry
   canPost: CanPost;
   price?: PriceValue;
+  /** ALWAYS set; `{key:'none'}` means the reply named no duration (the common
+   *  case for guest posts). Part of the cell identity, so each term carries its
+   *  own independent price history. */
+  term: PlacementTerm;
   /** The site the owner tagged this offer with, ONLY when they priced a DIFFERENT
    *  site they also own (M2). Blank/absent ⇒ the contacted site. Used by the
    *  ingest phase to group offers into per-domain PriceRecords, then it is implied
@@ -247,6 +330,13 @@ export interface PriceRecord {
   replyId?: ID; // provenance → Reply
   targetId?: ID; // set when domain == the contacted target's site
   attribution: 'sender' | 'named'; // M1 (sender's domain) vs M2 (owner-tagged site) — D4
+  /** Which extraction run produced this record. Carried on the record itself,
+   *  not just looked up via replyId: the reply's own `parsed` is overwritten by
+   *  a later re-extraction, and an append-only fact must stay self-describing. */
+  extraction?: ExtractionProvenance;
+  /** The AI's own account of why it read the reply this way — copied here for
+   *  the same reason, so the history explains itself without a join. */
+  aiExplanation?: string;
 }
 
 // --- Ignore list (inbound skip) ---------------------------------------------
@@ -304,6 +394,11 @@ export interface OutreachResult {
   offers: PostOffer[];
   /** One short line on why the AI classified the offers this way (shown in the UI). */
   reasoning?: string;
+  /** A fuller account, a few sentences: why these prices, why these niches, which
+   *  sites the prices were attributed to, what was read (a linked sheet, an
+   *  attachment) and what was deliberately discarded. `reasoning` is the one-line
+   *  label for a list; this is what you read when a number looks wrong. */
+  aiExplanation?: string;
   conditions?: string;
   notes?: string;
 }

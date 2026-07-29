@@ -112,7 +112,7 @@ test('a failed PDF download is flagged for review, not silently WebFetched', asy
   assert.equal(llm.last?.allowWebFetch, undefined);
   assert.equal(llm.last?.attachments, undefined);
   assert.equal(out.review.length, 1);
-  assert.match(out.review[0], /could not download linked pdf/i);
+  assert.match(out.review[0], /could not read the linked pdf/i);
 });
 
 test('non-PDF bytes at a .pdf URL are rejected (magic-byte check) and flagged', async () => {
@@ -131,7 +131,77 @@ test('non-PDF bytes at a .pdf URL are rejected (magic-byte check) and flagged', 
   );
   assert.equal(llm.last?.attachments, undefined);
   assert.equal(out.review.length, 1);
-  assert.match(out.review[0], /could not download linked pdf/i);
+  assert.match(out.review[0], /could not read the linked pdf/i);
+});
+
+// A fetch stub returning `body` for any URL, recording what was requested.
+function bodyFetch(body: Buffer, urls: string[]): typeof fetch {
+  return ((url: string) => {
+    urls.push(url);
+    return Promise.resolve({
+      ok: true,
+      async arrayBuffer() {
+        return body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength);
+      },
+    } as unknown as Response);
+  }) as unknown as typeof fetch;
+}
+
+test('a Google Sheets link is exported to CSV and read as a file, not WebFetched', async () => {
+  const llm = new SpyLlm(true);
+  const urls: string[] = [];
+  const csv = Buffer.from('Websites,Standard,Casino\npub.example/,$50,$100\n');
+  await new Extractor(llm, bodyFetch(csv, urls)).extract(
+    profile,
+    'Full pricing: https://docs.google.com/spreadsheets/d/1ezIq5yx1EtpeARozRtnZ/edit?gid=7#gid=7',
+    [],
+    [],
+    { siteDomain: 'pub.example' },
+  );
+  assert.equal(urls[0], 'https://docs.google.com/spreadsheets/d/1ezIq5yx1EtpeARozRtnZ/export?format=csv&gid=7');
+  assert.equal(llm.last?.allowWebFetch, undefined); // read as a file, not fetched
+  assert.equal(llm.last?.attachments?.length, 1);
+  assert.equal(llm.last?.attachments?.[0]?.mimeType, 'text/csv');
+  assert.equal(
+    Buffer.from(llm.last!.attachments![0].contentBase64, 'base64').toString(),
+    csv.toString(),
+  );
+  assert.match(llm.last?.prompt ?? '', /PUBLISHER SITE we contacted them about: pub\.example/);
+});
+
+test('a Google Sheet that is not shared publicly (HTML sign-in page) is flagged, not fed to the model', async () => {
+  const llm = new SpyLlm(true);
+  const signIn = Buffer.from('<!DOCTYPE html><html><body>Sign in</body></html>');
+  const out = await new Extractor(llm, bodyFetch(signIn, [])).extract(
+    profile,
+    'Prices: https://docs.google.com/spreadsheets/d/1ezIq5yx1EtpeARozRtnZ/edit',
+    [],
+    [],
+  );
+  assert.equal(llm.last?.attachments, undefined);
+  assert.equal(llm.last?.allowWebFetch, undefined);
+  assert.equal(out.review.length, 1);
+  assert.match(out.review[0], /could not read the linked google sheet/i);
+});
+
+test('a Google Doc link is exported to text', async () => {
+  const llm = new SpyLlm(true);
+  const urls: string[] = [];
+  await new Extractor(llm, bodyFetch(Buffer.from('Guest post: $80'), urls)).extract(
+    profile,
+    'See https://docs.google.com/document/d/1AbCdEfGhIjKlM/edit?usp=sharing',
+    [],
+    [],
+  );
+  assert.equal(urls[0], 'https://docs.google.com/document/d/1AbCdEfGhIjKlM/export?format=txt');
+  assert.equal(llm.last?.attachments?.[0]?.mimeType, 'text/plain');
+});
+
+test('an ordinary web page link still goes to WebFetch', async () => {
+  const llm = new SpyLlm(true);
+  await new Extractor(llm).extract(profile, 'rates: https://pub.example/advertise', [], []);
+  assert.equal(llm.last?.allowWebFetch, true);
+  assert.equal(llm.last?.attachments, undefined);
 });
 
 test('an unreadable attachment type is flagged for review', async () => {

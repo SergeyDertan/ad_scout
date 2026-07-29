@@ -22,9 +22,11 @@ import { Empty } from './Empty';
 import { useResource } from '../hooks/useResource';
 import { ChevronDownIcon, DownloadIcon, SearchIcon, TagIcon } from './icons';
 import { DomainsExportDialog } from './DomainsExportDialog';
+import { ExtractionDebugModal } from './ExtractionDebugModal';
 import {
   formatPrice,
-  postTypeLabel,
+  formatProvenance,
+  formatTerm,
   type DomainCell,
   type DomainDetail,
   type DomainSummary,
@@ -118,7 +120,6 @@ function Attachments({ attachments }: { attachments?: EmailAttachment[] }) {
 function CellRow({ cell, special }: { cell: PriceCell; special?: boolean }) {
   return (
     <Table.Row>
-      <Table.Cell>{postTypeLabel(cell.postType)}</Table.Cell>
       <Table.Cell>
         <HStack gap={1.5}>
           <Text>{cell.label || cell.category}</Text>
@@ -127,6 +128,7 @@ function CellRow({ cell, special }: { cell: PriceCell; special?: boolean }) {
       </Table.Cell>
       <Table.Cell><CanPostBadge value={cell.canPost} /></Table.Cell>
       <Table.Cell fontWeight="medium">{formatPrice(cell.price)}</Table.Cell>
+      <Table.Cell color="fg.muted">{formatTerm(cell.term)}</Table.Cell>
       <Table.Cell color="fg.muted">
         <HStack gap={1.5}>
           <Text>{fmtDate(cell.asOf)}</Text>
@@ -148,15 +150,18 @@ function PriceTable({ cells, special }: { cells: PriceCell[]; special?: boolean 
     <Table.Root size="sm" variant="line">
       <Table.Header>
         <Table.Row bg="bg.subtle">
-          <Table.ColumnHeader>Product</Table.ColumnHeader>
           <Table.ColumnHeader>Niche</Table.ColumnHeader>
           <Table.ColumnHeader>Can post</Table.ColumnHeader>
           <Table.ColumnHeader>Price</Table.ColumnHeader>
+          <Table.ColumnHeader>Term</Table.ColumnHeader>
           <Table.ColumnHeader>As of</Table.ColumnHeader>
         </Table.Row>
       </Table.Header>
       <Table.Body>
-        {cells.map((c) => <CellRow key={`${special ? 's|' : ''}${c.postType}|${c.category}`} cell={c} special={special} />)}
+        {/* Key on niche + term: one niche legitimately appears once per duration. */}
+        {cells.map((c) => (
+          <CellRow key={`${special ? 's|' : ''}${c.category}|${c.term?.key ?? 'none'}`} cell={c} special={special} />
+        ))}
       </Table.Body>
     </Table.Root>
   );
@@ -167,7 +172,6 @@ function PriceTable({ cells, special }: { cells: PriceCell[]; special?: boolean 
 function OfferRow({ offer }: { offer: PostOffer }) {
   return (
     <Table.Row>
-      <Table.Cell color="fg.muted">{postTypeLabel(offer.postType)}</Table.Cell>
       <Table.Cell>
         <HStack gap={1.5}>
           <Text>{offer.label || offer.category}</Text>
@@ -181,12 +185,14 @@ function OfferRow({ offer }: { offer: PostOffer }) {
       </Table.Cell>
       <Table.Cell><CanPostBadge value={offer.canPost} /></Table.Cell>
       <Table.Cell fontWeight="medium">{formatPrice(offer.price)}</Table.Cell>
+      <Table.Cell color="fg.muted">{formatTerm(offer.term)}</Table.Cell>
     </Table.Row>
   );
 }
 
 function HistoryRecord({ record }: { record: PriceRecordRow }) {
   const [showMsg, setShowMsg] = useState(false);
+  const [debugId, setDebugId] = useState<string | null>(null);
   return (
     <Box borderWidth="1px" borderColor="border" rounded="lg" bg="bg.panel" p={3}>
       <HStack justify="space-between" flexWrap="wrap" gap={2} mb={2}>
@@ -196,36 +202,59 @@ function HistoryRecord({ record }: { record: PriceRecordRow }) {
             {record.attribution === 'named' ? 'named site' : 'sender'}
           </Badge>
           {record.optOut && <Badge size="sm" colorPalette="red" variant="subtle">opted out</Badge>}
+          {record.extraction?.editedByHuman && (
+            <Badge size="sm" colorPalette="green" variant="subtle" title={formatProvenance(record.extraction)}>
+              edited by hand
+            </Badge>
+          )}
         </HStack>
         {record.replyId ? (
-          <Button size="xs" variant="outline" onClick={() => setShowMsg((v) => !v)}>
-            {showMsg ? 'Hide message' : 'View source message'}
-          </Button>
+          <HStack gap={2}>
+            <Button size="xs" variant="outline" onClick={() => setShowMsg((v) => !v)}>
+              {showMsg ? 'Hide message' : 'View source message'}
+            </Button>
+            {/* The full chain behind this record: email → prompt → model → records. */}
+            <Button size="xs" variant="outline" onClick={() => setDebugId(record.replyId!)}>
+              Debug extraction
+            </Button>
+          </HStack>
         ) : (
           <Text fontSize="xs" color="fg.subtle">no linked message</Text>
         )}
       </HStack>
 
-      <HStack gap={4} fontSize="xs" color="fg.muted" flexWrap="wrap" mb={record.offers.length ? 2 : 0}>
+      <HStack gap={4} fontSize="xs" color="fg.muted" flexWrap="wrap" mb={1}>
         <Text><Text as="span" fontWeight="semibold">Email:</Text> {record.sourceEmail || '—'}</Text>
         <Text truncate maxW="360px" title={record.sourceMessageId}>
           <Text as="span" fontWeight="semibold">Message-Id:</Text> {record.sourceMessageId || '—'}
         </Text>
       </HStack>
 
+      {/* Which run produced this record — the answer to "can I trust this price?" */}
+      <Text fontSize="xs" color="fg.subtle" mb={record.offers.length ? 2 : 0}>
+        <Text as="span" fontWeight="semibold">Extracted by:</Text> {formatProvenance(record.extraction)}
+      </Text>
+
+      {record.aiExplanation && (
+        <Box bg="bg.subtle" borderWidth="1px" borderColor="border" rounded="md" px={3} py={2} mb={2}>
+          <Text fontSize="xs" fontWeight="semibold" color="fg.muted" mb={0.5}>Why the AI read it this way</Text>
+          <Text fontSize="xs" lineHeight="1.6">{record.aiExplanation}</Text>
+        </Box>
+      )}
+
       {record.offers.length > 0 ? (
         <Box borderWidth="1px" borderColor="border" rounded="md" overflow="hidden">
           <Table.Root size="sm" variant="line">
             <Table.Header>
               <Table.Row bg="bg.subtle">
-                <Table.ColumnHeader>Product</Table.ColumnHeader>
                 <Table.ColumnHeader>Niche</Table.ColumnHeader>
                 <Table.ColumnHeader>Can post</Table.ColumnHeader>
                 <Table.ColumnHeader>Price</Table.ColumnHeader>
+                <Table.ColumnHeader>Term</Table.ColumnHeader>
               </Table.Row>
             </Table.Header>
             <Table.Body>
-              {record.offers.map((o, i) => <OfferRow key={`${o.postType}|${o.category}|${i}`} offer={o} />)}
+              {record.offers.map((o, i) => <OfferRow key={`${o.category}|${o.term?.key ?? 'none'}|${i}`} offer={o} />)}
             </Table.Body>
           </Table.Root>
         </Box>
@@ -234,6 +263,7 @@ function HistoryRecord({ record }: { record: PriceRecordRow }) {
       )}
 
       {showMsg && record.replyId && <SourceMessage replyId={record.replyId} />}
+      {debugId && <ExtractionDebugModal replyId={debugId} onClose={() => setDebugId(null)} />}
     </Box>
   );
 }
@@ -356,22 +386,18 @@ function DomainDetailModal({ domain, onClose, onChanged }: { domain: string; onC
 type SortKey = 'domain' | 'standingCells' | 'activeSpecials' | 'recordCount' | 'lastObservedAt';
 type StateFilter = 'all' | 'excluded' | 'optedOut' | 'active' | 'specials';
 
-// --- Offer filters (mutually exclusive): tier = product × sensitivity, category
-// = niche. A cell counts as "on offer" only when the publisher said yes.
-const POST_TYPE_ORDER = ['guest_post', 'link_insertion', 'banner'];
+// --- Offer filters (mutually exclusive): tier = sensitivity, category = niche.
+// A cell counts as "on offer" only when the publisher said yes.
 const canOffer = (c: DomainCell) => c.canPost === 'yes';
-const cellPostType = (c: DomainCell) => c.postType || 'guest_post';
 
 function tierValue(c: DomainCell): string {
-  return `${cellPostType(c)}|${c.sensitive ? 'sens' : 'reg'}`;
+  return c.sensitive ? 'sens' : 'reg';
 }
-function tierLabel(postType: string, sensitive: boolean): string {
-  return `${sensitive ? 'Sensitive' : 'Regular'} ${postTypeLabel(postType).toLowerCase()}`;
+function tierLabel(sensitive: boolean): string {
+  return sensitive ? 'Sensitive posts' : 'Regular posts';
 }
 function tierRank(value: string): number {
-  const [pt, s] = value.split('|');
-  const i = POST_TYPE_ORDER.indexOf(pt);
-  return (i === -1 ? 99 : i) * 2 + (s === 'sens' ? 1 : 0);
+  return value === 'sens' ? 1 : 0;
 }
 
 // Domain | Prices | Specials | Records | Last quote | State
@@ -470,14 +496,14 @@ export function DomainsView({ tick }: { tick: number }) {
   };
 
   // Offer-filter dropdown options, derived from what the domains actually offer
-  // (canPost === 'yes'). Tier = product × sensitivity; category = niche.
+  // (canPost === 'yes'). Tier = sensitivity; category = niche.
   const tierOptions = useMemo(() => {
     const seen = new Map<string, string>();
     for (const d of rows as DomainSummary[]) {
       for (const c of d.cells ?? []) {
         if (!canOffer(c)) continue;
         const value = tierValue(c);
-        if (!seen.has(value)) seen.set(value, tierLabel(cellPostType(c), c.sensitive));
+        if (!seen.has(value)) seen.set(value, tierLabel(c.sensitive));
       }
     }
     return [...seen.entries()]
@@ -500,7 +526,6 @@ export function DomainsView({ tick }: { tick: number }) {
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const [tierPt, tierSens] = tierFilter ? tierFilter.split('|') : ['', ''];
     const filtered = (rows as DomainSummary[]).filter((d) => {
       if (q && !d.domain.toLowerCase().includes(q)) return false;
       switch (stateFilter) {
@@ -511,9 +536,8 @@ export function DomainsView({ tick }: { tick: number }) {
         default: break;
       }
       if (tierFilter) {
-        const sens = tierSens === 'sens';
-        if (!(d.cells ?? []).some((c) => canOffer(c) && cellPostType(c) === tierPt && c.sensitive === sens))
-          return false;
+        const sens = tierFilter === 'sens';
+        if (!(d.cells ?? []).some((c) => canOffer(c) && c.sensitive === sens)) return false;
       }
       if (categoryFilter) {
         if (!(d.cells ?? []).some((c) => canOffer(c) && c.category === categoryFilter)) return false;
@@ -560,15 +584,15 @@ export function DomainsView({ tick }: { tick: number }) {
           <NativeSelect.Indicator />
         </NativeSelect.Root>
 
-        {/* Offer filters — only one at a time (a product tier and a niche would
-            usually contradict, e.g. "regular" post × "casino" niche → nothing). */}
+        {/* Offer filters — only one at a time (a sensitivity tier and a niche
+            would usually contradict, e.g. "regular" × "casino" → nothing). */}
         <NativeSelect.Root size="sm" width="48" variant="plain" disabled={!!categoryFilter}>
           <NativeSelect.Field
             value={tierFilter}
             onChange={(e) => { setTierFilter(e.target.value); if (e.target.value) setCategoryFilter(''); }}
             fontWeight="medium"
           >
-            <option value="">any product</option>
+            <option value="">any tier</option>
             {tierOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </NativeSelect.Field>
           <NativeSelect.Indicator />
@@ -646,7 +670,11 @@ export function DomainsView({ tick }: { tick: number }) {
       </DataPanel>
 
       {showExport && (
-        <DomainsExportDialog domains={visible} onClose={() => setShowExport(false)} />
+        <DomainsExportDialog
+          domains={visible}
+          defaultIncludeExcluded={stateFilter === 'excluded'}
+          onClose={() => setShowExport(false)}
+        />
       )}
 
       {selected && (

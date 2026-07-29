@@ -1,4 +1,4 @@
-import { Fragment } from 'react';
+import { Fragment, useState } from 'react';
 import {
   Badge,
   Box,
@@ -16,15 +16,18 @@ import {
   Wrap,
 } from '@chakra-ui/react';
 import {
+  compareTerms,
   formatPrice,
+  formatProvenance,
+  formatTerm,
   invertedPriceOffers,
   offerCellKey,
   offerSite,
-  postTypeLabel,
   type EmailAttachment,
   type PostOffer,
   type ResponseRow,
 } from '../types';
+import { ExtractionDebugModal } from './ExtractionDebugModal';
 import { StatusBadge } from './StatusBadge';
 import { ThreadTimeline } from './ThreadPanel';
 import { AlertTriangleIcon } from './icons';
@@ -60,13 +63,13 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-/** Offers sorted by product, then regular before sensitive, then niche — so the
- *  two axes read clearly (all guest posts, then links…). */
+/** Offers sorted regular before sensitive, then by niche, then shortest term
+ *  first — so a niche quoted at several durations reads as a ladder. */
 function sortOffers(offers: PostOffer[]): PostOffer[] {
   return [...offers].sort((a, b) =>
-    (a.postType || 'guest_post').localeCompare(b.postType || 'guest_post') ||
     Number(a.sensitive) - Number(b.sensitive) ||
-    a.category.localeCompare(b.category),
+    a.category.localeCompare(b.category) ||
+    compareTerms(a.term, b.term),
   );
 }
 
@@ -74,7 +77,7 @@ function sortOffers(offers: PostOffer[]): PostOffer[] {
  * Split offers into per-site rate cards. A single reply often prices a whole
  * portfolio — the contacted site, plus other domains the owner tags via
  * `offer.website` — and without this split the modal shows a stack of
- * indistinguishable "Guest post / Regular" rows at different prices.
+ * indistinguishable "Regular" rows at different prices.
  *
  * The contacted site sorts first (untagged offers belong to it); the rest
  * follow alphabetically.
@@ -96,7 +99,7 @@ function groupOffersBySite(offers: PostOffer[], contactedSite?: string): { site:
     .map(({ site, offers: group }) => ({ site, offers: group }));
 }
 
-/** Every AI-extracted offer (product × niche) with its price, flagging inverted
+/** Every AI-extracted offer (one per niche) with its price, flagging inverted
  *  price order. Grouped by site, since one reply can price several domains. */
 function OffersTable({ offers, contactedSite }: { offers?: PostOffer[]; contactedSite?: string }) {
   if (!offers || offers.length === 0) return <Text color="fg.subtle" fontSize="sm">No priced offers.</Text>;
@@ -108,10 +111,10 @@ function OffersTable({ offers, contactedSite }: { offers?: PostOffer[]; contacte
       <Table.Root size="sm" variant="line">
         <Table.Header>
           <Table.Row bg="bg.subtle">
-            <Table.ColumnHeader>Product</Table.ColumnHeader>
             <Table.ColumnHeader>Niche</Table.ColumnHeader>
             <Table.ColumnHeader>Sensitive</Table.ColumnHeader>
             <Table.ColumnHeader>Can post</Table.ColumnHeader>
+            <Table.ColumnHeader>Term</Table.ColumnHeader>
             <Table.ColumnHeader textAlign="end">Price</Table.ColumnHeader>
           </Table.Row>
         </Table.Header>
@@ -134,7 +137,6 @@ function OffersTable({ offers, contactedSite }: { offers?: PostOffer[]; contacte
                 const flagged = inverted.has(offerCellKey(o));
                 return (
                   <Table.Row key={offerCellKey(o)} bg={flagged ? 'red.subtle' : undefined}>
-                    <Table.Cell color="fg.muted">{postTypeLabel(o.postType)}</Table.Cell>
                     <Table.Cell fontWeight="medium">{o.label}</Table.Cell>
                     <Table.Cell>
                       {o.sensitive ? (
@@ -144,6 +146,7 @@ function OffersTable({ offers, contactedSite }: { offers?: PostOffer[]; contacte
                       )}
                     </Table.Cell>
                     <Table.Cell><StatusBadge value={o.canPost} /></Table.Cell>
+                    <Table.Cell color="fg.muted">{formatTerm(o.term)}</Table.Cell>
                     <Table.Cell textAlign="end" fontWeight="semibold" color={flagged ? 'red.fg' : 'fg'}>
                       {formatPrice(o.price)}
                     </Table.Cell>
@@ -204,6 +207,7 @@ export function ResponseDetailModal({
 }) {
   const p = row.parsed;
   const reviewReasons = row.review ?? [];
+  const [debugOpen, setDebugOpen] = useState(false);
 
   return (
     <Dialog.Root open onOpenChange={(e) => { if (!e.open) onClose(); }} size="xl" placement="center" scrollBehavior="inside">
@@ -254,6 +258,23 @@ export function ResponseDetailModal({
                     </Text>
                   )}
 
+                  {p?.aiExplanation && (
+                    <Box mt={3} bg="bg.subtle" borderWidth="1px" borderColor="border" rounded="lg" px={3} py={2}>
+                      <Text fontSize="xs" fontWeight="semibold" color="fg.muted" mb={1}>
+                        Why the AI read it this way
+                      </Text>
+                      <Text fontSize="sm" lineHeight="1.6">{p.aiExplanation}</Text>
+                    </Box>
+                  )}
+
+                  {/* Which run produced this, and whether a person has corrected it. */}
+                  <HStack mt={3} gap={2} flexWrap="wrap">
+                    {row.extraction?.editedByHuman && (
+                      <Badge size="sm" colorPalette="green" variant="subtle">edited by hand</Badge>
+                    )}
+                    <Text fontSize="xs" color="fg.subtle">{formatProvenance(row.extraction)}</Text>
+                  </HStack>
+
                   {reviewReasons.length > 0 && (
                     <Box mt={3} bg="orange.subtle" color="orange.fg" rounded="lg" px={3} py={2}>
                       <HStack gap={1.5} mb={1} fontWeight="semibold" fontSize="xs">
@@ -298,8 +319,10 @@ export function ResponseDetailModal({
 
             <Dialog.Footer gap={2}>
               <Button variant="outline" onClick={onClose}>Close</Button>
+              <Button variant="outline" onClick={() => setDebugOpen(true)}>Debug extraction</Button>
               <Button colorPalette="brand" onClick={onEdit}>Edit extraction</Button>
             </Dialog.Footer>
+            {debugOpen && <ExtractionDebugModal replyId={row.id} onClose={() => setDebugOpen(false)} />}
 
             <Dialog.CloseTrigger asChild>
               <CloseButton size="sm" />

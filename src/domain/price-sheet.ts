@@ -2,22 +2,26 @@
 //
 // PriceRecords are append-only and event-shaped: each carries ONLY the cells one
 // message mentioned. The "current prices" for a domain are folded here at read
-// time, never stored (D1/D2): for each (postType × niche) cell, take the most
+// time, never stored (D1/D2): for each niche cell, take the most
 // recent record that mentioned it. Cells whose newest mention predates the
 // domain's newest record are flagged `stale` (carried over). Specials form a
 // parallel layer that annotates — never replaces — the standing cell, and an
 // expired specialUntil drops from the active view.
 
-import type { CanPost, ID, ISO, PostOffer, PriceRecord, PriceValue } from './types';
+import type { CanPost, ID, ISO, PlacementTerm, PostOffer, PriceRecord, PriceValue } from './types';
+import { compareTerms, TERM_NONE } from './terms';
 
-/** A folded standing-price cell for one (postType × niche). */
+/** A folded standing-price cell for one niche AT ONE placement term. */
 export interface PriceCell {
-  postType: string;
   category: string;
   label: string;
   sensitive: boolean;
   canPost: CanPost;
   price?: PriceValue;
+  /** The duration this price buys. `{key:'none'}` when the reply named none.
+   *  Part of the cell identity, so a publisher's monthly and 3-month rates fold
+   *  independently and each keeps its own history. */
+  term: PlacementTerm;
   /** observedAt of the record that last mentioned this cell. */
   asOf: ISO;
   sourceMessageId: string;
@@ -36,7 +40,7 @@ export interface SpecialCell extends PriceCell {
 
 export interface DomainPriceSheet {
   domain: string;
-  /** Standing prices, one per (postType × niche), newest mention wins. */
+  /** Standing prices, one per niche, newest mention wins. */
   cells: PriceCell[];
   /** Promo layer (parallel to `cells`); expired ones have active:false. */
   specials: SpecialCell[];
@@ -46,8 +50,11 @@ export interface DomainPriceSheet {
   optedOut: boolean;
 }
 
-function cellKey(o: Pick<PostOffer, 'postType' | 'category'>): string {
-  return `${o.postType}|${o.category}`;
+/** A cell is a niche AT a term: "regular, 1 month" folds separately from
+ *  "regular, 3 months", so a change to one never overwrites the other. Records
+ *  written before terms existed carry no `term` — they fold as 'none'. */
+function cellKey(o: Pick<PostOffer, 'category' | 'term'>): string {
+  return `${o.category}|${o.term?.key ?? TERM_NONE.key}`;
 }
 
 /** A specialUntil is "expired" only when it parses to a real date before `now`.
@@ -82,11 +89,11 @@ export function buildPriceSheet(
   for (const r of mine) {
     for (const offer of r.offers) {
       const base: PriceCell = {
-        postType: offer.postType,
         category: offer.category,
         label: offer.label,
         sensitive: offer.sensitive,
         canPost: offer.canPost,
+        term: offer.term ?? TERM_NONE,
         ...(offer.price ? { price: offer.price } : {}),
         asOf: r.observedAt,
         sourceMessageId: r.sourceMessageId,
@@ -126,8 +133,10 @@ export function buildPriceSheet(
   };
 }
 
+/** Niche first, then shortest term first — so a niche's durations read as a ladder
+ *  (1 month, 3 months, 12 months, permanent, unstated). */
 function byCell(a: PriceCell, b: PriceCell): number {
-  return a.postType.localeCompare(b.postType) || a.category.localeCompare(b.category);
+  return a.category.localeCompare(b.category) || compareTerms(a.term, b.term);
 }
 
 /** The distinct known domains: every domain that has a PriceRecord, unioned with

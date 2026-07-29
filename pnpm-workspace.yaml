@@ -10,7 +10,7 @@ allowBuilds:
 
 minimumReleaseAgeExclude:
   - '@types/node@26.1.1'
-  - imapflow@1.4.7
+  - imapflow@1.4.7 || 1.6.4
   - vite@8.1.5
 
 # Native/binary deps whose install scripts we allow to run (pnpm v10 blocks

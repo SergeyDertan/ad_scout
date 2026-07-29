@@ -79,7 +79,7 @@ function reparseOffers(offers: PostOffer[], curTally: Map<string, number>, amtSa
     if (ch.amount) {
       t.amtCells++;
       if (amtSamples.length < 40) {
-        amtSamples.push(`  ${label} ${o.postType}/${o.category}: "${o.price.raw}"  ${ch.oldAmount} -> ${ch.newAmount}`);
+        amtSamples.push(`  ${label} ${o.category}: "${o.price.raw}"  ${ch.oldAmount} -> ${ch.newAmount}`);
       }
     }
   }

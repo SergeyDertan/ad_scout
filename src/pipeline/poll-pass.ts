@@ -21,6 +21,7 @@ import {
 import {
   AWAITING_INTENTS,
   type Account,
+  type ExtractionProvenance,
   type Niche,
   type OutreachResult,
   type PriceRecord,
@@ -245,9 +246,22 @@ export async function ingestReply(
     reply.text,
     knownNiches,
     reply.attachments ?? [],
-    { pitchStyle },
+    // siteDomain lets the model find THIS site's row in a multi-site price list.
+    { pitchStyle, siteDomain: normalizeDomain(target.websiteUrl) || undefined },
   );
   await persistDiscovered(store, outcome.discovered, clock);
+  // Stamp WHICH RUN produced this (model/provider/prompt + now), and archive the
+  // prompt text under its hash so the stamp stays resolvable after the source
+  // moves on. Both are cheap and idempotent; the archive write is a no-op once
+  // the prompt has been seen.
+  const extraction: ExtractionProvenance = {
+    ...outcome.provenance,
+    extractedAt: clock.now().toISOString(),
+  };
+  await store.putPromptSnapshot({
+    ...outcome.promptSnapshot,
+    firstSeenAt: extraction.extractedAt,
+  });
 
   // Spam (D7): set the reply aside, grow the ignore list, write NO price records.
   if (outcome.isSpam) {
@@ -260,6 +274,7 @@ export async function ingestReply(
       emailId: reply.emailId,
       at: clock.now().toISOString(),
     });
+    reply.extraction = extraction; // which run judged it spam
     reply.extractionStatus = 'skipped';
     reply.review = undefined;
     return { kind: 'ignored' };
@@ -270,16 +285,23 @@ export async function ingestReply(
   // Attribute this reply's offers to domains (M1 sender / M2 named), collecting
   // any D11 ambiguity as review reasons.
   const senderDomains = senderDomainsFor(emailDomainMap, reply.fromAddress, target);
-  const { groups, reviewReasons } = attributeOffers(
+  const { groups, reviewReasons, capped } = attributeOffers(
     parsed.offers,
     senderDomains,
     normalizeDomain(target.websiteUrl) || undefined,
   );
   const review = [...outcome.review, ...reviewReasons];
 
-  await rollUp(store, target, reply, parsed, review, clock);
-  await writePriceRecords(store, reply, target, parsed, groups, senderDomains, clock);
-  await handleDeclineExclusion(store, reply, target, parsed, clock);
+  // A capped reply was a bulk price list. Snapshot only the offers we actually
+  // stored, so the reply/target — and every UI and export reading them — carry
+  // the contacted site's prices rather than the hundreds of rows we discarded.
+  const kept: OutreachResult = capped
+    ? { ...parsed, offers: groups.flatMap((g) => g.offers) }
+    : parsed;
+
+  await rollUp(store, target, reply, kept, review, clock, extraction);
+  await writePriceRecords(store, reply, target, kept, groups, senderDomains, clock, extraction);
+  await handleDeclineExclusion(store, reply, target, kept, clock);
   await handleReversal(store, groups);
 
   return { kind: 'done', label: labelForResult(parsed) };
@@ -315,6 +337,7 @@ async function writePriceRecords(
   groups: DomainGroup[],
   senderDomains: string[],
   clock: Clock,
+  extraction: ExtractionProvenance,
 ): Promise<void> {
   const ownDomain = normalizeDomain(target.websiteUrl);
   const write = async (group: DomainGroup): Promise<void> => {
@@ -329,6 +352,11 @@ async function writePriceRecords(
       ...(group.domain === ownDomain ? { targetId: target.id } : {}),
       attribution: group.attribution,
       ...(parsed.optOut ? { optOut: true } : {}),
+      // Self-describing: which run produced it, and the AI's own account of why.
+      // Both are copied rather than looked up through replyId, because a later
+      // re-extraction overwrites reply.parsed and would otherwise rewrite history.
+      extraction,
+      ...(parsed.aiExplanation ? { aiExplanation: parsed.aiExplanation } : {}),
     };
     await store.putPriceRecord(record);
   };
@@ -408,9 +436,11 @@ async function rollUp(
   parsed: OutreachResult,
   review: string[],
   clock: Clock,
+  extraction: ExtractionProvenance,
 ): Promise<void> {
   const awaiting = parsed.intent != null && AWAITING_INTENTS.includes(parsed.intent);
   reply.parsed = parsed;
+  reply.extraction = extraction;
   reply.review = review.length ? review : undefined;
   reply.extractionStatus = 'done';
 
@@ -522,6 +552,8 @@ async function handleMessage(
     ...(msg.threadId ? { threadId: msg.threadId } : {}),
     rfcMessageId: msg.rfcMessageId,
     fromAddress: msg.fromAddress,
+    accountId: account.id, // which mailbox it landed in
+    ...(msg.subject ? { subject: msg.subject } : {}),
     ...(match.targetId ? { targetId: match.targetId } : {}),
     matchMethod: match.method,
     receivedAt: msg.receivedAt,

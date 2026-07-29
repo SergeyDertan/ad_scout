@@ -14,59 +14,43 @@ export const SENSITIVE_KEY = 'sensitive';
 export const REGULAR_KEY = 'regular';
 
 /**
- * Post TYPE — the product being priced — is a SEPARATE axis from niche (topic).
- * A publisher prices e.g. a guest post, a link insertion, and a banner as three
- * ladders, and each ladder can carry a grey-niche premium. So an offer is
- * (postType × niche): "casino link insertion", "regular banner", etc. Unlike
- * niches, post types are a FIXED code enum — never self-learned — so link
- * insertions/banners can't leak into the niche registry as fake niches.
+ * We buy exactly ONE product: a guest post (a.k.a. sponsored post, article,
+ * publication, placement). Publishers routinely quote OTHER products in the same
+ * breath — link insertions (niche edits), banners/display ads — and we want none
+ * of them. There is no product axis on an offer any more; instead these phrasings
+ * are a REJECT list, applied in two places:
+ *   - reconcileOffers drops any offer the model tagged with one of them, a
+ *     deterministic backstop behind the prompt's "skip them" instruction;
+ *   - cleanup-niches uses it to spot a product that leaked into the niche
+ *     registry as a fake niche.
+ * Anything NOT on this list is treated as a guest post, so the many names for the
+ * thing we DO want ("sponsored article", "publication") need no enumeration.
  */
-export interface PostType {
-  key: string;
-  label: string;
-  aliases: string[];
-}
-
-export const DEFAULT_POST_TYPE = 'guest_post';
-
-export const POST_TYPES: PostType[] = [
-  {
-    key: 'guest_post',
-    label: 'Guest post',
-    aliases: ['guest post', 'article', 'sponsored post', 'sponsored article', 'post', 'publication', 'content', 'placement'],
-  },
-  {
-    key: 'link_insertion',
-    label: 'Link insertion',
-    aliases: ['link insertion', 'link insert', 'link placement', 'niche edit', 'existing post', 'existing article', 'insert link', 'link in existing', 'link building'],
-  },
-  {
-    key: 'banner',
-    label: 'Banner',
-    aliases: ['banner', 'banner ad', 'banner ads', 'display ad', 'display ads', 'banner placement', 'banner advertising'],
-  },
+export const NON_GUEST_PRODUCT_ALIASES: string[] = [
+  // link insertions / niche edits
+  'link insertion', 'link insertions', 'link insert', 'link placement', 'niche edit',
+  'niche edits', 'existing post', 'existing article', 'insert link', 'link in existing',
+  'link building', 'link exchange', 'homepage link', 'sidebar link',
+  // banners / display
+  'banner', 'banner ad', 'banner ads', 'display ad', 'display ads', 'banner placement',
+  'banner advertising',
 ];
 
-export const POST_TYPE_KEYS = POST_TYPES.map((p) => p.key);
-
-/** Resolve free text (a key or the owner's wording) to a post type; defaults to
- *  guest_post when nothing matches, since that's the baseline product. */
-export function matchPostType(text: string): string {
+/**
+ * Does this free text name a product we do NOT buy (a link insertion, a banner)?
+ * Exact match on the canonical key/phrase, plus a loose contains-match so
+ * "casino link insertion price" is caught too.
+ */
+export function isNonGuestProduct(text: string): boolean {
   const key = normalizeKey(text);
   const phrase = norm(text);
-  if (!key && !phrase) return DEFAULT_POST_TYPE;
-  const byKey = POST_TYPES.find((p) => p.key === key);
-  if (byKey) return byKey.key;
-  for (const p of POST_TYPES) {
-    if (norm(p.label) === phrase) return p.key;
-    if (p.aliases.some((a) => norm(a) === phrase || normalizeKey(a) === key)) return p.key;
+  if (!key && !phrase) return false;
+  for (const a of NON_GUEST_PRODUCT_ALIASES) {
+    if (norm(a) === phrase || normalizeKey(a) === key) return true;
   }
-  // Loose contains-match on the phrase (e.g. "casino link insertion price").
-  for (const p of POST_TYPES) {
-    if (p.key === DEFAULT_POST_TYPE) continue;
-    if (p.aliases.some((a) => a.length > 3 && phrase.includes(norm(a)))) return p.key;
-  }
-  return DEFAULT_POST_TYPE;
+  // Loose contains-match; short aliases are excluded so a legitimate niche whose
+  // name merely embeds a short token isn't swept up.
+  return NON_GUEST_PRODUCT_ALIASES.some((a) => a.length > 5 && phrase.includes(norm(a)));
 }
 
 /** Seed niches — always available to the prompt even before anything is learned. */

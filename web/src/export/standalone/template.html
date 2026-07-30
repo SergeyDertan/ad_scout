@@ -62,6 +62,8 @@
   tbody tr:nth-child(even) { background: color-mix(in srgb, var(--panel) 92%, var(--muted)); }
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
   td.empty { color: var(--subtle); }
+  /* Price range — a dotted underline hints there is a breakdown behind it. */
+  td.noted { cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; }
   .truncnote { color: var(--subtle); font-size: 12px; padding: 8px 12px; }
   .foot { color: var(--subtle); font-size: 12px; margin-top: 24px; text-align: center; }
 </style>

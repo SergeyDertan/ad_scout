@@ -12,7 +12,7 @@
 // re-exports the SAME data with no server round-trip. Keep buildAoa() here in
 // sync with the copy in app.js.
 
-import { compareTerms, formatPrice, formatTerm, type Niche, type PlacementTerm, type ResponseRow } from '../types';
+import { canonicalTerm, compareTerms, formatPrice, type Niche, type PlacementTerm, type ResponseRow } from '../types';
 
 /** A niche AT a placement term, which is what becomes one price column. The term
  *  belongs in the key: a publisher quoting $99/month and $150/3 months has two
@@ -20,7 +20,9 @@ import { compareTerms, formatPrice, formatTerm, type Niche, type PlacementTerm, 
 export interface ComboColumn {
   key: string;
   category: string;
-  /** Display header — the niche, plus the term when one was stated ("Casino (3 months)"). */
+  /** Display header — the niche, plus the CANONICAL term when one was stated
+   *  ("Casino (3 months)"). Canonical, not the publisher's phrasing: this header
+   *  names a column many replies share, and their raw phrases disagree. */
   label: string;
   /** The niche name alone. Sorting uses this so a niche's durations group together
    *  and then order by LENGTH; sorting on `label` would put "(12 months)" before
@@ -36,15 +38,31 @@ export interface MetaColumn {
   label: string;
 }
 
-/** Fixed, selectable per-website columns (everything that isn't a price cell). */
+/** Fixed, selectable per-website columns (everything that isn't a price cell).
+ *  Order here is the order in the sheet. */
 export const META_COLUMNS: MetaColumn[] = [
   { key: 'website', label: 'Website' },
-  { key: 'email', label: 'Contact email' },
+  // The two sides of the conversation, in that order: our mailbox, their sender.
+  { key: 'accountEmail', label: 'Our inbox' },
+  { key: 'email', label: 'Replied from' },
   { key: 'batch', label: 'Batch' },
   { key: 'canPost', label: 'Can post' },
   { key: 'currency', label: 'Currency' },
+  // The at-a-glance summary of everything to its right. Carries a cell note with
+  // the full per-niche breakdown, so the sheet reads without 100+ price columns.
+  { key: 'priceRange', label: 'Price range' },
   { key: 'received', label: 'Received' },
 ];
+
+/** The meta column that carries the per-niche breakdown note. */
+export const PRICE_RANGE_KEY = 'priceRange';
+
+/** Author on the XLSX cell notes — shows as the bold name above the text. */
+export const NOTE_AUTHOR = 'AdScout';
+
+/** Cap on lines in a cell note. A handful of sites quote dozens of niches, and a
+ *  note that long is unreadable anyway; the columns still hold every value. */
+const NOTE_MAX_LINES = 40;
 
 export interface ExportCell {
   raw: string;
@@ -57,6 +75,10 @@ export interface ExportCell {
 export interface ExportRow {
   id: string;
   website: string;
+  /** Our mailbox that received the reply. '' when it can't be resolved (an
+   *  unmatched reply with no outreach thread behind it). */
+  accountEmail: string;
+  /** The address the reply came FROM. */
   email: string;
   batch: string;
   batchId: string;
@@ -70,6 +92,12 @@ export interface ExportRow {
   sensitive: boolean;
   cells: Record<string, ExportCell>;
   search: string;
+  /** Cheapest–dearest across every priced offer, e.g. "500-999 USD" (or the bare
+   *  amount when the site quoted one price). '' when nothing parsed to a number. */
+  priceRange: string;
+  /** The full per-niche breakdown behind `priceRange`, one "Label: price" per
+   *  line. Attached as an XLSX cell note and an HTML hover title. */
+  priceNote: string;
 }
 
 export interface ExportModel {
@@ -99,6 +127,43 @@ function comboSort(a: ComboColumn, b: ComboColumn): number {
   );
 }
 
+/**
+ * Cheapest–dearest across a website's priced cells: "500-999 USD", or "500 USD"
+ * when every quote lands on the same number.
+ *
+ * `currencies` is joined rather than compared: a reply that mixes currencies is
+ * already flagged in the Currency column, and a range labelled "USD/EUR" is
+ * honest about being un-normalized. Better than dropping the range entirely,
+ * which would hide the only summary the sheet has.
+ */
+function priceRange(cells: Record<string, ExportCell>, currencies: string[]): string {
+  const amounts = Object.values(cells)
+    .map((c) => c.amount)
+    .filter((a): a is number => a != null);
+  if (!amounts.length) return '';
+  const lo = Math.min(...amounts);
+  const hi = Math.max(...amounts);
+  const span = lo === hi ? String(lo) : `${lo}-${hi}`;
+  const cur = currencies.join('/');
+  return cur ? `${span} ${cur}` : span;
+}
+
+/** The per-niche breakdown behind a row's price range — "Casino (2 years): 400
+ *  USD", one per line, in column order. Empty cells are skipped. */
+function priceNote(row: ExportRow, combos: ComboColumn[]): string {
+  const lines: string[] = [];
+  for (const c of combos) {
+    const cell = row.cells[c.key];
+    if (!cell || cell.raw === '—') continue;
+    lines.push(`${c.label}: ${cell.raw}`);
+    if (lines.length === NOTE_MAX_LINES) {
+      lines.push('…');
+      break;
+    }
+  }
+  return lines.join('\n');
+}
+
 /** Flatten the response feed into the normalized, embeddable export model. */
 export function buildExportModel(rows: ResponseRow[], niches: Niche[]): ExportModel {
   const comboMap = new Map<string, ComboColumn>();
@@ -123,7 +188,7 @@ export function buildExportModel(rows: ResponseRow[], niches: Niche[]): ExportMo
           key,
           category: o.category,
           baseLabel,
-          label: termKey === 'none' ? baseLabel : `${baseLabel} (${formatTerm(o.term)})`,
+          label: termKey === 'none' ? baseLabel : `${baseLabel} (${canonicalTerm(o.term)})`,
           sensitive: o.sensitive,
           ...(o.term ? { term: o.term } : {}),
         });
@@ -143,6 +208,7 @@ export function buildExportModel(rows: ResponseRow[], niches: Niche[]): ExportMo
     return {
       id: r.id,
       website: r.website ?? '',
+      accountEmail: r.accountEmail ?? '',
       email: r.fromAddress,
       batch: r.batchName ?? '',
       batchId: r.batchId ?? '',
@@ -154,12 +220,20 @@ export function buildExportModel(rows: ResponseRow[], niches: Niche[]): ExportMo
       sensitive,
       cells,
       search: `${r.website ?? ''} ${r.fromAddress}`.toLowerCase(),
+      priceRange: priceRange(cells, currencies),
+      priceNote: '', // filled below, once every column is known
     };
   });
 
+  const combos = [...comboMap.values()].sort(comboSort);
+  // Second pass: the note names columns, so it can only be built once the full,
+  // sorted column list exists. It lists EVERY niche the site quoted, including
+  // columns the user later deselects — that is the point of the note.
+  for (const row of exportRows) row.priceNote = priceNote(row, combos);
+
   return {
     rows: exportRows,
-    combos: [...comboMap.values()].sort(comboSort),
+    combos,
     niches: niches.map((n) => ({ key: n.key, label: n.label, sensitive: n.sensitive })),
     batches: [...batchMap.entries()]
       .map(([id, name]) => ({ id, name }))
@@ -170,7 +244,7 @@ export function buildExportModel(rows: ResponseRow[], niches: Niche[]): ExportMo
 
 export function defaultSelection(model: ExportModel): ExportSelection {
   return {
-    meta: ['website', 'email', 'batch', 'canPost', 'currency'],
+    meta: ['website', 'accountEmail', 'email', 'batch', 'canPost', 'currency', 'priceRange'],
     combos: model.combos.map((c) => c.key),
     includeCanPost: false,
     numericPrices: true,
@@ -195,10 +269,12 @@ export function fileStem(header: string): string {
 function metaValue(r: ExportRow, key: string): string {
   switch (key) {
     case 'website': return r.website;
+    case 'accountEmail': return r.accountEmail;
     case 'email': return r.email;
     case 'batch': return r.batch;
     case 'canPost': return r.canPost;
     case 'currency': return r.currency;
+    case 'priceRange': return r.priceRange;
     case 'received': return r.receivedLabel;
     default: return '';
   }
@@ -250,4 +326,37 @@ export function buildAoa(
   aoa.push(headerRow);
   for (const line of body) aoa.push(line);
   return aoa;
+}
+
+/** A note to hang off one already-written sheet cell (0-based, as buildAoa laid it out). */
+export interface CellNote {
+  row: number;
+  col: number;
+  text: string;
+}
+
+/**
+ * Where the per-niche breakdown notes go, for the same `rows`/`selection`/
+ * `header` buildAoa was just called with.
+ *
+ * Split out rather than folded into buildAoa because an array-of-arrays has
+ * nowhere to put a note — the caller attaches these after handing the AoA to
+ * SheetJS. Keeping the geometry here (instead of re-deriving it at each call
+ * site) means the row/column offsets can only ever be wrong in one place.
+ */
+export function priceNotes(
+  rows: ExportRow[],
+  selection: ExportSelection,
+  header: string,
+): CellNote[] {
+  const metaCols = META_COLUMNS.filter((m) => selection.meta.includes(m.key));
+  const col = metaCols.findIndex((m) => m.key === PRICE_RANGE_KEY);
+  if (col === -1) return [];
+  // Mirrors buildAoa: an optional title row + blank spacer, then the header row.
+  const firstBodyRow = (header.trim() ? 2 : 0) + 1;
+  const notes: CellNote[] = [];
+  rows.forEach((r, i) => {
+    if (r.priceNote) notes.push({ row: firstBodyRow + i, col, text: r.priceNote });
+  });
+  return notes;
 }

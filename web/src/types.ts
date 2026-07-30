@@ -39,7 +39,8 @@ export interface PostOffer {
 }
 
 /** Human label for a term: the publisher's own words, else a canonical rendering,
- *  else "—" when no duration was stated. */
+ *  else "—" when no duration was stated. For per-offer views, where the exact
+ *  phrasing IS the point. Naming a shared column? Use canonicalTerm instead. */
 export function formatTerm(term?: PlacementTerm): string {
   if (!term || term.key === 'none') return '—';
   if (term.raw) return term.raw;
@@ -47,6 +48,42 @@ export function formatTerm(term?: PlacementTerm): string {
   if (term.months != null) return `${term.months} month${term.months === 1 ? '' : 's'}`;
   if (term.days != null) return `${term.days} day${term.days === 1 ? '' : 's'}`;
   return term.key;
+}
+
+/**
+ * Canonical label for a term — derived from the PARSED duration, never from the
+ * raw phrase. Use this to name anything SHARED by many offers (a column header,
+ * a group heading).
+ *
+ * Two offers with the same `key` are the same duration, but their `raw` phrases
+ * differ wildly ("per year per article", "at least 1 year", "twelve month
+ * terms"). formatTerm would label the shared column with whichever offer landed
+ * first, so a 12-month column could read "Casino (a minimum of 3 years)" — the
+ * header contradicting its own contents. Canonical labels can't do that.
+ *
+ * `other:*` terms have no parse to render, so they fall back to the raw phrase;
+ * that's the honest label there, and it's a signal terms.ts should learn the
+ * phrasing.
+ */
+export function canonicalTerm(term?: PlacementTerm): string {
+  if (!term || term.key === 'none') return '—';
+  if (term.key === 'perm') return 'permanent';
+  if (term.months != null) {
+    // Whole years read as years — "2 years" beats "24 months" on a header.
+    if (term.months >= 12 && term.months % 12 === 0) {
+      const y = term.months / 12;
+      return `${y} year${y === 1 ? '' : 's'}`;
+    }
+    return `${term.months} month${term.months === 1 ? '' : 's'}`;
+  }
+  if (term.days != null) {
+    if (term.days % 7 === 0) {
+      const w = term.days / 7;
+      return `${w} week${w === 1 ? '' : 's'}`;
+    }
+    return `${term.days} day${term.days === 1 ? '' : 's'}`;
+  }
+  return term.raw || term.key;
 }
 
 /** Sort by duration: shortest first, indefinite terms (unstated, permanent,
@@ -253,7 +290,12 @@ export interface EmailAttachment {
 
 export interface ResponseRow {
   id: string;
+  /** Who ANSWERED — not necessarily the address we wrote to (that is the
+   *  target's contactEmail). A role alias often hands off to a real person. */
   fromAddress: string;
+  /** Which mailbox OF OURS received it, resolved server-side from the reply's
+   *  account, else the outreach thread, else the target's assigned account. */
+  accountEmail?: string;
   website?: string;
   batchId?: string;
   batchName?: string;

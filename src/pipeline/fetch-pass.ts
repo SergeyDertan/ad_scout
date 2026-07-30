@@ -189,6 +189,10 @@ async function handleMessage(
     ...(msg.threadId ? { threadId: msg.threadId } : {}),
     rfcMessageId: msg.rfcMessageId,
     fromAddress: msg.fromAddress,
+    // Which of our mailboxes this landed in. The polling account IS the answer —
+    // it was simply never recorded, leaving every stored reply with an empty
+    // accountId and the responses feed re-deriving it from the outreach thread.
+    accountId: account.id,
     ...(match.targetId ? { targetId: match.targetId } : {}),
     matchMethod: match.method,
     receivedAt: msg.receivedAt,

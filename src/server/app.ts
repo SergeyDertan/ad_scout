@@ -30,6 +30,7 @@ import type {
   Batch,
   CanPost,
   ExtractionProvenance,
+  ID,
   OutreachResult,
   PriceRecord,
   ProviderType,
@@ -705,19 +706,34 @@ async function handle(
       return sendJson(res, 200, reply);
     }
 
-    // GET /api/responses?batchId= — replies + parsed result, enriched with target website + batch
+    // GET /api/responses?batchId= — replies + parsed result, enriched with target
+    // website + batch + the mailbox of OURS the reply landed in.
     if (method === 'GET' && seg[1] === 'responses' && seg.length === 2) {
       const batchId = url.searchParams.get('batchId') ?? undefined;
       const replies = await store.listReplies();
       const targets = new Map((await store.listTargets()).map((t) => [t.id, t]));
       const batches = new Map((await store.listBatches()).map((b) => [b.id, b.name]));
+      const accountEmails = new Map((await store.listAccounts()).map((a) => [a.id, a.email]));
+      // Which of our accounts owns each sent thread. Replies stored before
+      // Reply.accountId was populated carry no account of their own, so the
+      // outreach that started the thread is what identifies the inbox for them.
+      const accountByThread = new Map<string, ID>();
+      for (const o of await store.listOutreaches()) {
+        if (o.threadId && !accountByThread.has(o.threadId)) accountByThread.set(o.threadId, o.accountId);
+      }
       let out = replies.map((r) => {
         const target = r.targetId ? targets.get(r.targetId) : undefined;
+        // Narrowest source first: what the reply itself recorded, then the thread
+        // it belongs to, then the account the target was assigned to.
+        const accountId = r.accountId
+          ?? (r.threadId ? accountByThread.get(r.threadId) : undefined)
+          ?? target?.assignedAccountId;
         return {
           ...r,
           website: target?.websiteUrl,
           batchId: target?.batchId,
           batchName: target?.batchId ? batches.get(target.batchId) : undefined,
+          accountEmail: accountId ? accountEmails.get(accountId) : undefined,
         };
       });
       if (batchId) out = out.filter((r) => r.batchId === batchId);

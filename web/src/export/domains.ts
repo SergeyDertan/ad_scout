@@ -11,7 +11,7 @@
 // collapsed columns read as an actionable rate card rather than raw quotes.
 
 import { fileStem } from './model';
-import { compareTerms, formatTerm, type DomainCell, type DomainSummary, type PriceValue } from '../types';
+import { canonicalTerm, compareTerms, formatTerm, type DomainCell, type DomainSummary, type PriceValue } from '../types';
 
 export type DomainExportScope = 'regular' | 'both' | 'all';
 
@@ -131,7 +131,9 @@ export function buildDomainsExport(domains: DomainSummary[], scope: DomainExport
       const key = cellKey(c);
       if (!comboMap.has(key)) {
         const niche = c.label || c.category;
-        const term = c.term && c.term.key !== 'none' ? ` (${formatTerm(c.term)})` : '';
+        // Canonical, not the publisher's phrasing: this header names a column
+        // every domain shares, and their raw phrases for one duration disagree.
+        const term = c.term && c.term.key !== 'none' ? ` (${canonicalTerm(c.term)})` : '';
         comboMap.set(key, { key, sensitive: c.sensitive, label: `${niche}${term}`, cell: c });
       }
     }

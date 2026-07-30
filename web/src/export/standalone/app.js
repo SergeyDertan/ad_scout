@@ -12,19 +12,24 @@
 
   var META_COLUMNS = [
     { key: 'website', label: 'Website' },
-    { key: 'email', label: 'Contact email' },
+    { key: 'accountEmail', label: 'Our inbox' },
+    { key: 'email', label: 'Replied from' },
     { key: 'batch', label: 'Batch' },
     { key: 'canPost', label: 'Can post' },
     { key: 'currency', label: 'Currency' },
+    { key: 'priceRange', label: 'Price range' },
     { key: 'received', label: 'Received' },
   ];
+
+  var PRICE_RANGE_KEY = 'priceRange';
+  var NOTE_AUTHOR = 'AdScout';
 
   var PREVIEW_LIMIT = 200;
 
   // ---- state ----
   var filters = { search: '', batch: '', niche: '', canpost: '' };
   var selection = {
-    meta: new Set(['website', 'email', 'batch', 'canPost', 'currency']),
+    meta: new Set(['website', 'accountEmail', 'email', 'batch', 'canPost', 'currency', 'priceRange']),
     combos: new Set(model.combos.map(function (c) { return c.key; })),
     includeCanPost: false,
     numericPrices: true,
@@ -73,13 +78,30 @@
   function metaValue(r, key) {
     switch (key) {
       case 'website': return r.website;
+      case 'accountEmail': return r.accountEmail || '';
       case 'email': return r.email;
       case 'batch': return r.batch;
       case 'canPost': return r.canPost;
       case 'currency': return r.currency;
+      case 'priceRange': return r.priceRange || '';
       case 'received': return r.receivedLabel;
       default: return '';
     }
+  }
+
+  // Mirrors priceNotes() in model.ts — where the per-niche breakdowns hang in the
+  // sheet buildAoa just laid out. Row/col are 0-based.
+  function priceNotes(rows) {
+    var metaCols = selectedMeta();
+    var col = -1;
+    metaCols.forEach(function (m, i) { if (m.key === PRICE_RANGE_KEY) col = i; });
+    if (col === -1) return [];
+    var firstBodyRow = (title.trim() ? 2 : 0) + 1;
+    var notes = [];
+    rows.forEach(function (r, i) {
+      if (r.priceNote) notes.push({ row: firstBodyRow + i, col: col, text: r.priceNote });
+    });
+    return notes;
   }
 
   function priceValue(cell, numeric) {
@@ -207,7 +229,16 @@
     var shown = rows.slice(0, PREVIEW_LIMIT);
     shown.forEach(function (r) {
       var tr = document.createElement('tr');
-      metaCols.forEach(function (m) { tr.appendChild(td(metaValue(r, m.key))); });
+      metaCols.forEach(function (m) {
+        var cell = td(metaValue(r, m.key));
+        // Same breakdown the XLSX note carries, so the HTML page answers "what's
+        // behind this range?" on hover without exporting anything.
+        if (m.key === PRICE_RANGE_KEY && r.priceNote) {
+          cell.title = r.priceNote;
+          cell.className = (cell.className ? cell.className + ' ' : '') + 'noted';
+        }
+        tr.appendChild(cell);
+      });
       combos.forEach(function (c) {
         var cell = r.cells[c.key];
         tr.appendChild(td(priceValue(cell, selection.numericPrices), true));
@@ -250,6 +281,12 @@
     var rows = filteredRows();
     var aoa = buildAoa(rows);
     var ws = XLSX.utils.aoa_to_sheet(aoa);
+    priceNotes(rows).forEach(function (n) {
+      var cell = ws[XLSX.utils.encode_cell({ r: n.row, c: n.col })];
+      if (!cell) return;
+      cell.c = [{ a: NOTE_AUTHOR, t: n.text }];
+      cell.c.hidden = true;
+    });
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Responses');
     XLSX.writeFile(wb, fileStem(title) + '.xlsx');

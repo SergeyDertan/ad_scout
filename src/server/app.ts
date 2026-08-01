@@ -41,10 +41,16 @@ import type {
 import { allNiches, categorizeTopic } from '../domain/niches';
 import { attributeOffers, emailToDomains, normalizeEmail } from '../domain/reply-matching';
 import { normalizeDomain } from '../domain/domain';
-import { buildPriceSheet, knownDomains } from '../domain/price-sheet';
 import { accountSendState } from '../domain/account-state';
 import { assembleResult, type RawExtraction, type RawOffer } from '../domain/extraction';
-import { pitchStyleForBatch, resolveProfile } from '../domain/pitch';
+import { resolveProfile } from '../domain/pitch';
+import {
+  buildBatchRows,
+  buildDomainDetail,
+  buildDomainRows,
+  buildReplyDebug,
+  buildResponseRows,
+} from '../services/read-models';
 import type { Clock } from '../lib/clock';
 import { newId } from '../lib/ids';
 import { draftEmail } from '../services/drafter';
@@ -537,23 +543,7 @@ async function handle(
     // GET /api/batches — batches, each enriched with a live target count + status
     // breakdown derived from the targets (never stored, so it can't drift).
     if (method === 'GET' && seg[1] === 'batches' && seg.length === 2) {
-      const batches = await store.listBatches();
-      const targets = await store.listTargets();
-      const roll = new Map<string, { count: number; byStatus: Record<string, number> }>();
-      for (const t of targets) {
-        if (!t.batchId) continue;
-        let e = roll.get(t.batchId);
-        if (!e) {
-          e = { count: 0, byStatus: {} };
-          roll.set(t.batchId, e);
-        }
-        e.count++;
-        e.byStatus[t.status] = (e.byStatus[t.status] ?? 0) + 1;
-      }
-      const out = batches
-        .map((b) => ({ ...b, count: roll.get(b.id)?.count ?? 0, byStatus: roll.get(b.id)?.byStatus ?? {} }))
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      return sendJson(res, 200, out);
+      return sendJson(res, 200, await buildBatchRows(store));
     }
 
     // POST /api/batches — create a named import batch; the bulk-import client
@@ -592,38 +582,7 @@ async function handle(
       const id = decodeURIComponent(seg[2]);
       const reply = (await store.listReplies()).find((r) => r.id === id);
       if (!reply) return sendJson(res, 404, { error: 'reply not found' });
-
-      const target = reply.targetId ? await store.getTarget(reply.targetId) : undefined;
-      const account = reply.accountId ? await store.getAccount(reply.accountId) : undefined;
-      const batch = target?.batchId ? await store.getBatch(target.batchId) : undefined;
-      // The prompt behind this run — resolvable only if the run recorded a hash
-      // (records written before provenance existed carry none).
-      const promptHash = reply.extraction?.promptHash;
-      const prompt = promptHash
-        ? (await store.listPromptSnapshots()).find((p) => p.hash === promptHash)
-        : undefined;
-      // What the extraction actually produced downstream.
-      const records = (await store.listPriceRecords()).filter((r) => r.replyId === reply.id);
-
-      return sendJson(res, 200, {
-        reply,
-        mailbox: account ? { id: account.id, email: account.email, providerType: account.providerType } : undefined,
-        target: target
-          ? {
-              id: target.id,
-              websiteUrl: target.websiteUrl,
-              contactEmail: target.contactEmail,
-              status: target.status,
-              batchId: target.batchId,
-              batchName: batch?.name,
-            }
-          : undefined,
-        // The pitch style is what decides how a niche-less price is read, so it
-        // belongs next to the prompt when explaining an odd classification.
-        pitchStyle: pitchStyleForBatch(target?.batchId),
-        prompt,
-        priceRecords: records.sort((a, b) => a.domain.localeCompare(b.domain)),
-      });
+      return sendJson(res, 200, await buildReplyDebug(store, reply));
     }
 
     // DELETE /api/replies/:id
@@ -710,34 +669,7 @@ async function handle(
     // website + batch + the mailbox of OURS the reply landed in.
     if (method === 'GET' && seg[1] === 'responses' && seg.length === 2) {
       const batchId = url.searchParams.get('batchId') ?? undefined;
-      const replies = await store.listReplies();
-      const targets = new Map((await store.listTargets()).map((t) => [t.id, t]));
-      const batches = new Map((await store.listBatches()).map((b) => [b.id, b.name]));
-      const accountEmails = new Map((await store.listAccounts()).map((a) => [a.id, a.email]));
-      // Which of our accounts owns each sent thread. Replies stored before
-      // Reply.accountId was populated carry no account of their own, so the
-      // outreach that started the thread is what identifies the inbox for them.
-      const accountByThread = new Map<string, ID>();
-      for (const o of await store.listOutreaches()) {
-        if (o.threadId && !accountByThread.has(o.threadId)) accountByThread.set(o.threadId, o.accountId);
-      }
-      let out = replies.map((r) => {
-        const target = r.targetId ? targets.get(r.targetId) : undefined;
-        // Narrowest source first: what the reply itself recorded, then the thread
-        // it belongs to, then the account the target was assigned to.
-        const accountId = r.accountId
-          ?? (r.threadId ? accountByThread.get(r.threadId) : undefined)
-          ?? target?.assignedAccountId;
-        return {
-          ...r,
-          website: target?.websiteUrl,
-          batchId: target?.batchId,
-          batchName: target?.batchId ? batches.get(target.batchId) : undefined,
-          accountEmail: accountId ? accountEmails.get(accountId) : undefined,
-        };
-      });
-      if (batchId) out = out.filter((r) => r.batchId === batchId);
-      return sendJson(res, 200, out);
+      return sendJson(res, 200, await buildResponseRows(store, batchId));
     }
 
     // GET /api/suppressions
@@ -768,57 +700,13 @@ async function handle(
 
     // GET /api/domains — known domains (record ∪ target sites) with a light summary
     if (method === 'GET' && seg[1] === 'domains' && seg.length === 2) {
-      const records = await store.listPriceRecords();
-      const targetDomains = (await store.listTargets()).map((t) => normalizeDomain(t.websiteUrl));
-      const excluded = new Set((await store.listDomainExclusions()).map((e) => e.domain));
-      const now = deps.clock.now();
-      // Distinct sender addresses that have priced each domain — >1 flags a domain
-      // whose quotes come from more than one email source (cross-check / conflict).
-      const sourcesByDomain = new Map<string, Set<string>>();
-      for (const rec of records) {
-        if (!rec.sourceEmail) continue;
-        let set = sourcesByDomain.get(rec.domain);
-        if (!set) sourcesByDomain.set(rec.domain, (set = new Set()));
-        set.add(rec.sourceEmail.toLowerCase());
-      }
-      const domains = knownDomains(records, targetDomains).map((domain) => {
-        const sheet = buildPriceSheet(domain, records, now);
-        return {
-          domain,
-          recordCount: sheet.recordCount,
-          sourceCount: sourcesByDomain.get(domain)?.size ?? 0,
-          standingCells: sheet.cells.length,
-          activeSpecials: sheet.specials.filter((s) => s.active).length,
-          ...(sheet.lastObservedAt ? { lastObservedAt: sheet.lastObservedAt } : {}),
-          optedOut: sheet.optedOut,
-          excluded: excluded.has(domain),
-          // Stripped standing cells so the UI can filter (by sensitivity tier and
-          // by niche) and export price columns without a per-domain fetch.
-          cells: sheet.cells.map((c) => ({
-            category: c.category,
-            label: c.label,
-            sensitive: c.sensitive,
-            canPost: c.canPost,
-            ...(c.price ? { price: c.price } : {}),
-            // The term is part of the cell identity, so the row can carry the same
-            // niche several times (1 month / 3 months); without it the UI would
-            // show duplicate-looking niches it cannot tell apart.
-            term: c.term,
-          })),
-        };
-      });
-      return sendJson(res, 200, domains);
+      return sendJson(res, 200, await buildDomainRows(store, deps.clock.now()));
     }
 
     // GET /api/domains/:domain — full price sheet + raw history + exclusion state
     if (method === 'GET' && seg[1] === 'domains' && seg[2] && seg.length === 3) {
-      const domain = normalizeDomain(decodeURIComponent(seg[2]));
-      const records = (await store.listPriceRecords({ domain })).sort((a, b) =>
-        a.observedAt.localeCompare(b.observedAt),
-      );
-      const sheet = buildPriceSheet(domain, records, deps.clock.now());
-      const excluded = await store.isDomainExcluded(domain);
-      return sendJson(res, 200, { sheet, history: records, excluded });
+      const detail = await buildDomainDetail(store, decodeURIComponent(seg[2]), deps.clock.now());
+      return sendJson(res, 200, detail);
     }
 
     // --- ignore list (inbound skip) CRUD ---

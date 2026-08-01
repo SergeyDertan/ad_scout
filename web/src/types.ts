@@ -3,6 +3,30 @@
 
 export type CanPost = 'yes' | 'no' | 'maybe';
 
+/**
+ * The sensitivity tier a niche falls in.
+ *
+ * The operator console only ever has two: our own registry classifies every
+ * niche, so `sensitive` is a boolean and 'unknown' never occurs. The shared
+ * viewer is the third case — its owner classifies niches himself, and until he
+ * has ruled on one it must read as UNKNOWN rather than quietly defaulting to
+ * regular. A niche he hasn't seen before therefore shows up as "unknown niche"
+ * no matter what our registry says about it.
+ */
+export type Tier = 'sens' | 'reg' | 'unknown';
+
+export const TIER_LABEL: Record<Tier, string> = {
+  sens: 'Sensitive posts',
+  reg: 'Regular posts',
+  unknown: 'Unknown niche',
+};
+
+/** A priced thing's tier. `tier` is set only where a three-state answer exists
+ *  (the viewer); everywhere else it derives from the boolean. */
+export function tierOf(x: { sensitive: boolean; tier?: Tier }): Tier {
+  return x.tier ?? (x.sensitive ? 'sens' : 'reg');
+}
+
 export interface PriceValue {
   amount?: number;
   /** Normalized ISO code, set only when confidently mapped. */
@@ -29,6 +53,8 @@ export interface PostOffer {
   category: string;
   label: string;
   sensitive: boolean;
+  /** Set only by the shared viewer, where a niche can be unclassified. */
+  tier?: Tier;
   canPost: CanPost;
   price?: PriceValue;
   /** Absent only on records written before terms existed — read as "unstated". */
@@ -102,6 +128,8 @@ export interface Niche {
   key: string;
   label: string;
   sensitive: boolean;
+  /** Set only by the shared viewer, where a niche can be unclassified. */
+  tier?: Tier;
   aliases: string[];
   createdAt?: string;
 }
@@ -423,6 +451,8 @@ export interface DomainCell {
   category: string;
   label: string;
   sensitive: boolean;
+  /** Set only by the shared viewer, where a niche can be unclassified. */
+  tier?: Tier;
   canPost: CanPost;
   price?: PriceValue;
   /** The duration this price buys — part of the cell identity, so one niche can
@@ -450,6 +480,8 @@ export interface PriceCell {
   category: string;
   label: string;
   sensitive: boolean;
+  /** Set only by the shared viewer, where a niche can be unclassified. */
+  tier?: Tier;
   canPost: CanPost;
   price?: PriceValue;
   term?: PlacementTerm;

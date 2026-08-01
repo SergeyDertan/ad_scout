@@ -5,7 +5,14 @@ logs/
 *.log
 dist/
 web/dist/
+web/dist-viewer/
 .DS_Store
+
+# Credentials — never committed. The Firebase service account can write the
+# viewer's bucket; client_secret.json is the Gmail OAuth client.
+firebase-service-account.json
+client_secret.json
+web/.env.local
 
 # IDE / editor
 .idea/

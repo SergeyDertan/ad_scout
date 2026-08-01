@@ -19,5 +19,8 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // Test files use node:test; they are typechecked by the ROOT tsconfig, which
+  // has the node types this browser project deliberately lacks.
+  "exclude": ["src/**/*.test.ts"]
 }

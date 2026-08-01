@@ -1,4 +1,4 @@
-import { Fragment, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import {
   Badge,
   Box,
@@ -27,8 +27,10 @@ import {
   type PostOffer,
   type ResponseRow,
 } from '../types';
+import { api } from '../api';
 import { ExtractionDebugModal } from './ExtractionDebugModal';
 import { StatusBadge } from './StatusBadge';
+import { TierBadge } from './TierBadge';
 import { ThreadTimeline } from './ThreadPanel';
 import { AlertTriangleIcon } from './icons';
 
@@ -139,8 +141,8 @@ function OffersTable({ offers, contactedSite }: { offers?: PostOffer[]; contacte
                   <Table.Row key={offerCellKey(o)} bg={flagged ? 'red.subtle' : undefined}>
                     <Table.Cell fontWeight="medium">{o.label}</Table.Cell>
                     <Table.Cell>
-                      {o.sensitive ? (
-                        <Badge size="xs" colorPalette="orange" variant="subtle">sensitive</Badge>
+                      {o.sensitive || o.tier === 'unknown' ? (
+                        <TierBadge of={o} />
                       ) : (
                         <Text color="fg.subtle">—</Text>
                       )}
@@ -197,14 +199,32 @@ function Attachments({ attachments }: { attachments?: EmailAttachment[] }) {
 }
 
 export function ResponseDetailModal({
-  row,
+  row: listRow,
   onClose,
   onEdit,
+  readOnly,
 }: {
   row: ResponseRow;
   onClose: () => void;
   onEdit: () => void;
+  /** Hides everything that writes, plus the send history (which the shared
+   *  viewer's snapshot deliberately doesn't carry). */
+  readOnly?: boolean;
 }) {
+  // The list row may arrive WITHOUT its body: the shared viewer's index file
+  // omits `text`/`attachments` so it stays small, and fetches the message only
+  // when one is actually opened. `text === undefined` is that signal — an empty
+  // string is a real (blank) body and must not re-trigger a fetch.
+  const [fetched, setFetched] = useState<ResponseRow | null>(null);
+  const needsBody = listRow.text === undefined;
+  useEffect(() => {
+    if (!needsBody) return;
+    let live = true;
+    api.getReply(listRow.id).then((r) => live && setFetched(r)).catch(() => {});
+    return () => { live = false; };
+  }, [listRow.id, needsBody]);
+
+  const row = fetched ?? listRow;
   const p = row.parsed;
   const reviewReasons = row.review ?? [];
   const [debugOpen, setDebugOpen] = useState(false);
@@ -298,14 +318,19 @@ export function ResponseDetailModal({
                 <Attachments attachments={row.attachments} />
 
                 {/* Full thread */}
-                <Section title="Email thread">
-                  {row.targetId ? (
+                <Section title={readOnly ? 'Message' : 'Email thread'}>
+                  {row.targetId && !readOnly ? (
                     <ThreadTimeline targetId={row.targetId} />
                   ) : (
                     <Box>
-                      <Text fontSize="xs" color="fg.muted" mb={2}>
-                        This reply isn’t linked to a target, so there’s no send history. Raw message:
-                      </Text>
+                      {!readOnly && (
+                        <Text fontSize="xs" color="fg.muted" mb={2}>
+                          This reply isn’t linked to a target, so there’s no send history. Raw message:
+                        </Text>
+                      )}
+                      {needsBody && !fetched && (
+                        <Text fontSize="xs" color="fg.muted" mb={2}>Loading message…</Text>
+                      )}
                       <Box bg="bg.subtle" borderWidth="1px" borderColor="border" rounded="lg" p={3}>
                         <Text as="pre" fontSize="xs" whiteSpace="pre-wrap" fontFamily="inherit" lineHeight="1.6">
                           {row.text ?? '(no body)'}
@@ -320,7 +345,9 @@ export function ResponseDetailModal({
             <Dialog.Footer gap={2}>
               <Button variant="outline" onClick={onClose}>Close</Button>
               <Button variant="outline" onClick={() => setDebugOpen(true)}>Debug extraction</Button>
-              <Button colorPalette="brand" onClick={onEdit}>Edit extraction</Button>
+              {!readOnly && (
+                <Button colorPalette="brand" onClick={onEdit}>Edit extraction</Button>
+              )}
             </Dialog.Footer>
             {debugOpen && <ExtractionDebugModal replyId={row.id} onClose={() => setDebugOpen(false)} />}
 

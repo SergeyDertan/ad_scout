@@ -101,11 +101,12 @@ const OFFER_SCHEMA = {
     canPost: {
       type: 'string',
       enum: ['yes', 'no', 'maybe'],
-      description: 'yes = will publish this type, no = declines it, maybe = unclear/conditional.',
+      description:
+        'yes = will publish a guest post in this niche. no = EXPLICITLY refuses this niche — emit the offer anyway, with priceRaw "" (a refusal is a cell, and the only thing that rules the site out for that niche). maybe = they addressed the niche but were vague/conditional. NEVER use "no" for a niche the reply simply did not mention: omit that niche entirely.',
     },
     priceRaw: {
       type: 'string',
-      description: 'Guest-post price for this niche EXACTLY as written (e.g. "$150", "150 EUR/post"). "" if not stated.',
+      description: 'Guest-post price for this niche EXACTLY as written (e.g. "$150", "150 EUR/post"). "" if not stated — always "" when canPost is "no".',
     },
     termRaw: {
       type: 'string',
@@ -173,7 +174,7 @@ export function buildExtractionSchema(): JsonSchema {
       offers: {
         type: 'array',
         description:
-          'One entry per NICHE the owner priced or addressed FOR A GUEST POST — a written article we supply, whatever they call it (guest post, sponsored post, sponsored article, publication, placement, content). ALWAYS include the regular (standard) guest-post price when given, plus any grey-niche guest-post pricing (casino, vpn, or the generic "sensitive"). We do NOT buy any other product: if they quote a LINK INSERTION / niche edit / link in an existing article, a BANNER / display ad, or anything else that is not a new article, SKIP it entirely — emit no offer for it, and never file its price under a niche. Do NOT invent cells the owner did not mention.',
+          'One entry per NICHE the owner priced or addressed FOR A GUEST POST — a written article we supply, whatever they call it (guest post, sponsored post, sponsored article, publication, placement, content). ALWAYS include the regular (standard) guest-post price when given, plus any grey-niche guest-post pricing (casino, vpn, or the generic "sensitive"). "Addressed" INCLUDES REFUSED: a niche they explicitly say they will not publish is an entry with canPost "no" and priceRaw ""; a blanket "no grey niches" is ONE entry, category "sensitive", canPost "no". We do NOT buy any other product: if they quote a LINK INSERTION / niche edit / link in an existing article, a BANNER / display ad, or anything else that is not a new article, SKIP it entirely — emit no offer for it, and never file its price under a niche. Do NOT invent cells the owner did not mention: a niche the reply is SILENT about gets NO entry at all, because silence is neither a yes nor a no.',
         items: OFFER_SCHEMA,
       },
       reasoning: {

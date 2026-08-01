@@ -5,8 +5,12 @@ packages:
   - 'web'
 
 allowBuilds:
+  # Neither firebase package needs its postinstall (they only print banners /
+  # regenerate optional protobuf artifacts we don't use), so both stay blocked.
+  '@firebase/util': false
   esbuild: true
   leveldown: true
+  protobufjs: false
 
 minimumReleaseAgeExclude:
   - '@types/node@26.1.1'

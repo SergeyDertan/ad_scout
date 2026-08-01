@@ -23,18 +23,24 @@ import { useResource } from '../hooks/useResource';
 import { ChevronDownIcon, DownloadIcon, SearchIcon, TagIcon } from './icons';
 import { DomainsExportDialog } from './DomainsExportDialog';
 import { ExtractionDebugModal } from './ExtractionDebugModal';
+import { TierBadge } from './TierBadge';
+import { answerForNiche, type NicheAnswer } from '../niche-answer';
 import {
   formatPrice,
   formatProvenance,
   formatTerm,
+  tierOf,
+  TIER_LABEL,
   type DomainCell,
   type DomainDetail,
   type DomainSummary,
   type EmailAttachment,
+  type Niche,
   type PostOffer,
   type PriceCell,
   type PriceRecordRow,
   type ResponseRow,
+  type Tier,
 } from '../types';
 
 function fmtDate(iso?: string): string {
@@ -123,7 +129,7 @@ function CellRow({ cell, special }: { cell: PriceCell; special?: boolean }) {
       <Table.Cell>
         <HStack gap={1.5}>
           <Text>{cell.label || cell.category}</Text>
-          {cell.sensitive && <Badge colorPalette="orange" variant="surface" size="sm">sensitive</Badge>}
+          <TierBadge of={cell} />
         </HStack>
       </Table.Cell>
       <Table.Cell><CanPostBadge value={cell.canPost} /></Table.Cell>
@@ -175,7 +181,7 @@ function OfferRow({ offer }: { offer: PostOffer }) {
       <Table.Cell>
         <HStack gap={1.5}>
           <Text>{offer.label || offer.category}</Text>
-          {offer.sensitive && <Badge colorPalette="orange" variant="surface" size="sm">sensitive</Badge>}
+          <TierBadge of={offer} />
           {offer.isSpecial && (
             <Badge colorPalette="purple" variant="subtle" size="sm">
               special{offer.specialUntil ? ` · till ${offer.specialUntil}` : ''}
@@ -270,7 +276,17 @@ function HistoryRecord({ record }: { record: PriceRecordRow }) {
 
 // --- Per-domain detail modal --------------------------------------------------
 
-function DomainDetailModal({ domain, onClose, onChanged }: { domain: string; onClose: () => void; onChanged: () => void }) {
+function DomainDetailModal({
+  domain,
+  onClose,
+  onChanged,
+  readOnly,
+}: {
+  domain: string;
+  onClose: () => void;
+  onChanged: () => void;
+  readOnly?: boolean;
+}) {
   const [detail, setDetail] = useState<DomainDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -309,7 +325,7 @@ function DomainDetailModal({ domain, onClose, onChanged }: { domain: string; onC
                   {detail?.excluded && <Badge colorPalette="red" variant="solid">excluded</Badge>}
                   {sheet?.optedOut && <Badge colorPalette="purple" variant="subtle">opted out</Badge>}
                 </HStack>
-                {detail && (
+                {detail && !readOnly && (
                   <Button
                     size="sm"
                     variant={detail.excluded ? 'outline' : 'subtle'}
@@ -390,18 +406,18 @@ type StateFilter = 'all' | 'excluded' | 'optedOut' | 'active' | 'specials';
 // A cell counts as "on offer" only when the publisher said yes.
 const canOffer = (c: DomainCell) => c.canPost === 'yes';
 
-function tierValue(c: DomainCell): string {
-  return c.sensitive ? 'sens' : 'reg';
-}
-function tierLabel(sensitive: boolean): string {
-  return sensitive ? 'Sensitive posts' : 'Regular posts';
-}
+/** Regular → sensitive → unknown. Unclassified last: in the viewer it is a
+ *  to-do pile, not a tier that sits between the other two. */
+const TIER_ORDER: Tier[] = ['reg', 'sens', 'unknown'];
 function tierRank(value: string): number {
-  return value === 'sens' ? 1 : 0;
+  const i = TIER_ORDER.indexOf(value as Tier);
+  return i < 0 ? TIER_ORDER.length : i;
 }
 
 // Domain | Prices | Specials | Records | Last quote | State
 const COLS = '1fr 90px 90px 90px 150px 170px';
+// Same, with the niche-answer column wedged in after Domain (niche filter on).
+const COLS_WITH_ANSWER = '1fr 200px 90px 90px 90px 150px 170px';
 const ROW_H = 52;
 const MAX_LIST_H = 640;
 
@@ -437,18 +453,44 @@ function SortHeader({
   );
 }
 
+/** A list row plus, when a niche filter is on, that niche's resolved answer. */
+type DomainRowView = DomainSummary & { answer?: NicheAnswer };
+
 interface RowData {
-  rows: DomainSummary[];
+  rows: DomainRowView[];
   onSelect: (domain: string) => void;
+  /** Set while a niche filter is active — drives the extra column. */
+  answerColumn?: boolean;
 }
 
-function VirtualRow({ index, style, rows, onSelect }: RowComponentProps<RowData>) {
+function AnswerCell({ answer }: { answer: NicheAnswer }) {
+  // What they'd charge, and how much of that is their word vs our inference.
+  // One niche can contribute several cells (one per placement term), so name the
+  // sources once each — "inferred from casino, casino" reads like a bug.
+  const sources = [...new Set(answer.from.map((c) => c.label || c.category))];
+  const title = answer.inferred
+    ? `Not quoted for this niche — inferred from what they charge for ${sources.join(', ')}`
+    : 'Quoted for this niche';
+  return (
+    <HStack gap={1.5} minW={0} title={title}>
+      <Badge colorPalette={answer.canPost === 'yes' ? 'green' : 'gray'} variant="subtle" size="sm">
+        {answer.canPost}
+      </Badge>
+      <Text fontWeight="medium" overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
+        {answer.price}
+      </Text>
+      {answer.inferred && <Text color="fg.subtle" fontSize="xs">~</Text>}
+    </HStack>
+  );
+}
+
+function VirtualRow({ index, style, rows, onSelect, answerColumn }: RowComponentProps<RowData>) {
   const d = rows[index]!;
   return (
     <Box
       style={style}
       display="grid"
-      gridTemplateColumns={COLS}
+      gridTemplateColumns={answerColumn ? COLS_WITH_ANSWER : COLS}
       alignItems="center"
       px={4}
       gap={3}
@@ -464,6 +506,7 @@ function VirtualRow({ index, style, rows, onSelect }: RowComponentProps<RowData>
       <Text fontWeight="medium" overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
         {d.domain}
       </Text>
+      {answerColumn && (d.answer ? <AnswerCell answer={d.answer} /> : <Text color="fg.subtle">—</Text>)}
       <Text>{d.standingCells}</Text>
       <Text>{d.activeSpecials || '—'}</Text>
       <Text>{d.recordCount}</Text>
@@ -479,8 +522,12 @@ function VirtualRow({ index, style, rows, onSelect }: RowComponentProps<RowData>
   );
 }
 
-export function DomainsView({ tick }: { tick: number }) {
+export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boolean }) {
   const { rows, loading, error, reload } = useResource(useCallback(() => api.listDomains(), []), tick);
+  // The full taxonomy, not just what has been quoted: with same-tier inference,
+  // filtering for a niche NOBODY has priced is a meaningful question — every
+  // grey-niche site answers it — so it has to be offered in the dropdown.
+  const { rows: niches } = useResource(useCallback(() => api.listNiches(), []), tick);
   const [selected, setSelected] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [stateFilter, setStateFilter] = useState<StateFilter>('all');
@@ -502,8 +549,8 @@ export function DomainsView({ tick }: { tick: number }) {
     for (const d of rows as DomainSummary[]) {
       for (const c of d.cells ?? []) {
         if (!canOffer(c)) continue;
-        const value = tierValue(c);
-        if (!seen.has(value)) seen.set(value, tierLabel(c.sensitive));
+        const value = tierOf(c);
+        if (!seen.has(value)) seen.set(value, TIER_LABEL[value]);
       }
     }
     return [...seen.entries()]
@@ -511,46 +558,66 @@ export function DomainsView({ tick }: { tick: number }) {
       .sort((a, b) => tierRank(a.value) - tierRank(b.value));
   }, [rows]);
 
+  // Every niche's tier, read off the cells that DO carry it. Needed because the
+  // interesting case is a domain with no cell for the filtered niche at all —
+  // there is nothing local to read the tier from. In the viewer these tiers are
+  // his classification, so a re-classification flows straight through here.
+  const tierByCategory = useMemo(() => {
+    const map = new Map<string, Tier>();
+    for (const n of niches as Niche[]) map.set(n.key, tierOf(n));
+    for (const d of rows as DomainSummary[]) {
+      for (const c of d.cells ?? []) if (!map.has(c.category)) map.set(c.category, tierOf(c));
+    }
+    return map;
+  }, [rows, niches]);
+
   const categoryOptions = useMemo(() => {
     const seen = new Map<string, string>();
+    for (const n of niches as Niche[]) seen.set(n.key, n.label || n.key);
+    // Plus anything quoted that the taxonomy hasn't caught up with yet. Includes
+    // niches only ever REFUSED: "who else might take a VPN post?" is precisely
+    // the question the refusal answers for one site and inference answers for
+    // the rest.
     for (const d of rows as DomainSummary[]) {
-      for (const c of d.cells ?? []) {
-        if (!canOffer(c)) continue;
-        if (!seen.has(c.category)) seen.set(c.category, c.label || c.category);
-      }
+      for (const c of d.cells ?? []) if (!seen.has(c.category)) seen.set(c.category, c.label || c.category);
     }
     return [...seen.entries()]
       .map(([value, label]) => ({ value, label }))
       .sort((a, b) => a.label.localeCompare(b.label));
-  }, [rows]);
+  }, [rows, niches]);
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const filtered = (rows as DomainSummary[]).filter((d) => {
-      if (q && !d.domain.toLowerCase().includes(q)) return false;
+    const filterTier = categoryFilter ? tierByCategory.get(categoryFilter) ?? 'unknown' : 'unknown';
+    const filtered: DomainRowView[] = [];
+    for (const d of rows as DomainSummary[]) {
+      if (q && !d.domain.toLowerCase().includes(q)) continue;
       switch (stateFilter) {
-        case 'excluded': if (!d.excluded) return false; break;
-        case 'optedOut': if (!d.optedOut) return false; break;
-        case 'specials': if (d.activeSpecials <= 0) return false; break;
-        case 'active': if (d.excluded || d.optedOut) return false; break;
+        case 'excluded': if (!d.excluded) continue; break;
+        case 'optedOut': if (!d.optedOut) continue; break;
+        case 'specials': if (d.activeSpecials <= 0) continue; break;
+        case 'active': if (d.excluded || d.optedOut) continue; break;
         default: break;
       }
-      if (tierFilter) {
-        const sens = tierFilter === 'sens';
-        if (!(d.cells ?? []).some((c) => canOffer(c) && c.sensitive === sens)) return false;
-      }
+      if (tierFilter && !(d.cells ?? []).some((c) => canOffer(c) && tierOf(c) === tierFilter)) continue;
       if (categoryFilter) {
-        if (!(d.cells ?? []).some((c) => canOffer(c) && c.category === categoryFilter)) return false;
+        // Not a key match: what would a post in this niche cost here? A domain
+        // that never mentioned it still answers, from its same-tier prices; one
+        // that refused it drops out. See niche-answer.ts.
+        const answer = answerForNiche(d.cells ?? [], categoryFilter, filterTier);
+        if (!answer) continue;
+        filtered.push({ ...d, answer });
+        continue;
       }
-      return true;
-    });
+      filtered.push(d);
+    }
     const factor = dir === 'asc' ? 1 : -1;
     return filtered.sort((a, b) => {
       if (sortKey === 'domain') return factor * a.domain.localeCompare(b.domain);
       if (sortKey === 'lastObservedAt') return factor * (a.lastObservedAt ?? '').localeCompare(b.lastObservedAt ?? '');
       return factor * ((a[sortKey] as number) - (b[sortKey] as number));
     });
-  }, [rows, search, stateFilter, tierFilter, categoryFilter, sortKey, dir]);
+  }, [rows, search, stateFilter, tierFilter, categoryFilter, tierByCategory, sortKey, dir]);
 
   const listHeight = Math.min(visible.length * ROW_H, MAX_LIST_H);
 
@@ -560,7 +627,9 @@ export function DomainsView({ tick }: { tick: number }) {
     <Box pt={4}>
       <Text color="fg.muted" fontSize="sm" mb={4}>
         Per-domain price history — every recorded quote, folded into a current price sheet. Click a row to open the
-        full history. Subdomains and TLDs are kept distinct (casik.com ≠ casik.ua).
+        full history. Subdomains and TLDs are kept distinct (casik.com ≠ casik.ua). Filtering by niche answers “what
+        would this cost here?”: sites that never quoted that niche still appear, at what they charge for others in the
+        same tier (shown as <Text as="span" fontWeight="semibold">maybe ~</Text>); sites that refused it don’t.
       </Text>
 
       <HStack gap={2} mb={3} flexWrap="wrap">
@@ -624,6 +693,16 @@ export function DomainsView({ tick }: { tick: number }) {
         </Text>
       </HStack>
 
+      {categoryFilter && (tierByCategory.get(categoryFilter) ?? 'unknown') === 'unknown' && (
+        <Text fontSize="xs" color="fg.muted" mb={3}>
+          <Text as="span" fontWeight="semibold">
+            {categoryOptions.find((o) => o.value === categoryFilter)?.label ?? categoryFilter}
+          </Text>{' '}
+          isn’t classified yet, so this shows only sites that quoted it by name. Mark it sensitive or regular under
+          Niches to also see what comparable sites charge.
+        </Text>
+      )}
+
       <DataPanel
         loading={loading}
         isEmpty={rows.length === 0}
@@ -636,7 +715,7 @@ export function DomainsView({ tick }: { tick: number }) {
             {/* Header row (matches the virtualized grid columns) */}
             <Box
               display="grid"
-              gridTemplateColumns={COLS}
+              gridTemplateColumns={categoryFilter ? COLS_WITH_ANSWER : COLS}
               px={4}
               py={2}
               bg="bg.subtle"
@@ -650,6 +729,11 @@ export function DomainsView({ tick }: { tick: number }) {
               letterSpacing="wide"
             >
               <SortHeader label="Domain" col="domain" sortKey={sortKey} dir={dir} onSort={onSort} />
+              {categoryFilter && (
+                <Text title="Their own quote where they gave one; otherwise inferred from what they charge for other niches in the same tier (marked ~)">
+                  {categoryOptions.find((o) => o.value === categoryFilter)?.label ?? categoryFilter} price
+                </Text>
+              )}
               <SortHeader label="Prices" col="standingCells" sortKey={sortKey} dir={dir} onSort={onSort} />
               <SortHeader label="Specials" col="activeSpecials" sortKey={sortKey} dir={dir} onSort={onSort} />
               <SortHeader label="Records" col="recordCount" sortKey={sortKey} dir={dir} onSort={onSort} />
@@ -662,7 +746,7 @@ export function DomainsView({ tick }: { tick: number }) {
               rowCount={visible.length}
               rowHeight={ROW_H}
               rowComponent={VirtualRow}
-              rowProps={{ rows: visible, onSelect: setSelected } satisfies RowData}
+              rowProps={{ rows: visible, onSelect: setSelected, answerColumn: !!categoryFilter } satisfies RowData}
               overscanCount={5}
             />
           </Box>
@@ -678,7 +762,12 @@ export function DomainsView({ tick }: { tick: number }) {
       )}
 
       {selected && (
-        <DomainDetailModal domain={selected} onClose={() => setSelected(null)} onChanged={reload} />
+        <DomainDetailModal
+          domain={selected}
+          onClose={() => setSelected(null)}
+          onChanged={reload}
+          readOnly={readOnly}
+        />
       )}
     </Box>
   );

@@ -66,9 +66,11 @@ interface RowData {
   rows: ResponseRow[];
   onShow: (r: ResponseRow) => void;
   onEdit: (id: string) => void;
+  /** Read-only viewers get "Show" only — there is nothing to save to. */
+  readOnly?: boolean;
 }
 
-function VirtualRow({ index, style, rows, onShow, onEdit }: RowComponentProps<RowData>) {
+function VirtualRow({ index, style, rows, onShow, onEdit, readOnly }: RowComponentProps<RowData>) {
   const r = rows[index]!;
   const review = needsReview(r);
   const awaiting = isAwaiting(r);
@@ -131,15 +133,17 @@ function VirtualRow({ index, style, rows, onShow, onEdit }: RowComponentProps<Ro
         <Button size="xs" variant="solid" colorPalette="brand" onClick={() => onShow(r)}>
           Show
         </Button>
-        <Button size="xs" variant="ghost" onClick={() => onEdit(r.id)}>
-          Edit
-        </Button>
+        {!readOnly && (
+          <Button size="xs" variant="ghost" onClick={() => onEdit(r.id)}>
+            Edit
+          </Button>
+        )}
       </HStack>
     </Box>
   );
 }
 
-export function ResponsesView({ tick }: { tick: number }) {
+export function ResponsesView({ tick, readOnly }: { tick: number; readOnly?: boolean }) {
   const [batchFilter, setBatchFilter] = useState('');
   const [nicheFilter, setNicheFilter] = useState('');
   const [canPostFilter, setCanPostFilter] = useState('');
@@ -271,7 +275,7 @@ export function ResponsesView({ tick }: { tick: number }) {
         </Button>
       </HStack>
 
-      {editingRow && (
+      {editingRow && !readOnly && (
         <EditResponseForm
           row={editingRow}
           onClose={() => setEditId(null)}
@@ -282,6 +286,7 @@ export function ResponsesView({ tick }: { tick: number }) {
       {showingRow && (
         <ResponseDetailModal
           row={showingRow}
+          readOnly={readOnly}
           onClose={() => setShowId(null)}
           onEdit={() => {
             setShowId(null);
@@ -348,7 +353,7 @@ export function ResponsesView({ tick }: { tick: number }) {
             rowCount={rows.length}
             rowHeight={ROW_H}
             rowComponent={VirtualRow}
-            rowProps={{ rows, onShow: (r) => setShowId(r.id), onEdit: setEditId } satisfies RowData}
+            rowProps={{ rows, onShow: (r) => setShowId(r.id), onEdit: setEditId, readOnly } satisfies RowData}
             overscanCount={5}
           />
         </Box>

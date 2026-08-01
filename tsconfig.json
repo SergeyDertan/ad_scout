@@ -16,5 +16,6 @@
     "forceConsistentCasingInFileNames": true,
     "noEmit": true
   },
-  "include": ["src", "scripts"]
+  // web/src/**/*.test.ts: the viewer's pure logic (no DOM), tested with node:test.
+  "include": ["src", "scripts", "web/src/**/*.test.ts"]
 }

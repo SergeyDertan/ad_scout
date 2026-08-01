@@ -1,0 +1,43 @@
+rules_version = '2';
+
+// The published snapshot: domains, prices, and the emails behind them.
+//
+// This is the ONLY thing protecting that data. Firebase Hosting serves the app
+// shell publicly (it has no per-user auth), so the page itself is reachable by
+// anyone with the URL — but it contains no data. Every byte comes from here,
+// and here requires a signed-in account on the allowlist below.
+//
+// Writes are denied to EVERYONE. The publisher runs on the operator's machine
+// with a service account, and the Admin SDK bypasses these rules entirely; no
+// browser session can ever write, whatever the UI tries.
+//
+// To grant access: add the person's Google account email to viewers() and
+// deploy with `firebase deploy --only storage`.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function viewers() {
+      return [
+        'themars0719@gmail.com',
+        'superator2018@gmail.com'
+      ];
+    }
+
+    function allowed() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email.lower() in viewers();
+    }
+
+    match /snapshot/{allPaths=**} {
+      allow read: if allowed();
+      allow write: if false;
+    }
+
+    // Anything outside the snapshot prefix is off limits, signed in or not.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -100,3 +100,55 @@ test('termLabel prefers the publisher own words', () => {
   assert.equal(termLabel({ key: '3m', days: 90, months: 3, raw: '' }), '3 months');
   assert.equal(termLabel({ key: '1m', days: 30, months: 1, raw: '' }), '1 month');
 });
+
+test('a hyphen between count and unit does not swallow the count', () => {
+  // The joiner is as often a hyphen as a space. Reading the count across it is
+  // what keeps "12-month" from collapsing to the bare-unit default of one.
+  assert.equal(parseTerm('12-month publication').months, 12);
+  assert.equal(parseTerm('two-year period').months, 24);
+  assert.equal(parseTerm('Two-year placement period').months, 24);
+  assert.equal(parseTerm('1-year').months, 12);
+  assert.equal(parseTerm('a one-year term').months, 12);
+});
+
+test('a parenthesised numeral restating a word is read as the count', () => {
+  assert.equal(parseTerm('for a standard term of three (3) years').months, 36);
+});
+
+test('a bare unit still means one', () => {
+  // The counterpart to the two tests above: with nothing quantifying it, the
+  // unit IS the quantity. These must not regress into "unparseable".
+  assert.equal(parseTerm('per month per article').months, 1);
+  assert.equal(parseTerm('per year per article').months, 12);
+  assert.equal(parseTerm('/site/year').months, 12);
+  assert.equal(parseTerm('monthly').months, 1);
+  assert.equal(parseTerm('year').months, 12);
+});
+
+test('Portuguese and Italian year words normalize', () => {
+  assert.equal(parseTerm('publicados por 5 anos').months, 60);
+  assert.equal(parseTerm('1 ano').months, 12);
+  assert.equal(parseTerm('online 2 anni').months, 24);
+});
+
+test('foreign phrasings for "indefinitely" fold into the permanent cell', () => {
+  // Each of these had its own other:* cell, so one publisher's permanent price
+  // never shared a column with another's.
+  for (const raw of [
+    'a tempo indeterminato',
+    'tiempo indefinido',
+    'na czas nieokreślony',
+    'permanentes',
+    'Son permanentes',
+    'for ever',
+    'for the entire duration of the site',
+  ]) {
+    assert.equal(parseTerm(raw).key, 'perm', raw);
+  }
+});
+
+test('a quantity condition is still not a duration', () => {
+  // "two or more placements" is a bulk discount, not a term — it must stay in
+  // its own cell rather than being read as a two-something duration.
+  assert.equal(parseTerm('for two or more placements').key, 'other:for-two-or-more-placements');
+});

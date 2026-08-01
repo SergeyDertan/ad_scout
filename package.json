@@ -20,6 +20,8 @@
     "reattribute:ambiguous": "tsx src/scripts/reattribute-ambiguous.ts",
     "correct:dj-sensitive": "tsx src/scripts/correct-dj-sensitive.ts",
     "backfill:currency": "tsx src/scripts/backfill-currency.ts",
+    "backfill:account-id": "tsx src/scripts/backfill-account-id.ts",
+    "backfill:terms": "tsx src/scripts/backfill-terms.ts",
     "reextract:broad-batch": "tsx src/scripts/reextract-broad-batch.ts",
     "purge:non-guest-offers": "tsx src/scripts/purge-non-guest-offers.ts",
     "assign:batch-ids": "tsx src/scripts/assign-batch-ids.ts",

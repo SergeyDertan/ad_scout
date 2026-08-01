@@ -197,7 +197,11 @@ async function handleMessage(
     matchMethod: match.method,
     receivedAt: msg.receivedAt,
     text: msg.text,
-    extractionStatus: match.targetId && !isEmpty ? 'pending' : 'skipped',
+    // Queue on CONTENT, not on whether we could name a target. A reply we failed
+    // to match can still be a real quote about a real site — price history is
+    // keyed by domain, so it has somewhere to land. Only an empty body is
+    // genuinely nothing to extract.
+    extractionStatus: isEmpty ? 'skipped' : 'pending',
   };
 
   await store.putReply(reply);

@@ -14,6 +14,7 @@ import {
   emailToDomains,
   matchReply,
   normalizeEmail,
+  senderSiteDomain,
   type AwaitingTargetRef,
   type DomainGroup,
   type SentOutreachRef,
@@ -165,8 +166,13 @@ export async function extractPendingReplies(
   const { store } = deps;
   const log = opts.log ?? (() => {});
   const emailDomainMap = emailToDomains(await store.listTargets());
+  // No `&& r.targetId` here: price history is keyed by DOMAIN, so a reply we
+  // could not tie to a target can still carry a real quote about a real site
+  // (a publisher answering from a mailbox we never wrote to, or an unsolicited
+  // rate card). ingestReply handles a missing target; what protects us from
+  // extracting junk is the AI's own isSpam verdict plus MAX_DOMAINS_PER_REPLY.
   const pending = (await store.listReplies()).filter(
-    (r) => (r.extractionStatus === 'failed' || r.extractionStatus === 'pending') && r.targetId,
+    (r) => r.extractionStatus === 'failed' || r.extractionStatus === 'pending',
   );
   const work = opts.limit != null ? pending.slice(0, opts.limit) : pending;
   let extracted = 0;
@@ -175,16 +181,16 @@ export async function extractPendingReplies(
   let i = 0;
   for (const reply of work) {
     i++;
-    const target = await store.getTarget(reply.targetId!);
-    if (!target) {
-      log(`[${i}/${work.length}] skip ${reply.fromAddress} — no target`);
-      continue;
-    }
+    const target = reply.targetId ? await store.getTarget(reply.targetId) : undefined;
     // The account that owns this reply's mailbox — needed to (re)label it. Absent
-    // ⇒ labeling is skipped (best-effort), extraction still runs.
-    const account = target.assignedAccountId
-      ? await store.getAccount(target.assignedAccountId)
-      : undefined;
+    // ⇒ labeling is skipped (best-effort), extraction still runs. Prefer what the
+    // reply itself recorded; fall back to the target's assigned account for rows
+    // written before Reply.accountId was populated.
+    const accountId = reply.accountId ?? target?.assignedAccountId;
+    const account = accountId ? await store.getAccount(accountId) : undefined;
+    // What to call this reply in the log: the contacted site when we have one,
+    // otherwise the sender — a targetless reply has no website to name.
+    const subject = target?.websiteUrl ?? `(no target) ${reply.fromAddress}`;
     try {
       const outcome = await ingestReply(deps, reply, target, emailDomainMap);
       await store.putReply(reply);
@@ -196,7 +202,7 @@ export async function extractPendingReplies(
         extracted++;
         if (account) await applyLabel(deps, account, reply.emailId, outcome.label);
         const offers = reply.parsed?.offers?.length ?? 0;
-        log(`[${i}/${work.length}] ok   ${target.websiteUrl} — intent=${reply.parsed?.intent ?? 'answer'}, ${offers} offer(s)`);
+        log(`[${i}/${work.length}] ok   ${subject} — intent=${reply.parsed?.intent ?? 'answer'}, ${offers} offer(s)`);
       }
     } catch (err) {
       // Usage/session limit → stop the run WITHOUT marking this reply failed, so a
@@ -221,12 +227,11 @@ export async function extractPendingReplies(
         replyId: reply.id,
         emailId: reply.emailId,
         fromAddress: reply.fromAddress,
-        targetId: target.id,
-        websiteUrl: target.websiteUrl,
+        ...(target ? { targetId: target.id, websiteUrl: target.websiteUrl } : {}),
         progress: `${i}/${work.length}`,
         ...describeError(err),
       });
-      log(`[${i}/${work.length}] FAIL ${target.websiteUrl} — ${err instanceof Error ? err.message : String(err)}`);
+      log(`[${i}/${work.length}] FAIL ${subject} — ${err instanceof Error ? err.message : String(err)}`);
     }
     if (opts.sleepMs) await sleep(opts.sleepMs);
   }
@@ -249,21 +254,29 @@ type IngestResult = { kind: 'done'; label: OutcomeLabel } | { kind: 'ignored' };
 export async function ingestReply(
   deps: PollDeps,
   reply: Reply,
-  target: Target,
+  target: Target | undefined,
   emailDomainMap: Map<string, string[]>,
 ): Promise<IngestResult> {
   const { store, extractor, clock, config } = deps;
   const knownNiches = await store.listNiches();
   // The batch the target came from decides how a niche-less flat price is read:
   // the historical casino-specific "first" batch ⇒ casino; everything else ⇒ broad.
-  const pitchStyle = pitchStyleForBatch(target.batchId);
+  // A targetless reply has no batch, and 'broad' is the right reading for it: we
+  // never asked it a casino-specific question (we never asked it anything).
+  const pitchStyle = pitchStyleForBatch(target?.batchId);
+  // The site this reply is ABOUT. With a target that is a fact; without one it is
+  // inferred from the sender's own domain, and is undefined for a free mailbox —
+  // in which case the model is told nothing rather than something wrong.
+  const ownDomain = target
+    ? normalizeDomain(target.websiteUrl) || undefined
+    : senderSiteDomain(reply.fromAddress);
   const outcome = await extractor.extract(
     config.pitch,
     reply.text,
     knownNiches,
     reply.attachments ?? [],
     // siteDomain lets the model find THIS site's row in a multi-site price list.
-    { pitchStyle, siteDomain: normalizeDomain(target.websiteUrl) || undefined },
+    { pitchStyle, ...(ownDomain ? { siteDomain: ownDomain } : {}) },
   );
   await persistDiscovered(store, outcome.discovered, clock);
   // Stamp WHICH RUN produced this (model/provider/prompt + now), and archive the
@@ -300,12 +313,13 @@ export async function ingestReply(
 
   // Attribute this reply's offers to domains (M1 sender / M2 named), collecting
   // any D11 ambiguity as review reasons.
-  const senderDomains = senderDomainsFor(emailDomainMap, reply.fromAddress, target);
-  const { groups, reviewReasons, capped } = attributeOffers(
-    parsed.offers,
-    senderDomains,
-    normalizeDomain(target.websiteUrl) || undefined,
-  );
+  const senderDomains = senderDomainsFor(emailDomainMap, reply.fromAddress, target, ownDomain);
+  // ownDomain is what MAX_DOMAINS_PER_REPLY falls back to when a reply turns out
+  // to be a bulk rate card. Present (contacted site, or a corporate sender's own
+  // domain) ⇒ keep that one row. Absent (free mailbox) ⇒ capDomains keeps nothing,
+  // which is the right answer: a 900-row list from a gmail address is
+  // unattributable, and guessing a row would be worse than recording none.
+  const { groups, reviewReasons, capped } = attributeOffers(parsed.offers, senderDomains, ownDomain);
   const review = [...outcome.review, ...reviewReasons];
 
   // A capped reply was a bulk price list. Snapshot only the offers we actually
@@ -315,9 +329,21 @@ export async function ingestReply(
     ? { ...parsed, offers: groups.flatMap((g) => g.offers) }
     : parsed;
 
-  await rollUp(store, target, reply, kept, review, clock, extraction);
+  // Target-scoped consequences only exist when there is a target. A targetless
+  // reply still writes its PriceRecords — the price history is keyed by DOMAIN,
+  // not by target, so an unsolicited rate card lands in the same history as a
+  // solicited one.
+  if (target) {
+    await rollUp(store, target, reply, kept, review, clock, extraction);
+    await handleDeclineExclusion(store, reply, target, kept, clock);
+  } else {
+    reply.parsed = kept;
+    reply.review = review.length ? review : undefined;
+    reply.extractionStatus = 'done';
+    reply.extraction = extraction;
+    await store.putReply(reply);
+  }
   await writePriceRecords(store, reply, target, kept, groups, senderDomains, clock, extraction);
-  await handleDeclineExclusion(store, reply, target, kept, clock);
   await handleReversal(store, groups);
 
   return { kind: 'done', label: labelForResult(parsed) };
@@ -329,10 +355,11 @@ export async function ingestReply(
 function senderDomainsFor(
   emailDomainMap: Map<string, string[]>,
   fromAddress: string,
-  target: Target,
+  target: Target | undefined,
+  ownDomain: string | undefined,
 ): string[] {
   const set = new Set(emailDomainMap.get(normalizeEmail(fromAddress)) ?? []);
-  const own = normalizeDomain(target.websiteUrl);
+  const own = target ? normalizeDomain(target.websiteUrl) : ownDomain;
   if (own) set.add(own);
   return [...set];
 }
@@ -348,14 +375,14 @@ function isPositiveOffer(o: { canPost: string; price?: unknown }): boolean {
 async function writePriceRecords(
   store: Store,
   reply: Reply,
-  target: Target,
+  target: Target | undefined,
   parsed: OutreachResult,
   groups: DomainGroup[],
   senderDomains: string[],
   clock: Clock,
   extraction: ExtractionProvenance,
 ): Promise<void> {
-  const ownDomain = normalizeDomain(target.websiteUrl);
+  const ownDomain = target ? normalizeDomain(target.websiteUrl) : undefined;
   const write = async (group: DomainGroup): Promise<void> => {
     const record: PriceRecord = {
       id: newId('pricerecord'),
@@ -365,7 +392,7 @@ async function writePriceRecords(
       sourceEmail: normalizeEmail(reply.fromAddress),
       sourceMessageId: reply.rfcMessageId,
       replyId: reply.id,
-      ...(group.domain === ownDomain ? { targetId: target.id } : {}),
+      ...(target && group.domain === ownDomain ? { targetId: target.id } : {}),
       attribution: group.attribution,
       ...(parsed.optOut ? { optOut: true } : {}),
       // Self-describing: which run produced it, and the AI's own account of why.

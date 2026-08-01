@@ -39,6 +39,63 @@ export function normalizeEmail(addr: string): string {
 }
 
 /**
+ * Mailbox providers whose domain says NOTHING about the sender's website. A
+ * publisher writing from info@theirsite.com is telling us which site they mean;
+ * one writing from the same person's gmail is not.
+ *
+ * This is the hinge for an unmatched reply. With a real domain we can anchor a
+ * bulk price list to the sender's own site (MAX_DOMAINS_PER_REPLY keeps that one
+ * row). From a free mailbox there is nothing to anchor to, so the same cap drops
+ * everything — which is the intended outcome: a 900-row rate card from a gmail
+ * address tells us nothing attributable.
+ *
+ * Not exhaustive and never will be; it is a denylist of the providers that
+ * actually show up. A missing entry degrades safely — the worst case is that we
+ * attribute a bulk list to a mailbox domain, which then surfaces for review.
+ */
+export const FREEMAIL_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com', 'outlook.com', 'outlook.co.uk', 'hotmail.com',
+  'hotmail.co.uk', 'hotmail.fr', 'hotmail.it', 'hotmail.es', 'live.com',
+  'live.co.uk', 'msn.com', 'yahoo.com', 'yahoo.co.uk', 'yahoo.co.in',
+  'yahoo.fr', 'yahoo.de', 'yahoo.es', 'yahoo.it', 'ymail.com', 'rocketmail.com',
+  'aol.com', 'icloud.com', 'me.com', 'mac.com', 'proton.me', 'protonmail.com',
+  'pm.me', 'gmx.com', 'gmx.de', 'gmx.net', 'web.de', 'mail.com', 'mail.ru',
+  'inbox.ru', 'bk.ru', 'list.ru', 'internet.ru', 'yandex.ru', 'yandex.com',
+  'ya.ru', 'ukr.net', 'i.ua', 'meta.ua', 'zoho.com', 'fastmail.com',
+  'tutanota.com', 'tuta.io', 'hushmail.com', 'qq.com', '163.com', '126.com',
+  'sina.com', 'naver.com', 'daum.net', 'hanmail.net', 'seznam.cz', 'wp.pl',
+  'o2.pl', 'onet.pl', 'interia.pl', 'op.pl', 'abv.bg', 'libero.it',
+  'virgilio.it', 'tiscali.it', 'alice.it', 'orange.fr', 'wanadoo.fr', 'free.fr',
+  'laposte.net', 'sfr.fr', 'bbox.fr', 't-online.de', 'freenet.de', 'arcor.de',
+  'btinternet.com', 'sky.com', 'virginmedia.com', 'ntlworld.com', 'talktalk.net',
+  'comcast.net', 'verizon.net', 'att.net', 'sbcglobal.net', 'cox.net',
+  'bellsouth.net', 'charter.net', 'earthlink.net', 'juno.com', 'rogers.com',
+  'shaw.ca', 'sympatico.ca', 'telus.net', 'bigpond.com', 'optusnet.com.au',
+  'uol.com.br', 'bol.com.br', 'terra.com.br', 'ig.com.br', 'rediffmail.com',
+]);
+
+/** Is this address from a free mailbox provider (so its domain is not a site)? */
+export function isFreemailAddress(address: string): boolean {
+  const domain = normalizeEmail(address).split('@')[1];
+  return domain ? FREEMAIL_DOMAINS.has(domain) : false;
+}
+
+/**
+ * The sender's own website, inferred from their address — "the site they are
+ * writing about" when we have no target to tell us. Undefined for a free mailbox
+ * (see FREEMAIL_DOMAINS) and for anything that isn't a parseable address.
+ *
+ * Deliberately NOT used when a target exists: there the contacted site is a fact,
+ * and an inference must never override it.
+ */
+export function senderSiteDomain(address: string): string | undefined {
+  if (isFreemailAddress(address)) return undefined;
+  const domain = normalizeEmail(address).split('@')[1];
+  if (!domain) return undefined;
+  return normalizeDomain(domain) || undefined;
+}
+
+/**
  * True once we already have a substantive outcome for this target (a parsed
  * result — price/canPost, or an opt-out).
  *

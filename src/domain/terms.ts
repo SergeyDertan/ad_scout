@@ -35,16 +35,29 @@ const uword = (alt: string) => new RegExp(`(?<!\\p{L})(?:${alt})(?!\\p{L})`, 'iu
 /** Phrases that mean "we never take it down". Distinct from TERM_NONE by design:
  *  saying nothing is not the same as promising permanence. */
 const PERMANENT_RE = uword(
-  'permanent(?:ly|e|ne)?|perpetual|lifetime|life[-\\s]?time|forever|indefinite(?:ly)?|no\\s+removal|never\\s+(?:removed?|deleted?)|for\\s+life|навсегда|назавжди|постоянн\\p{L}*|permanentn\\p{L}*|dauerhaft|définitif',
+  'permanent\\p{L}*|perpetual|lifetime|life[-\\s]?time|for[-\\s]?ever|indefinite(?:ly)?|no\\s+removal|never\\s+(?:removed?|deleted?)|for\\s+life|навсегда|назавжди|постоянн\\p{L}*|dauerhaft|définitif' +
+    // Romance/Slavic "for an indefinite period": a tempo indeterminato (it),
+    // tiempo indefinido (es), na czas nieokreślony (pl). Each is a promise of
+    // permanence, so it belongs in the same cell as "permanent" — not in its own
+    // other:* cell, which is where they all landed before.
+    '|indeterminat\\p{L}*|indefinid\\p{L}*|nieokreślon\\p{L}*|neurčit\\p{L}*',
 );
+
+/** Phrases that promise permanence without using a permanence WORD — "for the
+ *  entire duration of the site" is a publisher saying it never comes down. Kept
+ *  separate from PERMANENT_RE because these are multi-word and need no boundary. */
+const PERMANENT_PHRASE_RE =
+  /entire\s+duration|whole\s+(?:life|duration)|as\s+long\s+as\s+the\s+(?:site|website|domain)|sin\s+fecha\s+de\s+cadu/iu;
 
 // Unit vocabularies. English first, plus the languages that actually show up in
 // the inbox — the same pragmatic approach parsePrice takes with currency words.
 // NB: no bare "an" — the English article would turn "an article" into a 1-year term.
-const YEAR_RE = uword('years?|yrs?|annual(?:ly)?|yearly|год[ауие]*|лет|рік|рок[иу]|років|años?|ans|années?|jahre?n?|rok[ui]?|lata?');
-const MONTH_RE = uword('months?|mos?\\.?|monthly|месяц\\p{L}*|місяц\\p{L}*|mes(?:es)?|mois|monate?n?|miesi[ąa]c\\p{L}*');
-const WEEK_RE = uword('weeks?|wks?\\.?|weekly|недел\\p{L}*|тижн\\p{L}*|semanas?|semaines?|wochen?|tydzie[ńn]|tygodni\\p{L}*');
-const DAY_RE = uword('days?|dias?|días?|jours?|tage?n?|дн\\p{L}*|день|dni|dzie[ńn]');
+// NB: Portuguese "anos"/"ano" and Italian "anni"/"anno" were missing, so every
+// "publicados por 5 anos" / "online 2 anni" fell through to an other:* cell.
+const YEAR_RE = uword('years?|yrs?|annual(?:ly)?|yearly|год[ауие]*|лет|рік|рок[иу]|років|años?|anos?|ann[oi]|ans|années?|jahre?n?|rok[ui]?|lata?');
+const MONTH_RE = uword('months?|mos?\\.?|monthly|месяц\\p{L}*|місяц\\p{L}*|mes(?:es|i)?|mois|monate?n?|miesi[ąa]c\\p{L}*');
+const WEEK_RE = uword('weeks?|wks?\\.?|weekly|недел\\p{L}*|тижн\\p{L}*|semanas?|semaines?|settiman[ae]|wochen?|tydzie[ńn]|tygodni\\p{L}*');
+const DAY_RE = uword('days?|dias?|días?|giorn[oi]|jours?|tage?n?|дн\\p{L}*|день|dni|dzie[ńn]');
 
 /** Spelled-out counts. "a month" is by far the most common ("99$ for a month"). */
 const WORD_NUMBERS: Record<string, number> = {
@@ -65,20 +78,34 @@ const NAMED_PERIODS: [RegExp, number][] = [
 function countBefore(text: string, unit: RegExp): number | undefined {
   const m = unit.exec(text);
   if (!m) return undefined;
-  const before = text.slice(0, m.index);
+  // Drop the joiner between count and unit before reading the count. A hyphen is
+  // as common as a space in this position ("12-month", "two-year"), and leaving
+  // it attached defeated BOTH matchers below — which then fell through to the
+  // `return 1` at the bottom, silently turning "12-month" into one month and
+  // "two-year period" into one year.
+  const before = text.slice(0, m.index).replace(/[\s ]*[-–—]?[\s ]*$/u, '');
+
+  // A parenthesised numeral restating the word before it — "three (3) years" —
+  // is the most precise figure on offer, so it is read first.
+  const paren = /\((\d+(?:[.,]\d+)?)\)$/.exec(before);
+  if (paren) {
+    const n = Number(paren[1]!.replace(',', '.'));
+    if (Number.isFinite(n) && n > 0) return n;
+  }
   // A digit count, possibly fractional ("1.5 months") or a range ("3-6 months",
   // where the LOWER bound is what we can promise — same convention as "3-5x").
-  const digits = /(\d+(?:[.,]\d+)?)\s*(?:[-–—]\s*\d+(?:[.,]\d+)?)?$/.exec(before.trimEnd());
+  const digits = /(\d+(?:[.,]\d+)?)\s*(?:[-–—]\s*\d+(?:[.,]\d+)?)?$/.exec(before);
   if (digits) {
     const n = Number(digits[1]!.replace(',', '.'));
     if (Number.isFinite(n) && n > 0) return n;
   }
-  const word = /([\p{L}]+)\s*$/u.exec(before.trim());
+  const word = /([\p{L}]+)$/u.exec(before);
   if (word) {
     const n = WORD_NUMBERS[word[1]!.toLowerCase()];
     if (n) return n;
   }
-  // "monthly" / "for a month" with nothing quantifying it ⇒ one.
+  // Nothing quantifies the unit, which is itself the statement of quantity:
+  // "monthly", "year", "per month per article", "/site/year". All mean one.
   return 1;
 }
 
@@ -115,7 +142,7 @@ function otherTerm(raw: string): PlacementTerm {
 export function parseTerm(raw: string | undefined): PlacementTerm {
   const value = (raw ?? '').trim();
   if (!value) return TERM_NONE;
-  if (PERMANENT_RE.test(value)) return { key: TERM_PERM_KEY, raw: value };
+  if (PERMANENT_RE.test(value) || PERMANENT_PHRASE_RE.test(value)) return { key: TERM_PERM_KEY, raw: value };
 
   for (const [re, months] of NAMED_PERIODS) {
     if (re.test(value)) return monthsTerm(months, value);

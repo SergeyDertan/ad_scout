@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { attributeOffers, detectBounce, emailToDomains, matchReply, MAX_DOMAINS_PER_REPLY } from './reply-matching';
+import { attributeOffers, detectBounce, emailToDomains, isFreemailAddress, matchReply, MAX_DOMAINS_PER_REPLY, senderSiteDomain } from './reply-matching';
 import type { PostOffer } from './types';
 import { TERM_NONE } from './terms';
 
@@ -193,4 +193,64 @@ test('detectBounce peels the bare address out of a markdown-rendered DSN body', 
 test('detectBounce returns false for an ordinary reply', () => {
   const r = detectBounce('owner@site.com', 'Sure, the price is $200.');
   assert.equal(r.isBounce, false);
+});
+
+test('senderSiteDomain reads a corporate sender as their own site', () => {
+  assert.equal(senderSiteDomain('info@coincodex.com'), 'coincodex.com');
+  assert.equal(senderSiteDomain('Adriana <adriana@MiamiLivingMagazine.com>'), 'miamilivingmagazine.com');
+});
+
+test('senderSiteDomain refuses to read a free mailbox as a site', () => {
+  // The hinge for an unmatched reply: gmail.com is not the sender's website, so
+  // there is nothing to anchor a bulk price list to.
+  for (const addr of ['tokyo.reporter@gmail.com', 'x@outlook.com', 'y@yandex.ru', 'z@proton.me']) {
+    assert.equal(senderSiteDomain(addr), undefined, addr);
+    assert.equal(isFreemailAddress(addr), true, addr);
+  }
+  assert.equal(isFreemailAddress('info@coincodex.com'), false);
+});
+
+test('a bulk price list from a corporate sender keeps that sender own row', () => {
+  // Over the cap, the one row we can trust is the sender's own site.
+  const offers = Array.from({ length: MAX_DOMAINS_PER_REPLY + 5 }, (_, i) =>
+    po({ website: `site${i}.com`, price: { raw: `$${i + 1}`, amount: i + 1 } }),
+  );
+  offers.push(po({ website: 'publishnova.com', price: { raw: '$99', amount: 99 } }));
+
+  const { groups, capped, reviewReasons } = attributeOffers(
+    offers,
+    ['publishnova.com'],
+    senderSiteDomain('louis.verdet@publishnova.com'),
+  );
+  assert.equal(capped, true);
+  assert.deepEqual(groups.map((g) => g.domain), ['publishnova.com']);
+  assert.match(reviewReasons.join(' '), /Kept only the contacted site/);
+});
+
+test('a bulk price list from a free mailbox is discarded entirely', () => {
+  // No domain to anchor to, so nothing is kept — recording an arbitrary row out
+  // of a 900-row rate card would be worse than recording none.
+  const offers = Array.from({ length: MAX_DOMAINS_PER_REPLY + 5 }, (_, i) =>
+    po({ website: `site${i}.com`, price: { raw: `$${i + 1}`, amount: i + 1 } }),
+  );
+  const { groups, capped, reviewReasons } = attributeOffers(
+    offers,
+    [],
+    senderSiteDomain('tokyo.reporter@gmail.com'),
+  );
+  assert.equal(capped, true);
+  assert.deepEqual(groups, []);
+  assert.match(reviewReasons.join(' '), /None of them is the contacted site/);
+});
+
+test('a SHORT price list from a free mailbox is still kept', () => {
+  // The cap is what discards; a free mailbox quoting a couple of sites is
+  // ordinary and must survive.
+  const offers = [
+    po({ website: 'a.com', price: { raw: '$100', amount: 100 } }),
+    po({ website: 'b.com', price: { raw: '$200', amount: 200 } }),
+  ];
+  const { groups, capped } = attributeOffers(offers, [], senderSiteDomain('someone@gmail.com'));
+  assert.equal(capped, false);
+  assert.deepEqual(groups.map((g) => g.domain).sort(), ['a.com', 'b.com']);
 });

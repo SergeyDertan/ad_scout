@@ -6,16 +6,17 @@
 // been asked about VPN and would almost certainly quote the same grey-niche
 // price. What actually rules a site out is an explicit refusal.
 //
-// So a niche filter resolves to one of three outcomes:
+// So a niche filter resolves to one of four verdicts:
 //
-//   quoted    they named this niche → their answer and their price
-//   inferred  they never mentioned it, but priced OTHER niches in the same tier
-//             → 'maybe', at the range those siblings cost
+//   yes       they named this niche and will take it → their own price
+//   maybe     either they hedged on it by name, or they never mentioned it but
+//             priced OTHER niches in the same tier → the range those siblings cost
+//   no        they refused it: this niche by name, or the whole tier around it
+//   unknown   nothing here answers the question — no quote, and no same-tier
+//             price to go on, since a regular-post price says nothing about a
+//             sensitive one. Not a result: such a domain is not shown at all.
 //
-// Either way a niche is quoted at its CHEAPEST placement term — see priceLabel.
-//   excluded  they refused it (this niche, or the whole grey area) → not a
-//             result at all; also when there is no same-tier price to go on,
-//             since a regular-post price says nothing about a sensitive one
+// A niche is always quoted at its CHEAPEST placement term — see priceLabel.
 //
 // Inference is per TIER, and the tier is the viewer's own classification. Which
 // means an UNCLASSIFIED niche cannot be inferred for at all: without knowing
@@ -26,23 +27,32 @@
 // classified. (The operator console classifies everything, so this never
 // applies there.)
 
-import { tierOf, type CanPost, type DomainCell, type PriceValue, type Tier } from './types';
+import { tierOf, type DomainCell, type PriceValue, type Tier } from './types';
 
 /** The umbrella niche key: a blanket grey-niche answer ("no sensitive topics",
  *  "any grey niche is $500") rather than a named vertical. */
 export const SENSITIVE_KEY = 'sensitive';
 
+/** 'unknown' is the "don't show this domain" case — see the header comment. */
+export type NicheVerdict = 'yes' | 'maybe' | 'no' | 'unknown';
+
 export interface NicheAnswer {
-  /** 'yes'/'maybe' only — a refusal is an exclusion, not an answer. */
-  canPost: CanPost;
-  /** True when no cell named this niche and the answer comes from same-tier
-   *  siblings. Drives the "we're extrapolating" hint in the UI. */
+  verdict: NicheVerdict;
+  /** True when no cell named this niche and the verdict comes from same-tier
+   *  siblings. Drives the "we're extrapolating" hint in the UI — it qualifies a
+   *  'no' every bit as much as a 'maybe'. */
   inferred: boolean;
-  /** The cells the answer (and the price) came from. */
+  /** The cells the verdict (and the price) came from. */
   from: DomainCell[];
   /** Display label: "500 USD", "850–900 USD", "850 USD / 800 EUR", or "—". */
   price: string;
 }
+
+const UNKNOWN: NicheAnswer = { verdict: 'unknown', inferred: false, from: [], price: '—' };
+
+/** A refusal carries no price — what they won't sell has no rate. */
+const refused = (from: DomainCell[], inferred: boolean): NicheAnswer =>
+  ({ verdict: 'no', inferred, from, price: '—' });
 
 /** Does this cell speak for `tier`? The umbrella key counts as sensitive
  *  whatever the viewer has (or hasn't) classified 'sensitive' itself as —
@@ -53,20 +63,20 @@ function speaksFor(cell: DomainCell, tier: Tier): boolean {
 
 /**
  * Resolve one domain's standing cells against a niche filter.
- * Returns null when the domain should not appear in the results at all.
+ * A verdict of 'unknown' means the domain should not appear in the results.
  *
  * `tier` is the filtered niche's tier — it has to be passed in because the
  * interesting case is precisely the one where this domain has no cell for that
  * niche to read it from.
  */
-export function answerForNiche(cells: DomainCell[], niche: string, tier: Tier): NicheAnswer | null {
+export function answerForNiche(cells: DomainCell[], niche: string, tier: Tier): NicheAnswer {
   // 1. Did they name this niche? Their own words win over anything inferred.
   const named = cells.filter((c) => c.category === niche);
   if (named.length > 0) {
     const open = named.filter((c) => c.canPost !== 'no');
-    if (open.length === 0) return null; // explicit refusal
+    if (open.length === 0) return refused(named, false); // they said no to this niche
     return {
-      canPost: open.some((c) => c.canPost === 'yes') ? 'yes' : 'maybe',
+      verdict: open.some((c) => c.canPost === 'yes') ? 'yes' : 'maybe',
       inferred: false,
       from: open,
       price: priceLabel(open),
@@ -74,18 +84,30 @@ export function answerForNiche(cells: DomainCell[], niche: string, tier: Tier): 
   }
 
   // 2. A blanket refusal of the whole grey area rules out every sensitive niche.
+  //    It outranks the sibling pass below: when a site both quotes casino and
+  //    says "no grey niches", the refusal is the safer of two contradictions.
   const umbrella = cells.filter((c) => c.category === SENSITIVE_KEY);
-  if (tier === 'sens' && umbrella.length > 0 && umbrella.every((c) => c.canPost === 'no')) return null;
+  if (tier === 'sens' && umbrella.length > 0 && umbrella.every((c) => c.canPost === 'no'))
+    return refused(umbrella, true);
+
+  if (tier === 'unknown') return UNKNOWN; // no tier ⇒ no peer group ⇒ no honest read
 
   // 3. Infer from what they DID price in the same tier. Only cells they said yes
   //    to: a 'maybe' priced elsewhere is too weak to extrapolate from, and a 'no'
   //    for one vertical says nothing about the price of another.
   //    A blanket sensitive quote lands here too — it answers the tier, not the
   //    niche, so it reads as 'maybe' like any other extrapolation.
-  if (tier === 'unknown') return null; // no tier ⇒ no peer group ⇒ no honest estimate
-  const siblings = cells.filter((c) => c.canPost === 'yes' && c.category !== niche && speaksFor(c, tier));
-  if (siblings.length === 0) return null;
-  return { canPost: 'maybe', inferred: true, from: siblings, price: priceLabel(siblings) };
+  const sameTier = cells.filter((c) => speaksFor(c, tier));
+  const siblings = sameTier.filter((c) => c.canPost === 'yes' && c.category !== niche);
+  if (siblings.length > 0) return { verdict: 'maybe', inferred: true, from: siblings, price: priceLabel(siblings) };
+
+  // 4. Nothing in this tier is on offer and everything in it was refused: the
+  //    site takes nothing of this kind, so the unasked niche is a no as well.
+  //    Only when the refusals are ALL the tier evidence there is — a single 'no'
+  //    alongside a 'maybe' is an open question, not a closed door.
+  if (sameTier.length > 0 && sameTier.every((c) => c.canPost === 'no')) return refused(sameTier, true);
+
+  return UNKNOWN;
 }
 
 /**

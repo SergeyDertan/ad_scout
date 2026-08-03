@@ -24,7 +24,7 @@ import { ChevronDownIcon, DownloadIcon, SearchIcon, TagIcon } from './icons';
 import { DomainsExportDialog } from './DomainsExportDialog';
 import { ExtractionDebugModal } from './ExtractionDebugModal';
 import { TierBadge } from './TierBadge';
-import { answerForNiche, type NicheAnswer } from '../niche-answer';
+import { answerForNiche, type NicheAnswer, type NicheVerdict } from '../niche-answer';
 import {
   formatPrice,
   formatProvenance,
@@ -402,6 +402,26 @@ function DomainDetailModal({
 type SortKey = 'domain' | 'standingCells' | 'activeSpecials' | 'recordCount' | 'lastObservedAt';
 type StateFilter = 'all' | 'excluded' | 'optedOut' | 'active' | 'specials';
 
+/** Which niche verdicts to keep. 'open' — the default — is the question the page
+ *  was built to answer ("where could this run?"), so it stays the landing state;
+ *  the single-verdict options split that into certainty vs extrapolation, and
+ *  'no' turns the page around into "who has ruled this out?". */
+type AnswerFilter = 'open' | 'yes' | 'maybe' | 'no';
+
+const ANSWER_FILTERS: { value: AnswerFilter; label: string }[] = [
+  { value: 'open', label: 'yes + maybe' },
+  { value: 'yes', label: 'yes — will post' },
+  { value: 'maybe', label: 'maybe — fallback' },
+  { value: 'no', label: 'no — refused' },
+];
+
+/** 'unknown' matches nothing: a domain with no evidence either way is not an
+ *  answer to any of the four questions above. */
+function matchesAnswer(verdict: NicheVerdict, filter: AnswerFilter): boolean {
+  if (filter === 'open') return verdict === 'yes' || verdict === 'maybe';
+  return verdict === filter;
+}
+
 // --- Offer filters (mutually exclusive): tier = sensitivity, category = niche.
 // A cell counts as "on offer" only when the publisher said yes.
 const canOffer = (c: DomainCell) => c.canPost === 'yes';
@@ -463,18 +483,27 @@ interface RowData {
   answerColumn?: boolean;
 }
 
+const VERDICT_PALETTE: Record<NicheVerdict, string> = {
+  yes: 'green', maybe: 'gray', no: 'red', unknown: 'gray',
+};
+
 function AnswerCell({ answer }: { answer: NicheAnswer }) {
   // What they'd charge, and how much of that is their word vs our inference.
   // One niche can contribute several cells (one per placement term), so name the
   // sources once each — "inferred from casino, casino" reads like a bug.
   const sources = [...new Set(answer.from.map((c) => c.label || c.category))];
-  const title = answer.inferred
-    ? `Not quoted for this niche — inferred from what they charge for ${sources.join(', ')}`
-    : 'Quoted for this niche';
+  const title =
+    answer.verdict === 'no'
+      ? answer.inferred
+        ? `Not asked about this niche — but they refuse ${sources.join(', ')} and offer nothing else in this tier`
+        : 'They refused this niche by name'
+      : answer.inferred
+        ? `Not quoted for this niche — inferred from what they charge for ${sources.join(', ')}`
+        : 'Quoted for this niche';
   return (
     <HStack gap={1.5} minW={0} title={title}>
-      <Badge colorPalette={answer.canPost === 'yes' ? 'green' : 'gray'} variant="subtle" size="sm">
-        {answer.canPost}
+      <Badge colorPalette={VERDICT_PALETTE[answer.verdict]} variant="subtle" size="sm">
+        {answer.verdict}
       </Badge>
       <Text fontWeight="medium" overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
         {answer.price}
@@ -533,6 +562,7 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
   const [stateFilter, setStateFilter] = useState<StateFilter>('all');
   const [tierFilter, setTierFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
+  const [answerFilter, setAnswerFilter] = useState<AnswerFilter>('open');
   const [sortKey, setSortKey] = useState<SortKey>('lastObservedAt');
   const [dir, setDir] = useState<'asc' | 'desc'>('desc');
   const [showExport, setShowExport] = useState(false);
@@ -603,9 +633,10 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
       if (categoryFilter) {
         // Not a key match: what would a post in this niche cost here? A domain
         // that never mentioned it still answers, from its same-tier prices; one
-        // that refused it drops out. See niche-answer.ts.
+        // that refused it answers 'no'; one with nothing to go on drops out
+        // whatever the answer filter says. See niche-answer.ts.
         const answer = answerForNiche(d.cells ?? [], categoryFilter, filterTier);
-        if (!answer) continue;
+        if (!matchesAnswer(answer.verdict, answerFilter)) continue;
         filtered.push({ ...d, answer });
         continue;
       }
@@ -617,7 +648,7 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
       if (sortKey === 'lastObservedAt') return factor * (a.lastObservedAt ?? '').localeCompare(b.lastObservedAt ?? '');
       return factor * ((a[sortKey] as number) - (b[sortKey] as number));
     });
-  }, [rows, search, stateFilter, tierFilter, categoryFilter, tierByCategory, sortKey, dir]);
+  }, [rows, search, stateFilter, tierFilter, categoryFilter, answerFilter, tierByCategory, sortKey, dir]);
 
   const listHeight = Math.min(visible.length * ROW_H, MAX_LIST_H);
 
@@ -628,8 +659,10 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
       <Text color="fg.muted" fontSize="sm" mb={4}>
         Per-domain price history — every recorded quote, folded into a current price sheet. Click a row to open the
         full history. Subdomains and TLDs are kept distinct (casik.com ≠ casik.ua). Filtering by niche answers “what
-        would this cost here?”: sites that never quoted that niche still appear, at what they charge for others in the
-        same tier (shown as <Text as="span" fontWeight="semibold">maybe ~</Text>); sites that refused it don’t.
+        would this cost here?”: <Text as="span" fontWeight="semibold">yes</Text> is their own quote for that niche,{' '}
+        <Text as="span" fontWeight="semibold">maybe ~</Text> is a fallback from what they charge for others in the same
+        tier, and <Text as="span" fontWeight="semibold">no</Text> is a refusal — of that niche, or of the whole tier.
+        Sites with nothing to go on are left out either way.
       </Text>
 
       <HStack gap={2} mb={3} flexWrap="wrap">
@@ -670,11 +703,31 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
         <NativeSelect.Root size="sm" width="44" variant="plain" disabled={!!tierFilter}>
           <NativeSelect.Field
             value={categoryFilter}
-            onChange={(e) => { setCategoryFilter(e.target.value); if (e.target.value) setTierFilter(''); }}
+            onChange={(e) => {
+              setCategoryFilter(e.target.value);
+              if (e.target.value) setTierFilter('');
+              // Clearing the niche leaves nothing for the verdict to be about, so
+              // don't let a stale 'no' silently narrow the next niche picked.
+              else setAnswerFilter('open');
+            }}
             fontWeight="medium"
           >
             <option value="">any niche</option>
             {categoryOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </NativeSelect.Field>
+          <NativeSelect.Indicator />
+        </NativeSelect.Root>
+
+        {/* Availability for the picked niche. Meaningless without one — there is
+            no verdict to filter on until a niche is chosen. */}
+        <NativeSelect.Root size="sm" width="48" variant="plain" disabled={!categoryFilter}>
+          <NativeSelect.Field
+            value={answerFilter}
+            onChange={(e) => setAnswerFilter(e.target.value as AnswerFilter)}
+            fontWeight="medium"
+            title={categoryFilter ? undefined : 'Pick a niche first'}
+          >
+            {ANSWER_FILTERS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </NativeSelect.Field>
           <NativeSelect.Indicator />
         </NativeSelect.Root>

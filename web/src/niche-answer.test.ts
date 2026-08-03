@@ -38,13 +38,13 @@ test('a grey-niche site with no VPN quote answers "maybe" at its grey-niche pric
   const cells = [cell('regular', 'reg', 'yes', 40), cell('casino', 'sens', 'yes', 500)];
 
   const answer = answerForNiche(cells, 'vpn', 'sens');
-  assert.ok(answer, 'nothing refuses vpn here, so the domain must still appear');
-  assert.equal(answer.canPost, 'maybe');
+  assert.notEqual(answer.verdict, 'unknown', 'nothing refuses vpn here, so the domain must still appear');
+  assert.equal(answer.verdict, 'maybe');
   assert.equal(answer.inferred, true);
   assert.equal(answer.price, '500 USD', 'the casino price is the evidence, not the $40 regular one');
 });
 
-test('an explicit refusal drops the domain from the results', () => {
+test('an explicit refusal answers "no", for that niche only', () => {
   // omega_casik: regular $50, casino $999, vpn — no.
   const cells = [
     cell('regular', 'reg', 'yes', 50),
@@ -52,9 +52,12 @@ test('an explicit refusal drops the domain from the results', () => {
     cell('vpn', 'sens', 'no'),
   ];
 
-  assert.equal(answerForNiche(cells, 'vpn', 'sens'), null);
+  const refusal = answerForNiche(cells, 'vpn', 'sens');
+  assert.equal(refusal.verdict, 'no');
+  assert.equal(refusal.inferred, false, 'their own word about vpn, not an extrapolation');
+  assert.equal(refusal.price, '—', 'a refusal has no price to quote');
   // ...but only for the niche they refused.
-  assert.equal(answerForNiche(cells, 'casino', 'sens')?.canPost, 'yes');
+  assert.equal(answerForNiche(cells, 'casino', 'sens')?.verdict, 'yes');
 });
 
 test('several same-tier quotes infer a range', () => {
@@ -66,7 +69,7 @@ test('several same-tier quotes infer a range', () => {
   ];
 
   const answer = answerForNiche(cells, 'vpn', 'sens');
-  assert.equal(answer?.canPost, 'maybe');
+  assert.equal(answer?.verdict, 'maybe');
   assert.equal(answer?.price, '850–900 USD');
 });
 
@@ -88,7 +91,7 @@ test('a quoted niche answers for itself, at its own price', () => {
   const cells = [cell('regular', 'reg', 'yes', 40), cell('casino', 'sens', 'yes', 500)];
 
   const answer = answerForNiche(cells, 'casino', 'sens');
-  assert.equal(answer?.canPost, 'yes');
+  assert.equal(answer?.verdict, 'yes');
   assert.equal(answer?.inferred, false);
   assert.equal(answer?.price, '500 USD');
 });
@@ -97,8 +100,13 @@ test('a blanket "no grey niches" rules out every sensitive niche', () => {
   // The extractor emits one umbrella cell for a blanket refusal.
   const cells = [cell('regular', 'reg', 'yes', 40), cell('sensitive', 'sens', 'no')];
 
-  assert.equal(answerForNiche(cells, 'vpn', 'sens'), null);
-  assert.equal(answerForNiche(cells, 'casino', 'sens'), null);
+  assert.equal(answerForNiche(cells, 'vpn', 'sens').verdict, 'no');
+  assert.equal(answerForNiche(cells, 'casino', 'sens').verdict, 'no');
+  assert.equal(
+    answerForNiche(cells, 'vpn', 'sens').inferred,
+    true,
+    'they never named vpn — the no is read off the blanket refusal',
+  );
   // The regular tier is untouched by it.
   assert.equal(answerForNiche(cells, 'travel', 'reg')?.price, '40 USD');
 });
@@ -107,15 +115,49 @@ test('a blanket grey-niche PRICE answers the tier, but only as "maybe"', () => {
   const cells = [cell('regular', 'reg', 'yes', 40), cell('sensitive', 'sens', 'yes', 500)];
 
   const answer = answerForNiche(cells, 'vpn', 'sens');
-  assert.equal(answer?.canPost, 'maybe', 'a tier-wide quote still is not a vpn quote');
+  assert.equal(answer?.verdict, 'maybe', 'a tier-wide quote still is not a vpn quote');
   assert.equal(answer?.price, '500 USD');
 });
 
 test('no same-tier evidence means no answer at all', () => {
   // A site that only ever quoted a regular post tells us nothing about vpn —
-  // showing it with its $40 regular price would be actively misleading.
+  // showing it with its $40 regular price would be actively misleading, and it
+  // is not a 'no' either: nobody has ruled vpn out.
   const cells = [cell('regular', 'reg', 'yes', 40)];
-  assert.equal(answerForNiche(cells, 'vpn', 'sens'), null);
+  assert.equal(answerForNiche(cells, 'vpn', 'sens').verdict, 'unknown');
+});
+
+test('a tier where everything on record was refused answers "no" for the rest of it', () => {
+  // They turned down casino and cbd and price no other grey niche: vpn is not an
+  // open question here, it is a site that takes nothing of the kind.
+  const cells = [
+    cell('regular', 'reg', 'yes', 40),
+    cell('casino', 'sens', 'no'),
+    cell('cbd', 'sens', 'no'),
+  ];
+
+  const answer = answerForNiche(cells, 'vpn', 'sens');
+  assert.equal(answer.verdict, 'no');
+  assert.equal(answer.inferred, true);
+  // Their regular business is unaffected by the grey-niche refusals.
+  assert.equal(answerForNiche(cells, 'travel', 'reg').verdict, 'maybe');
+});
+
+test('one refusal beside a live quote is still an open tier', () => {
+  // casino refused, cbd priced → vpn is a maybe at the cbd price, not a no.
+  const cells = [cell('casino', 'sens', 'no'), cell('cbd', 'sens', 'yes', 800)];
+
+  const answer = answerForNiche(cells, 'vpn', 'sens');
+  assert.equal(answer.verdict, 'maybe');
+  assert.equal(answer.price, '800 USD');
+});
+
+test('a hedged tier is unknown, not a no', () => {
+  // "maybe, send us the topic" for casino is too weak to price vpn from, but it
+  // is not a refusal either — it must not surface under the "no" filter.
+  const cells = [cell('regular', 'reg', 'yes', 40), cell('casino', 'sens', 'maybe')];
+
+  assert.equal(answerForNiche(cells, 'vpn', 'sens').verdict, 'unknown');
 });
 
 test('an unclassified niche is never inferred for — only quoted', () => {
@@ -127,7 +169,7 @@ test('an unclassified niche is never inferred for — only quoted', () => {
 
   // He hasn't ruled on 'nft', so there is no peer group: answering $40 (regular)
   // or $900 (casino) would both be guesses dressed as estimates.
-  assert.equal(answerForNiche(cells, 'nft', 'unknown'), null);
+  assert.equal(answerForNiche(cells, 'nft', 'unknown').verdict, 'unknown');
 
   // A quote for the unclassified niche itself still shows — that is their word,
   // not our extrapolation.

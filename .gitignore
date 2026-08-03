@@ -21,5 +21,8 @@ web/.env.local
 # Local agent settings
 .claude/settings.local.json
 
+# Firebase deploy cache — regenerated on every deploy
+.firebase/
+
 # Archives
 *.zip

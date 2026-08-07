@@ -33,7 +33,8 @@
 //      alongside 'pending', so a plain re-run retries exactly those replies, and
 //      most extraction failures are transient (CLI timeout/kill, a tool_use
 //      error) and succeed on a second pass. Nothing here decides a failure is
-//      permanent — that judgement is the wrapper's retry budget.
+//      permanent; reextract-loop.sh retries every non-zero code alike and stops
+//      only on 0, so a reply that can never parse is caught by MAX_CYCLES.
 //   1  fatal: the run died before finishing (bad env, dead store, …).
 
 import 'dotenv/config';

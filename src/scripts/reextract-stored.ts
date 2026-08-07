@@ -24,6 +24,17 @@
 //
 // Cost note: re-extraction makes one LLM call per matched reply (some fetch
 // linked pricing pages → slower, multi-turn). Mind provider usage on large DBs.
+//
+// Exit codes (scripts/reextract-loop.sh branches on these):
+//   0  every reply extracted, nothing left to do.
+//   2  paused at the Claude usage limit — resume after the window resets.
+//   3  the pass finished but N replies are left 'failed'. Distinct from 0 so an
+//      unattended wrapper can retry them: --extract-only re-picks 'failed'
+//      alongside 'pending', so a plain re-run retries exactly those replies, and
+//      most extraction failures are transient (CLI timeout/kill, a tool_use
+//      error) and succeed on a second pass. Nothing here decides a failure is
+//      permanent — that judgement is the wrapper's retry budget.
+//   1  fatal: the run died before finishing (bad env, dead store, …).
 
 import 'dotenv/config';
 import { loadConfig } from '../config';
@@ -148,6 +159,10 @@ async function main() {
     process.exitCode = 2; // distinct code so a wrapping loop can detect the pause
   } else {
     logger.info(`\nre-extraction complete: ${extracted} extracted, ${failed} failed, ${ignored} ignored (spam).`);
+    if (failed > 0) {
+      logger.info(`${failed} reply(ies) left 'failed' — re-run --extract-only to retry just those.`);
+      process.exitCode = 3; // distinct code so a wrapping loop retries instead of reporting success
+    }
   }
 
   await store.close?.();

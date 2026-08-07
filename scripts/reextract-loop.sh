@@ -13,25 +13,16 @@
 # Exit codes it reacts to:
 #   0   finished        → stop, success. THE ONLY STOP CONDITION. Means every
 #                         reply extracted, not merely "the pass ended".
-#   2   usage limit     → sleep $SLEEP_SECS, then resume. The long wait, because
-#                         the subscription window itself has to reset.
-#   *   anything else   → sleep $FAIL_SLEEP_SECS, then resume. Deliberately
-#                         undiscriminating: 3 (the pass left replies 'failed'), 1
-#                         (the run crashed), or any code at all is retried the
-#                         same way. The loop does not judge which errors are worth
-#                         retrying — it re-runs until a pass comes back clean.
-#                         Consequence to know about: a fault that recurs
-#                         identically every cycle (bad env, dead store, a reply no
-#                         model can parse) is NOT detected as permanent, so it
-#                         spins until $MAX_CYCLES is spent. At the default 60s
-#                         that costs ~24 minutes, not a day, and the log shows the
-#                         same error each cycle.
+#   *   anything else   → sleep $SLEEP_SECS, then resume. Deliberately
+#                         undiscriminating: usage limit, crash, or anything else
+#                         is retried the same way. The loop does not judge which
+#                         errors are worth retrying — it re-runs until a pass
+#                         comes back clean.
 #
 #   ./scripts/reextract-loop.sh [extra flags, e.g. --concurrency 5]
 #
 # Env:
-#   SLEEP_SECS=3600      how long to wait after a usage limit (default 1 hour).
-#   FAIL_SLEEP_SECS=60   how long to wait after any other error (default 1 min).
+#   SLEEP_SECS=3600      how long to wait after any error (default 1 hour).
 #   MAX_CYCLES=24        stop after this many runs, whatever happens (default 24).
 #                        The only bound on an otherwise endless retry — raise it
 #                        for a long unattended run.
@@ -49,7 +40,6 @@ set -uo pipefail # deliberately NOT -e: the exit code is the signal we branch on
 cd "$(dirname "$0")/.." || exit 1
 
 SLEEP_SECS="${SLEEP_SECS:-3600}"
-FAIL_SLEEP_SECS="${FAIL_SLEEP_SECS:-60}"
 MAX_CYCLES="${MAX_CYCLES:-24}"
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
@@ -83,15 +73,9 @@ while [ "$cycle" -le "$MAX_CYCLES" ]; do
     exit "$code"
   fi
 
-  # Only the usage limit earns the long wait — every other error is retried on the
-  # short one, since nothing external has to reset before the next attempt.
-  if [ "$code" -eq 2 ]; then
-    wait_secs="$SLEEP_SECS"
-    why="usage limit hit"
-  else
-    wait_secs="$FAIL_SLEEP_SECS"
-    why="exit ${code}"
-  fi
+  # Sleep on any failure and retry until MAX_CYCLES is reached
+  wait_secs="$SLEEP_SECS"
+  why="exit ${code}"
   log "${why}. Sleeping ${wait_secs}s, resuming ~$(resume_at "$wait_secs"). (DB unlocked meanwhile.)"
   sleep "$wait_secs"
 

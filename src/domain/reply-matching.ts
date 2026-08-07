@@ -81,6 +81,71 @@ export function isFreemailAddress(address: string): boolean {
 }
 
 /**
+ * Hosted support desks and bulk-mail senders. Mail arrives from these domains
+ * constantly, but none of them is a website you can buy a guest post on, so
+ * their domain must never become a priced site.
+ */
+const NON_SITE_SUFFIXES = [
+  'zendesk.com', 'freshdesk.com', 'helpscoutapp.com', 'helpscout.com', 'intercom-mail.com',
+  'intercom.io', 'hubspotemail.net', 'desk.com', 'kayako.com', 'groovehq.com', 'tawk.to',
+  'crisp.chat', 'frontapp.com', 'helpshift.com', 'zohodesk.com', 'service-now.com',
+  'sendgrid.net', 'mailchimp.com', 'list-manage.com', 'awstrack.me', 'mailgun.org',
+  'sparkpostmail.com', 'mandrillapp.com', 'sendinblue.com', 'brevo.com',
+];
+
+/** True for a support-desk / bulk-mail host — never a publisher's website. */
+export function isNonSiteDomain(domain: string): boolean {
+  const d = domain.toLowerCase();
+  return NON_SITE_SUFFIXES.some((s) => d === s || d.endsWith(`.${s}`));
+}
+
+// Hostname-shaped tokens. The TLD guard (2+ letters, no digits) keeps version
+// numbers and prices out; the extension list keeps filenames out.
+const HOSTNAME_RE = /\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,24})\b/gi;
+const FILE_EXTENSIONS = new Set(['pdf', 'jpg', 'jpeg', 'png', 'gif', 'webp', 'csv', 'xlsx', 'docx', 'doc', 'zip', 'html', 'htm', 'php', 'txt']);
+
+/**
+ * Every website domain named anywhere in a reply — in a link, an address, or as
+ * bare text. Infrastructure hosts, free mailboxes and filenames are dropped, so
+ * what is left is the set of SITES the email talks about.
+ */
+export function domainsMentionedIn(text: string): string[] {
+  const found = new Set<string>();
+  for (const [, host] of text.matchAll(HOSTNAME_RE)) {
+    const lower = host.toLowerCase();
+    const tld = lower.slice(lower.lastIndexOf('.') + 1);
+    if (FILE_EXTENSIONS.has(tld)) continue;
+    const normalized = normalizeDomain(lower);
+    if (!normalized || FREEMAIL_DOMAINS.has(normalized) || isNonSiteDomain(normalized)) continue;
+    if (normalized.endsWith('.google.com') || normalized === 'google.com') continue;
+    found.add(normalized);
+  }
+  return [...found];
+}
+
+/**
+ * May an UNTAGGED price be attributed to the sender's own email domain?
+ *
+ * Usually yes — a publisher writing from info@theirsite.com about theirsite.com
+ * is the common case, and they often never spell the domain out. The answer is
+ * no in two situations, both seen in real replies:
+ *   - the address belongs to a support desk or bulk mailer, which is not a site;
+ *   - the email is a rate card for a NETWORK of other sites and never mentions
+ *     the sender's own domain at all. Attributing those prices to the sender
+ *     files other people's rates under the agency's corporate domain.
+ *
+ * Only consulted for an UNMATCHED reply. With a target, the contacted site is a
+ * fact and no inference may override it.
+ */
+export function senderSiteIsCredible(ownDomain: string, replyText: string): boolean {
+  if (isNonSiteDomain(ownDomain)) return false;
+  const mentioned = domainsMentionedIn(replyText);
+  if (mentioned.includes(normalizeDomain(ownDomain))) return true;
+  // One stray link is nothing; a list of other people's sites is a rate card.
+  return mentioned.length < 2;
+}
+
+/**
  * The sender's own website, inferred from their address — "the site they are
  * writing about" when we have no target to tell us. Undefined for a free mailbox
  * (see FREEMAIL_DOMAINS) and for anything that isn't a parseable address.

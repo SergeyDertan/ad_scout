@@ -33,11 +33,83 @@ const DOC_RE = new RegExp(`^https?://docs\\.google\\.com/document/d/(${GOOGLE_ID
 const SLIDES_RE = new RegExp(`^https?://docs\\.google\\.com/presentation/d/(${GOOGLE_ID})`, 'i');
 const DRIVE_FILE_RE = new RegExp(`^https?://drive\\.google\\.com/file/d/(${GOOGLE_ID})`, 'i');
 
+/** Query parameters bulk senders use to carry the real destination. */
+const REDIRECT_PARAMS = ['url', 'q', 'target', 'destination', 'redirect', 'u'];
+
+/**
+ * The real destination behind one layer of click tracking, or undefined when
+ * `url` carries none. Two shapes cover almost every sender:
+ *   - a query param holding the destination (Outlook safelinks `?url=`,
+ *     Google `/url?q=`),
+ *   - an absolute URL percent-encoded into the PATH, which is what AWS SES
+ *     does: `https://x.awstrack.me/L0/https:%2F%2Fdocs.google.com%2F...`.
+ * Trackers that encode the destination opaquely (SendGrid, Mailchimp) cannot be
+ * unwrapped without following a redirect, so they are left alone.
+ */
+function unwrapOnce(url: string): string | undefined {
+  try {
+    const p = new URL(url);
+    for (const key of REDIRECT_PARAMS) {
+      const v = p.searchParams.get(key);
+      if (v && /^https?:\/\//i.test(v)) return v;
+    }
+  } catch {
+    return undefined;
+  }
+  // Skip the leading scheme (`https://`) before looking for a SECOND one.
+  const rest = url.slice(8);
+  const m = /https?(?::|%3A)(?:\/\/|%2F%2F)/i.exec(rest);
+  if (!m) return undefined;
+  try {
+    // Decoding the whole tail leaves the tracker's own suffix glued to the end
+    // ("…/edit#gid=7/1/0100019f…"). Harmless: the id and gid patterns below both
+    // match a prefix, so the export URL still comes out right.
+    const decoded = decodeURIComponent(rest.slice(m.index));
+    return /^https?:\/\//i.test(decoded) ? decoded : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Peel click-tracking wrappers until the real link (or nothing more) is left. */
+export function unwrapTrackedUrl(rawUrl: string): string {
+  let current = rawUrl;
+  for (let i = 0; i < 3; i++) {
+    const inner = unwrapOnce(current);
+    if (!inner || inner === current) break;
+    current = inner;
+  }
+  return current;
+}
+
 /**
  * The document behind `rawUrl`, or undefined when the link is an ordinary web
  * page that WebFetch handles fine.
+ *
+ * The link is unwrapped first: publishers send price lists through bulk-mail
+ * click trackers, and a wrapped Google Sheet that goes unrecognized here is
+ * never downloaded, never flagged, and the reply gets extracted from its body
+ * alone as if no price list had been sent.
  */
-export function resolveLinkedDoc(rawUrl: string): LinkedDoc | undefined {
+export function resolveLinkedDoc(url: string): LinkedDoc | undefined {
+  const unwrapped = unwrapTrackedUrl(url);
+  // Second pass on a decoded copy: some clients percent-encode characters inside
+  // the document id itself ("…/d/1oB%5FJNc…"), which stops the id pattern dead.
+  // Only reached when the URL as written matched nothing, so a link that is
+  // already valid is never rewritten.
+  return matchLinkedDoc(unwrapped) ?? matchLinkedDoc(percentDecode(unwrapped));
+}
+
+function percentDecode(url: string): string {
+  if (!url.includes('%')) return url;
+  try {
+    return decodeURIComponent(url);
+  } catch {
+    return url;
+  }
+}
+
+function matchLinkedDoc(rawUrl: string): LinkedDoc | undefined {
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -49,6 +121,15 @@ export function resolveLinkedDoc(rawUrl: string): LinkedDoc | undefined {
   // and mis-pairs prices.
   if (parsed.pathname.toLowerCase().endsWith('.pdf')) {
     return { url: rawUrl, filename: pdfName(parsed), mimeType: 'application/pdf', kind: 'PDF' };
+  }
+  // Unwrapping leaves the tracker's own suffix glued after the real path
+  // ("/rates.pdf/1/0100019f…"). A sheet id still matches as a prefix, but a PDF
+  // path has to end at the file, so cut there. Only when segments FOLLOW the
+  // .pdf — a plain link keeps its query string, which may be a signed URL.
+  const embeddedPdf = /^(.*?\.pdf)\//i.exec(parsed.pathname);
+  if (embeddedPdf) {
+    const url = `${parsed.origin}${embeddedPdf[1]}`;
+    return { url, filename: pdfName(new URL(url)), mimeType: 'application/pdf', kind: 'PDF' };
   }
 
   const sheet = SHEET_RE.exec(rawUrl);

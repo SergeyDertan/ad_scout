@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { attributeOffers, detectBounce, emailToDomains, isFreemailAddress, matchReply, MAX_DOMAINS_PER_REPLY, senderSiteDomain } from './reply-matching';
+import { attributeOffers, detectBounce, domainsMentionedIn, emailToDomains, isFreemailAddress, matchReply, MAX_DOMAINS_PER_REPLY, senderSiteDomain, senderSiteIsCredible } from './reply-matching';
 import type { PostOffer } from './types';
 import { TERM_NONE } from './terms';
 
@@ -253,4 +253,40 @@ test('a SHORT price list from a free mailbox is still kept', () => {
   const { groups, capped } = attributeOffers(offers, [], senderSiteDomain('someone@gmail.com'));
   assert.equal(capped, false);
   assert.deepEqual(groups.map((g) => g.domain).sort(), ['a.com', 'b.com']);
+});
+
+// --- sender-site credibility (an unmatched reply's guessed domain) -----------
+
+test('a publisher who never names their own site is still credible', () => {
+  // The common case: info@theirsite.com quoting a price, no domain in the body.
+  assert.equal(senderSiteIsCredible('theirsite.com', 'Yes, we can publish. Our rate is $80 per post.'), true);
+});
+
+test('a support desk is never a site you can buy a post on', () => {
+  assert.equal(senderSiteIsCredible('signingdaysports.zendesk.com', 'Guest post is $150.'), false);
+});
+
+test("a network rate card is not attributed to the agency's own domain", () => {
+  // The wpmit.com case: prices for seven other sites, sender's own site absent.
+  const body = [
+    'Our current rates:',
+    'booksummaryclub.com — $100', 'playmyworld.com — $150', 'turbogeek.org — $180',
+  ].join('\n');
+  assert.equal(senderSiteIsCredible('wpmit.com', body), false);
+});
+
+test('a rate card that DOES include the sender site keeps its attribution', () => {
+  const body = 'Rates: wpmit.com — $80, booksummaryclub.com — $100, turbogeek.org — $180';
+  assert.equal(senderSiteIsCredible('wpmit.com', body), true);
+});
+
+test('one stray link does not disqualify the sender site', () => {
+  assert.equal(senderSiteIsCredible('theirsite.com', 'Sure — see our media kit at cdn.example.com/kit'), true);
+});
+
+test('domainsMentionedIn ignores mail plumbing, freemail and filenames', () => {
+  const found = domainsMentionedIn(
+    'Write to me at rina@gmail.com or see docs.google.com/spreadsheets/d/abc — rates in media-kit.pdf for turbogeek.org',
+  );
+  assert.deepEqual(found, ['turbogeek.org']);
 });

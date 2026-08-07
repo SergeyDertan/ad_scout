@@ -10,6 +10,7 @@ import { OllamaLlmProvider } from '../adapters/llm/ollama.provider';
 import { OpenAiLlmProvider } from '../adapters/llm/openai.provider';
 import { ClaudeLlmProvider } from '../adapters/llm/claude.provider';
 import { ClaudeCodeLlmProvider } from '../adapters/llm/claude-code.provider';
+import { AntigravityLlmProvider } from '../adapters/llm/antigravity.provider';
 import { MemoryStore } from '../adapters/store/memory.store';
 import { PouchDbStore } from '../adapters/store/pouchdb.store';
 import type { EmailProvider } from '../ports/email-provider';
@@ -37,6 +38,8 @@ export function buildLlm(config: Config): LlmProvider {
       return new ClaudeLlmProvider(config.claude);
     case 'claude-code':
       return new ClaudeCodeLlmProvider(config.claudeCode);
+    case 'antigravity':
+      return new AntigravityLlmProvider(config.antigravity);
     case 'dummy':
     default:
       return new DummyLlmProvider();

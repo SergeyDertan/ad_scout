@@ -4,7 +4,10 @@
 // of per-token API billing or a local Ollama model. Useful when volume is
 // low and latency isn't critical (this project's poll-pass extraction).
 //
-//     LLM_PROVIDER=claude-code  CLAUDE_CODE_MODEL=sonnet   (or opus/haiku/full id)
+//     LLM_PROVIDER=claude-code  CLAUDE_CODE_MODEL=claude-sonnet-5
+//
+// Prefer a full model id over an alias ("sonnet"): the alias moves to whatever
+// is current, and this string is what every extraction records as provenance.
 //
 // Requires `claude` on PATH, logged in via `claude login` (not an API key —
 // ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN are stripped from the child env
@@ -15,17 +18,17 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import type {
-  LlmAttachment,
   LlmJsonRequest,
   LlmProvider,
   LlmTextRequest,
 } from '../../ports/llm-provider';
 import { detectUsageLimit } from '../../lib/errors';
 import { logger } from '../../lib/logger';
+import { stageAttachments } from './stage-attachments';
 
 const execFileAsync = promisify(execFile);
 
@@ -181,16 +184,3 @@ export class ClaudeCodeLlmProvider implements LlmProvider {
   }
 }
 
-/** Write attachments into `dir` with sanitized, collision-free names and return
- *  their absolute paths. basename() + the whitelist strip any path traversal. */
-async function stageAttachments(dir: string, attachments: LlmAttachment[]): Promise<string[]> {
-  const paths: string[] = [];
-  for (let i = 0; i < attachments.length; i++) {
-    const att = attachments[i];
-    const clean = basename(att.filename).replace(/[^\w.\- ]/g, '_') || 'file';
-    const p = join(dir, `${i + 1}-${clean}`);
-    await writeFile(p, att.contentBase64, { encoding: 'base64' });
-    paths.push(p);
-  }
-  return paths;
-}

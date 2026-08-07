@@ -17,6 +17,10 @@
 //   --limit N       extract at most N replies this run (pace against the usage
 //                   window; resume with another run — state is per-reply).
 //   --sleep MS      sleep MS between replies (gentler pacing).
+//   --concurrency N replies in the model at once (default 5). One call takes
+//                   minutes, so a serial run over the whole DB is many hours;
+//                   only the model call overlaps, every DB write stays
+//                   serialized. Lower it to 1 to reproduce the old behaviour.
 //
 // Cost note: re-extraction makes one LLM call per matched reply (some fetch
 // linked pricing pages → slower, multi-turn). Mind provider usage on large DBs.
@@ -36,6 +40,7 @@ async function main() {
   const extractOnly = process.argv.includes('--extract-only');
   const limit = numArg('--limit');
   const sleepMs = numArg('--sleep');
+  const concurrency = numArg('--concurrency') ?? 5;
   const config = loadConfig();
 
   // A full re-extraction is a long unattended run — tee every line (and the full
@@ -54,12 +59,23 @@ async function main() {
   const priceRecords = await store.listPriceRecords();
   const declinedExclusions = (await store.listDomainExclusions()).filter((e) => e.reason === 'declined');
 
-  const repliesToClear = replies.filter((r) => r.parsed !== undefined || r.review !== undefined || r.extractionStatus !== 'pending');
+  const repliesToClear = replies.filter(
+    (r) =>
+      r.parsed !== undefined ||
+      r.review !== undefined ||
+      r.extraction !== undefined ||
+      r.extractionStatus !== 'pending',
+  );
   const targetsToClear = targets.filter((t) => t.result !== undefined || t.status === 'replied' || t.status === 'excluded');
   const matched = replies.filter((r) => r.targetId).length;
-  const stillPending = replies.filter((r) => r.targetId && r.extractionStatus !== 'done').length;
+  // Matches what extractPendingReplies actually picks up: pending/failed, with
+  // or without a target (a targetless reply still carries a real quote about a
+  // real domain). The old count filtered on targetId and under-reported the run.
+  const stillPending = replies.filter(
+    (r) => r.extractionStatus === 'pending' || r.extractionStatus === 'failed',
+  ).length;
 
-  logger.info(`store=${config.store}  llm=${llm.name}`);
+  logger.info(`store=${config.store}  llm=${llm.name}  model=${llm.model ?? 'n/a'}  concurrency=${concurrency}`);
   if (extractOnly) {
     logger.info(`${dryRun ? '[dry-run] ' : ''}--extract-only: re-extracting ${stillPending} pending/failed matched repl(y/ies) with ${llm.name} (no wipe, no fetch)…`);
   } else {
@@ -84,7 +100,11 @@ async function main() {
     for (const e of declinedExclusions) await store.deleteDomainExclusion(e.domain);
 
     for (const r of repliesToClear) {
-      const { parsed: _p, review: _v, ...rest } = r;
+      // `extraction` goes with the result it describes. Leaving it behind marks a
+      // reply "pending" while still claiming which model and prompt produced its
+      // (now deleted) parse — which then reads as real provenance to the drift
+      // audit and to the UI, and keeps retired prompt snapshots looking live.
+      const { parsed: _p, review: _v, extraction: _e, ...rest } = r;
       const next: Reply = { ...rest, extractionStatus: 'pending' };
       await store.putReply(next);
     }
@@ -112,7 +132,12 @@ async function main() {
   // --- Phase 2: re-extract in place, no fetch -----------------------------
   const { extracted, failed, ignored, stoppedByLimit, resetAt } = await extractPendingReplies(
     { store, email, extractor, clock: systemClock, config },
-    { log: (m) => logger.info(m), ...(limit != null ? { limit } : {}), ...(sleepMs != null ? { sleepMs } : {}) },
+    {
+      log: (m) => logger.info(m),
+      concurrency,
+      ...(limit != null ? { limit } : {}),
+      ...(sleepMs != null ? { sleepMs } : {}),
+    },
   );
   if (stoppedByLimit) {
     logger.info(

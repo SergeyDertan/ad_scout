@@ -15,6 +15,7 @@ import {
   matchReply,
   normalizeEmail,
   senderSiteDomain,
+  senderSiteIsCredible,
   type AwaitingTargetRef,
   type DomainGroup,
   type SentOutreachRef,
@@ -36,7 +37,7 @@ import { newId } from '../lib/ids';
 import { logger } from '../lib/logger';
 import type { EmailProvider, IncomingEmail } from '../ports/email-provider';
 import type { Store } from '../ports/store';
-import type { Extractor } from '../services/extractor';
+import type { ExtractionOutcome, Extractor } from '../services/extractor';
 import type { Config } from '../config';
 
 export interface PollDeps {
@@ -150,6 +151,26 @@ export interface ExtractOptions {
   limit?: number;
   /** Milliseconds to sleep between replies (migration pacing). */
   sleepMs?: number;
+  /**
+   * How many replies to have in the LLM at once. Only the model call runs in
+   * parallel — every store write stays serialized behind one lock, so this is
+   * safe at any width. Default 1 (the live poll pass, where a handful of new
+   * replies never justifies the extra load); the bulk re-extract raises it,
+   * because a single call takes minutes and a full run is hours of them.
+   */
+  concurrency?: number;
+}
+
+/** Serializes async sections: each caller waits for the previous one to settle. */
+function createMutex(): { run<T>(fn: () => Promise<T>): Promise<T> } {
+  let tail: Promise<unknown> = Promise.resolve();
+  return {
+    run<T>(fn: () => Promise<T>): Promise<T> {
+      const result = tail.then(() => fn());
+      tail = result.catch(() => {});
+      return result;
+    },
+  };
 }
 
 /**
@@ -175,12 +196,18 @@ export async function extractPendingReplies(
     (r) => r.extractionStatus === 'failed' || r.extractionStatus === 'pending',
   );
   const work = opts.limit != null ? pending.slice(0, opts.limit) : pending;
+  const concurrency = Math.max(1, Math.min(opts.concurrency ?? 1, work.length || 1));
   let extracted = 0;
   let failed = 0;
   let ignored = 0;
   let i = 0;
-  for (const reply of work) {
-    i++;
+  let cursor = 0;
+  // Set by whichever worker hits the subscription limit first; the others then
+  // finish what is in flight and stop pulling new work.
+  let limitHit: UsageLimitError | undefined;
+  const persistLock = createMutex();
+
+  const runOne = async (reply: Reply): Promise<void> => {
     const target = reply.targetId ? await store.getTarget(reply.targetId) : undefined;
     // The account that owns this reply's mailbox — needed to (re)label it. Absent
     // ⇒ labeling is skipped (best-effort), extraction still runs. Prefer what the
@@ -192,33 +219,47 @@ export async function extractPendingReplies(
     // otherwise the sender — a targetless reply has no website to name.
     const subject = target?.websiteUrl ?? `(no target) ${reply.fromAddress}`;
     try {
-      const outcome = await ingestReply(deps, reply, target, emailDomainMap);
-      await store.putReply(reply);
+      // Only this line runs concurrently; everything it produces is written
+      // behind the lock below, in whatever order the calls happen to finish.
+      const extractedReply = await extractReply(deps, reply, target);
+      const outcome = await persistLock.run(async () => {
+        const result = await persistExtraction(deps, reply, target, emailDomainMap, extractedReply);
+        await store.putReply(reply);
+        return result;
+      });
+      const n = ++i;
       if (outcome.kind === 'ignored') {
         ignored++;
         if (account) await applyLabel(deps, account, reply.emailId, LABELS.ignored);
-        log(`[${i}/${work.length}] spam ${reply.fromAddress} — added to ignore list`);
+        log(`[${n}/${work.length}] spam ${reply.fromAddress} — added to ignore list`);
       } else {
         extracted++;
         if (account) await applyLabel(deps, account, reply.emailId, outcome.label);
         const offers = reply.parsed?.offers?.length ?? 0;
-        log(`[${i}/${work.length}] ok   ${subject} — intent=${reply.parsed?.intent ?? 'answer'}, ${offers} offer(s)`);
+        log(`[${n}/${work.length}] ok   ${subject} — intent=${reply.parsed?.intent ?? 'answer'}, ${offers} offer(s)`);
       }
     } catch (err) {
       // Usage/session limit → stop the run WITHOUT marking this reply failed, so a
-      // later run resumes exactly here. State is per-reply, so this is safe.
+      // later run resumes exactly here. State is per-reply, so this is safe, and
+      // the sibling workers' in-flight replies stay pending for the same reason.
       if (err instanceof UsageLimitError) {
-        const when = err.resetAt ? ` — resets ${err.resetAt.toLocaleString()}` : '';
-        logger.warn('extraction stopped at usage limit', {
-          replyId: reply.id,
-          progress: `${i}/${work.length}`,
-          ...(err.resetAt ? { resetAt: err.resetAt.toISOString() } : {}),
-        });
-        log(`[${i}/${work.length}] STOP claude usage limit reached${when}. Re-run to resume.`);
-        return { extracted, failed, ignored, stoppedByLimit: true, ...(err.resetAt ? { resetAt: err.resetAt } : {}) };
+        if (!limitHit) {
+          limitHit = err;
+          const when = err.resetAt ? ` — resets ${err.resetAt.toLocaleString()}` : '';
+          logger.warn('extraction stopped at usage limit', {
+            replyId: reply.id,
+            progress: `${i}/${work.length}`,
+            ...(err.resetAt ? { resetAt: err.resetAt.toISOString() } : {}),
+          });
+          log(`[${i}/${work.length}] STOP claude usage limit reached${when}. Re-run to resume.`);
+        }
+        return;
       }
-      reply.extractionStatus = 'failed';
-      await store.putReply(reply);
+      const n = ++i;
+      await persistLock.run(async () => {
+        reply.extractionStatus = 'failed';
+        await store.putReply(reply);
+      });
       if (account) await applyLabel(deps, account, reply.emailId, LABELS.matched);
       failed++;
       // Full detail (cause chain, code, stack) goes to the log sink; the console
@@ -228,14 +269,32 @@ export async function extractPendingReplies(
         emailId: reply.emailId,
         fromAddress: reply.fromAddress,
         ...(target ? { targetId: target.id, websiteUrl: target.websiteUrl } : {}),
-        progress: `${i}/${work.length}`,
+        progress: `${n}/${work.length}`,
         ...describeError(err),
       });
-      log(`[${i}/${work.length}] FAIL ${subject} — ${err instanceof Error ? err.message : String(err)}`);
+      log(`[${n}/${work.length}] FAIL ${subject} — ${err instanceof Error ? err.message : String(err)}`);
     }
     if (opts.sleepMs) await sleep(opts.sleepMs);
-  }
-  return { extracted, failed, ignored, stoppedByLimit: false };
+  };
+
+  // `concurrency` workers each pull the next reply until the queue drains or the
+  // usage limit stops the run.
+  const worker = async (): Promise<void> => {
+    while (!limitHit) {
+      const next = work[cursor++];
+      if (!next) return;
+      await runOne(next);
+    }
+  };
+  await Promise.all(Array.from({ length: concurrency }, worker));
+
+  return {
+    extracted,
+    failed,
+    ignored,
+    stoppedByLimit: limitHit != null,
+    ...(limitHit?.resetAt ? { resetAt: limitHit.resetAt } : {}),
+  };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -257,7 +316,29 @@ export async function ingestReply(
   target: Target | undefined,
   emailDomainMap: Map<string, string[]>,
 ): Promise<IngestResult> {
-  const { store, extractor, clock, config } = deps;
+  return persistExtraction(deps, reply, target, emailDomainMap, await extractReply(deps, reply, target));
+}
+
+/** What `extractReply` hands to `persistExtraction`. */
+export interface ExtractedReply {
+  outcome: ExtractionOutcome;
+  /** The site this reply is about, once vetted — what offers attribute to. */
+  ownDomain?: string;
+  /** What we inferred before vetting, kept for the review message. */
+  guessedDomain?: string;
+  senderSiteRejected: boolean;
+}
+
+/**
+ * The SLOW half: the LLM call and the read-only context it needs. Writes
+ * nothing, so many of these may be in flight at once (see ExtractOptions.concurrency).
+ */
+export async function extractReply(
+  deps: PollDeps,
+  reply: Reply,
+  target: Target | undefined,
+): Promise<ExtractedReply> {
+  const { store, extractor, config } = deps;
   const knownNiches = await store.listNiches();
   // The batch the target came from decides how a niche-less flat price is read:
   // the historical casino-specific "first" batch ⇒ casino; everything else ⇒ broad.
@@ -267,9 +348,16 @@ export async function ingestReply(
   // The site this reply is ABOUT. With a target that is a fact; without one it is
   // inferred from the sender's own domain, and is undefined for a free mailbox —
   // in which case the model is told nothing rather than something wrong.
-  const ownDomain = target
+  const guessedDomain = target
     ? normalizeDomain(target.websiteUrl) || undefined
     : senderSiteDomain(reply.fromAddress);
+  // An inferred domain has to earn it: a support desk, or a network rate card
+  // that never names the sender's own site, would otherwise file other people's
+  // prices under the sender's domain. Dropping it here also keeps the model from
+  // being told "prices belong to X" when X is not what the email is about.
+  const senderSiteRejected =
+    !target && guessedDomain != null && !senderSiteIsCredible(guessedDomain, reply.text);
+  const ownDomain = senderSiteRejected ? undefined : guessedDomain;
   const outcome = await extractor.extract(
     config.pitch,
     reply.text,
@@ -278,6 +366,33 @@ export async function ingestReply(
     // siteDomain lets the model find THIS site's row in a multi-site price list.
     { pitchStyle, ...(ownDomain ? { siteDomain: ownDomain } : {}) },
   );
+  return {
+    outcome,
+    senderSiteRejected,
+    ...(ownDomain ? { ownDomain } : {}),
+    ...(guessedDomain ? { guessedDomain } : {}),
+  };
+}
+
+/**
+ * The FAST half: every write that follows from an extraction — learned niches,
+ * the prompt archive, the spam/ignore path, the target rollup, the per-domain
+ * PriceRecords. Mutates `reply` in place.
+ *
+ * Must run SERIALIZED across replies. PouchDbStore.put reads a doc's current
+ * _rev and writes it back, so two replies touching the same document — the
+ * prompt snapshot (one id per prompt), a niche both of them just learned, a
+ * target they share — would race and one write would be rejected. The writes
+ * are milliseconds each, so serializing them costs nothing next to the LLM call.
+ */
+export async function persistExtraction(
+  deps: PollDeps,
+  reply: Reply,
+  target: Target | undefined,
+  emailDomainMap: Map<string, string[]>,
+  { outcome, ownDomain, guessedDomain, senderSiteRejected }: ExtractedReply,
+): Promise<IngestResult> {
+  const { store, clock } = deps;
   await persistDiscovered(store, outcome.discovered, clock);
   // Stamp WHICH RUN produced this (model/provider/prompt + now), and archive the
   // prompt text under its hash so the stamp stays resolvable after the source
@@ -321,6 +436,12 @@ export async function ingestReply(
   // unattributable, and guessing a row would be worse than recording none.
   const { groups, reviewReasons, capped } = attributeOffers(parsed.offers, senderDomains, ownDomain);
   const review = [...outcome.review, ...reviewReasons];
+  if (senderSiteRejected) {
+    review.push(
+      `Prices NOT attributed to ${guessedDomain} (the sender's own domain): the reply prices ` +
+        `other sites and never mentions ${guessedDomain}. Attribute them by hand if they are real.`,
+    );
+  }
 
   // A capped reply was a bulk price list. Snapshot only the offers we actually
   // stored, so the reply/target — and every UI and export reading them — carry

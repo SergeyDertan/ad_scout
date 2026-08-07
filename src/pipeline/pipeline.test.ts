@@ -1,16 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { loadConfig } from '../config';
 import { DummyEmailProvider } from '../adapters/email/dummy.provider';
 import { DummyLlmProvider } from '../adapters/llm/dummy.provider';
 import { MemoryStore } from '../adapters/store/memory.store';
+import { PouchDbStore } from '../adapters/store/pouchdb.store';
 import { LABELS } from '../domain/labels';
 import type { Account, Batch, Target } from '../domain/types';
 import { fixedClock } from '../lib/clock';
 import type { LlmProvider } from '../ports/llm-provider';
 import { Extractor } from '../services/extractor';
-import { runPollPass } from './poll-pass';
+import { extractPendingReplies, runPollPass } from './poll-pass';
 import { runSendPass } from './send-pass';
 
 const config = loadConfig({} as NodeJS.ProcessEnv);
@@ -597,4 +602,137 @@ test('a sender on the ignore list is dropped before matching or storage', async 
   const report = await runPollPass({ store, email, extractor, clock, config });
   assert.equal(report.ignored, 1);
   assert.equal((await store.listReplies()).length, 0);
+});
+
+// --- parallel re-extraction --------------------------------------------------
+
+/** An LLM whose calls take real time, so overlap is observable. */
+class SlowLlm implements LlmProvider {
+  readonly name = 'slow';
+  readonly model = 'slow-1';
+  inFlight = 0;
+  peak = 0;
+  calls = 0;
+  async generateJson(): Promise<unknown> {
+    this.calls++;
+    this.inFlight++;
+    this.peak = Math.max(this.peak, this.inFlight);
+    await new Promise((r) => setTimeout(r, 25));
+    this.inFlight--;
+    return {
+      optOut: false,
+      offers: [{ category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$50' }],
+      reasoning: 'test',
+      conditions: '',
+      notes: '',
+      fields: { price: { raw: '$50' } },
+    };
+  }
+  async generateText(): Promise<string> {
+    return '';
+  }
+}
+
+async function seedPendingReplies(store: MemoryStore | PouchDbStore, n: number) {
+  for (let k = 0; k < n; k++) {
+    await store.putReply({
+      id: `reply${k}`,
+      emailId: `email${k}`,
+      rfcMessageId: `<msg${k}@pub.com>`,
+      fromAddress: `editor@pub${k}.com`,
+      matchMethod: 'unmatched',
+      receivedAt: '2026-06-18T09:00:00Z',
+      text: 'Yes, we publish guest posts. Our rate is $50 per article.',
+      extractionStatus: 'pending',
+    });
+  }
+}
+
+async function extractAll(concurrency: number | undefined, n = 6) {
+  const store = new MemoryStore();
+  await seedPendingReplies(store, n);
+  const llm = new SlowLlm();
+  const deps = {
+    store,
+    email: new DummyEmailProvider(),
+    extractor: new Extractor(llm),
+    clock,
+    config,
+  };
+  const result = await extractPendingReplies(deps, concurrency == null ? {} : { concurrency });
+  return { llm, result, store };
+}
+
+test('re-extraction runs several replies through the model at once', async () => {
+  const { llm, result, store } = await extractAll(3);
+  assert.equal(result.extracted, 6);
+  assert.equal(result.failed, 0);
+  assert.equal(llm.calls, 6, 'every pending reply is extracted exactly once');
+  assert.ok(llm.peak > 1, `expected overlapping model calls, peak was ${llm.peak}`);
+  assert.ok(llm.peak <= 3, `never more than the configured width, peak was ${llm.peak}`);
+  // Serialized persistence must still land every reply's result.
+  const replies = await store.listReplies();
+  assert.equal(replies.filter((r) => r.extractionStatus === 'done').length, 6);
+  assert.equal(replies.filter((r) => r.parsed?.offers.length === 1).length, 6);
+  // One price record per reply, each attributed to that sender's own domain.
+  const records = await store.listPriceRecords();
+  assert.equal(records.length, 6);
+  assert.deepEqual([...new Set(records.map((r) => r.domain))].sort(), [
+    'pub0.com', 'pub1.com', 'pub2.com', 'pub3.com', 'pub4.com', 'pub5.com',
+  ]);
+});
+
+test('the live poll pass stays sequential unless asked otherwise', async () => {
+  const { llm, result } = await extractAll(undefined, 4);
+  assert.equal(result.extracted, 4);
+  assert.equal(llm.peak, 1, 'default concurrency must remain 1');
+});
+
+/** Every reply reports the SAME brand-new niche, so all workers race to write
+ *  one niche doc and one prompt snapshot. */
+class SameNicheLlm implements LlmProvider {
+  readonly name = 'same-niche';
+  readonly model = 'x';
+  async generateJson(): Promise<unknown> {
+    return {
+      optOut: false,
+      offers: [
+        { category: 'artisan_cheese', label: 'Artisan cheese', sensitive: false, canPost: 'yes', priceRaw: '$50' },
+      ],
+      reasoning: 'test',
+      conditions: '',
+      notes: '',
+      fields: { price: { raw: '$50' } },
+    };
+  }
+  async generateText(): Promise<string> {
+    return '';
+  }
+}
+
+// The regression this guards: PouchDbStore.put reads a doc's _rev then writes it
+// back, so simultaneous writers to ONE id lose. Measured on this store, 10
+// concurrent putNiche calls for the same key → 8 rejected with a 409, and
+// putPromptSnapshot → 9. Every reply writes a prompt snapshot and replies
+// routinely discover the same niche, so without serialized persistence a
+// parallel run marks whole bursts of replies 'failed'. MemoryStore has no _rev
+// and cannot show this — the test has to run on the real store.
+test('parallel extraction does not lose writes to same-document contention', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'adscout-race-'));
+  const store = new PouchDbStore(dir);
+  try {
+    await seedPendingReplies(store, 8);
+    const result = await extractPendingReplies(
+      { store, email: new DummyEmailProvider(), extractor: new Extractor(new SameNicheLlm()), clock, config },
+      { concurrency: 8 },
+    );
+    assert.equal(result.failed, 0, 'a 409 conflict would surface here as a failed reply');
+    assert.equal(result.extracted, 8);
+    assert.equal((await store.listNiches()).length, 1, 'the shared niche is learned exactly once');
+    assert.equal((await store.listPromptSnapshots()).length, 1);
+    assert.equal((await store.listPriceRecords()).length, 8, 'every reply still writes its record');
+  } finally {
+    await store.close?.();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

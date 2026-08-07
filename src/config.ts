@@ -8,7 +8,7 @@ import type { HealthConfig } from './domain/health';
 import { DEFAULT_HEALTH } from './domain/health';
 import type { PitchProfile } from './domain/types';
 
-export type LlmProviderKind = 'dummy' | 'ollama' | 'openai' | 'claude' | 'claude-code';
+export type LlmProviderKind = 'dummy' | 'ollama' | 'openai' | 'claude' | 'claude-code' | 'antigravity';
 export type StoreKind = 'memory' | 'pouchdb';
 
 export interface Config {
@@ -22,6 +22,7 @@ export interface Config {
   openai: { apiKey: string; model: string };
   claude: { apiKey: string; model: string };
   claudeCode: { model: string; timeoutMs: number };
+  antigravity: { model: string; timeoutMs: number };
   googleOAuth: { clientId: string; clientSecret: string };
   sendWindow: { startHour: number; endHour: number; paceEndHour: number };
   /** Global outreach pitch defaults. A Batch may override `advertised` per import;
@@ -94,8 +95,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       model: env.CLAUDE_MODEL ?? 'claude-opus-4-8',
     },
     claudeCode: {
-      model: env.CLAUDE_CODE_MODEL ?? 'sonnet',
+      // An EXACT id, not the 'sonnet' alias: the alias silently moves to a new
+      // model, and every extraction records this string as its provenance. A
+      // stored price has to stay traceable to the model that actually read it.
+      model: env.CLAUDE_CODE_MODEL ?? 'claude-sonnet-5',
       timeoutMs: envInt('CLAUDE_CODE_TIMEOUT_MS', 120_000),
+    },
+    antigravity: {
+      model: env.AGY_MODEL ?? 'gemini-3.1-pro-high',
+      timeoutMs: envInt('AGY_TIMEOUT_MS', 120_000),
     },
     googleOAuth: loadGoogleOAuth(env),
     sendWindow: (() => {

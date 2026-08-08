@@ -40,6 +40,10 @@ export interface SendReport {
 export interface SendOpts {
   /** Cap sends per account this pass. Used by the drip scheduler (=1). */
   maxPerAccount?: number;
+  /** Abort signal — checked before each send. */
+  signal?: AbortSignal;
+  /** Progress callback — called after each item is processed. */
+  onProgress?: (current: number, total: number) => void;
 }
 
 interface WorkItem {
@@ -111,10 +115,13 @@ export async function runSendPass(deps: SendDeps, opts: SendOpts = {}): Promise<
 
   const assignments = assignRoundRobin(queue, caps);
 
+  let progress = 0;
   for (const { item, accountId } of assignments) {
+    if (opts.signal?.aborted) break;
     const account = accountById.get(accountId);
     if (!account) continue;
     await sendOne(deps, item, account, now, report);
+    opts.onProgress?.(++progress, assignments.length);
   }
 
   return report;

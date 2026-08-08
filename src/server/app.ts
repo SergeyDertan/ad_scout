@@ -63,11 +63,11 @@ export interface ServerDeps {
   config: Config;
   clock: Clock;
   /** Manual "Run now" — a full send pass. */
-  runSend: () => Promise<unknown>;
+  runSend: (opts?: { signal?: AbortSignal; onProgress?: (current: number, total: number) => void }) => Promise<unknown>;
   /** Manual "Run now" — a poll pass. */
-  runPoll: () => Promise<unknown>;
+  runPoll: (opts?: { signal?: AbortSignal; onProgress?: (current: number, total: number) => void }) => Promise<unknown>;
   /** Manual "Run now" — fetch only (no AI extraction). */
-  runFetch: () => Promise<unknown>;
+  runFetch: (opts?: { signal?: AbortSignal; onProgress?: (current: number, total: number) => void }) => Promise<unknown>;
   /** Directory of static UI assets. Default ./web */
   webDir?: string;
   /** Names of the wired providers, for /api/status. */
@@ -314,6 +314,11 @@ async function handle(
         else if (offers.length > 0 && offers.every((o) => o.canPost === 'no')) outcomes.postingNo++;
       }
 
+      // Replies awaiting AI extraction (queued by fetch-only or failed earlier).
+      const pendingExtraction = (await store.listReplies()).filter(
+        (r) => r.extractionStatus === 'pending' || r.extractionStatus === 'failed',
+      ).length;
+
       const now = deps.clock.now();
       return sendJson(res, 200, {
         ok: true,
@@ -322,6 +327,7 @@ async function handle(
         targets: { total: targets.length, byStatus },
         engagement: { ...engagement, replied },
         outcomes,
+        pendingExtraction,
         providers: deps.providers ?? null,
         sendWindow: deps.config.sendWindow,
         windowActive: isWithinSendWindow(now, deps.config.sendWindow),
@@ -758,11 +764,14 @@ async function handle(
       return sendJson(res, 200, { ok: true, domain });
     }
 
-    // POST /api/run/send | /api/run/poll
+    // POST /api/run/send | /api/run/poll | /api/run/fetch — SSE progress stream
     if (method === 'POST' && seg[1] === 'run' && seg[2]) {
-      if (seg[2] === 'send') return sendJson(res, 200, await deps.runSend());
-      if (seg[2] === 'poll') return sendJson(res, 200, await deps.runPoll());
-      if (seg[2] === 'fetch') return sendJson(res, 200, await deps.runFetch());
+      const runFn =
+        seg[2] === 'send' ? deps.runSend :
+        seg[2] === 'poll' ? deps.runPoll :
+        seg[2] === 'fetch' ? deps.runFetch :
+        null;
+      if (runFn) return runPassSSE(res, req, runFn);
     }
 
     // GET /api/oauth/start?accountId=xxx
@@ -816,6 +825,44 @@ async function handle(
     return serveStatic(webDir, url.pathname, res);
   }
   return sendJson(res, 404, { error: 'not found' });
+}
+
+function runPassSSE(
+  res: ServerResponse,
+  req: IncomingMessage,
+  runFn: (opts?: { signal?: AbortSignal; onProgress?: (current: number, total: number) => void }) => Promise<unknown>,
+): void {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+  });
+  const ac = new AbortController();
+  const cleanup = () => ac.abort();
+  req.on('close', cleanup);
+  res.on('close', cleanup);
+
+  const onProgress = (current: number, total: number) => {
+    if (!res.writableEnded) {
+      res.write(`event: progress\ndata: ${JSON.stringify({ current, total })}\n\n`);
+    }
+  };
+
+  runFn({ signal: ac.signal, onProgress })
+    .then((report) => {
+      if (!res.writableEnded) {
+        res.write(`event: done\ndata: ${JSON.stringify(report)}\n\n`);
+        res.end();
+      }
+    })
+    .catch((err) => {
+      if (!res.writableEnded) {
+        const msg = err instanceof Error ? err.message : String(err);
+        res.write(`event: error\ndata: ${JSON.stringify({ error: msg })}\n\n`);
+        res.end();
+      }
+    });
 }
 
 function sse(deps: ServerDeps, req: IncomingMessage, res: ServerResponse): void {

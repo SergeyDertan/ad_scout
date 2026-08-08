@@ -68,15 +68,15 @@ async function start(): Promise<Harness> {
     store,
     config,
     clock: systemClock,
-    runSend: async () => {
+    runSend: async (_opts) => {
       sendCalls++;
       return { sent: 1, reserved: 1, failed: 0, skipped: 0 };
     },
-    runPoll: async () => {
+    runPoll: async (_opts) => {
       pollCalls++;
       return { fetched: 0 };
     },
-    runFetch: async () => ({ fetched: 0, deduped: 0, bounced: 0, matched: 0, unmatched: 0 }),
+    runFetch: async (_opts) => ({ fetched: 0, deduped: 0, bounced: 0, matched: 0, unmatched: 0 }),
     webDir,
     providers: { llm: 'dummy', email: 'dummy', store: 'memory' },
   };
@@ -847,10 +847,28 @@ test('PATCH /api/replies/:id deletes a price record whose offers were all remove
   }
 });
 
+/** Parse an SSE stream and return the last 'done' event's data as JSON. */
+async function readSSE(res: Response): Promise<Record<string, unknown>> {
+  const text = await res.text();
+  let result: Record<string, unknown> = {};
+  for (const frame of text.split('\n\n')) {
+    let event = 'message';
+    let data = '';
+    for (const line of frame.split('\n')) {
+      if (line.startsWith('event: ')) event = line.slice(7);
+      else if (line.startsWith('data: ')) data = line.slice(6);
+    }
+    if (event === 'done' && data) result = JSON.parse(data);
+  }
+  return result;
+}
+
 test('POST /api/run/send and /poll invoke the callbacks', async () => {
   const h = await start();
   try {
-    const sendReport = await J(`${h.base}/api/run/send`, { method: 'POST' });
+    const sendRes = await fetch(`${h.base}/api/run/send`, { method: 'POST' });
+    assert.equal(sendRes.headers.get('content-type'), 'text/event-stream; charset=utf-8');
+    const sendReport = await readSSE(sendRes);
     assert.equal(sendReport.sent, 1);
     assert.equal(h.sendCalls(), 1);
     await fetch(`${h.base}/api/run/poll`, { method: 'POST' });

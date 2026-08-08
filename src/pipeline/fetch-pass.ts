@@ -36,7 +36,14 @@ export interface FetchReport {
   ignored: number;
 }
 
-export async function runFetchPass(deps: FetchDeps): Promise<FetchReport> {
+export interface FetchOpts {
+  /** Abort signal — checked before each account and message. */
+  signal?: AbortSignal;
+  /** Progress callback — (current, total). Total accumulates as accounts are fetched. */
+  onProgress?: (current: number, total: number) => void;
+}
+
+export async function runFetchPass(deps: FetchDeps, opts: FetchOpts = {}): Promise<FetchReport> {
   const { store, email, clock } = deps;
   const report: FetchReport = {
     fetched: 0,
@@ -55,7 +62,9 @@ export async function runFetchPass(deps: FetchDeps): Promise<FetchReport> {
     .filter((t) => t.status === 'contacted' || t.status === 'reserved')
     .map((t) => ({ targetId: t.id, contactEmail: t.contactEmail }));
 
+  let processed = 0;
   for (const account of await store.listAccounts()) {
+    if (opts.signal?.aborted) break;
     if (account.status === 'paused') continue;
     const since = account.pollCursor?.lastPolledAt
       ? new Date(account.pollCursor.lastPolledAt)
@@ -75,7 +84,9 @@ export async function runFetchPass(deps: FetchDeps): Promise<FetchReport> {
     report.fetched += messages.length;
 
     for (const msg of messages) {
+      if (opts.signal?.aborted) break;
       await handleMessage(deps, account, msg, sentRefs, awaiting, report);
+      opts.onProgress?.(++processed, report.fetched);
     }
 
     // Merge (don't overwrite): the gmail-api provider may have written a fresh

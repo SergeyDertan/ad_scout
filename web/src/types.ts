@@ -567,6 +567,8 @@ export interface Status {
   targets: { total: number; byStatus: Record<string, number> };
   engagement?: Engagement;
   outcomes?: Outcomes;
+  /** Replies awaiting AI extraction (pending + failed). */
+  pendingExtraction?: number;
   providers: { llm: string; email: string; store: string } | null;
   sendWindow: { startHour: number; endHour: number; paceEndHour?: number };
   windowActive: boolean;

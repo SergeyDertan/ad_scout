@@ -2,7 +2,7 @@ import { Box, Circle, Flex, HStack, SimpleGrid, Square, Stack, Text, Wrap } from
 import { useState, type ComponentType } from 'react';
 import type { Engagement, Status } from '../types';
 import type { IconProps } from '@chakra-ui/react';
-import { ChevronDownIcon, InboxIcon, SendIcon, TagIcon, UsersIcon } from './icons';
+import { ChevronDownIcon, InboxIcon, RefreshIcon, SendIcon, TagIcon, UsersIcon } from './icons';
 
 type IconCmp = ComponentType<IconProps>;
 
@@ -256,7 +256,7 @@ export function StatCards({ status }: { status: Status | null }) {
 
   return (
     <>
-      <SimpleGrid columns={{ base: 2, md: 4 }} gap={3} mb={eng ? 3 : 6}>
+      <SimpleGrid columns={{ base: 2, md: 5 }} gap={3} mb={eng ? 3 : 6}>
         <StatCard icon={UsersIcon} label="Total" value={status ? total : '—'} accent="brand" />
         <StatCard
           icon={SendIcon}
@@ -278,6 +278,13 @@ export function StatCards({ status }: { status: Status | null }) {
           value={status ? (out ? out.priced : '—') : '—'}
           sub={out ? `${out.postingYes} can post · ${pct(out.priced, replied)} of replied` : undefined}
           accent="purple"
+        />
+        <StatCard
+          icon={RefreshIcon}
+          label="Pending AI"
+          value={status ? (status.pendingExtraction ?? 0) : '—'}
+          sub="replies awaiting extraction"
+          accent="orange"
         />
       </SimpleGrid>
       {status && eng ? <EngagementPanel status={status} /> : null}

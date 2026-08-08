@@ -76,9 +76,9 @@ async function main(): Promise<void> {
     store,
     config,
     clock,
-    runSend: () => passLock.run(() => runSendPass(sendDeps)),
-    runPoll: () => passLock.run(() => runPollPass(pollDeps)),
-    runFetch: () => passLock.run(() => runFetchPass(fetchDeps)),
+    runSend: (opts) => passLock.run(() => runSendPass(sendDeps, opts)),
+    runPoll: (opts) => passLock.run(() => runPollPass(pollDeps, opts)),
+    runFetch: (opts) => passLock.run(() => runFetchPass(fetchDeps, opts)),
     // Built front-end (web/ is a separate Vite + React + Chakra module).
     // Run `pnpm web:build` first; in dev use `pnpm web:dev` (proxies /api).
     webDir: process.env.WEB_DIR ?? './web/dist',

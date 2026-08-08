@@ -16,7 +16,7 @@ import type { Status } from '../types';
 import { Empty } from './Empty';
 import { Panel } from './Panel';
 import { toastError } from './Toaster';
-import { ClockIcon, InboxIcon, PlayIcon, RefreshIcon, SendIcon } from './icons';
+import { ClockIcon, InboxIcon, PlayIcon, RefreshIcon, SendIcon, StopIcon } from './icons';
 
 type Kind = 'send' | 'poll' | 'fetch';
 
@@ -26,6 +26,11 @@ interface Entry {
   time: string;
   report?: Record<string, unknown>;
   error?: string;
+}
+
+interface Progress {
+  current: number;
+  total: number;
 }
 
 // Per-metric color so good/bad outcomes read at a glance.
@@ -136,25 +141,70 @@ function WindowBadge({ status }: { status: Status | null }) {
   );
 }
 
+/** Thin progress bar shown below the run button while a pass is in progress. */
+function ProgressBar({ progress }: { progress: Progress | null }) {
+  if (!progress || progress.total === 0) return null;
+  const pct = Math.round((progress.current / progress.total) * 100);
+  return (
+    <Box w="100%">
+      <Box
+        h="4px"
+        rounded="full"
+        bg="bg.subtle"
+        overflow="hidden"
+      >
+        <Box
+          h="100%"
+          rounded="full"
+          bg="colorPalette.solid"
+          transition="width 0.3s ease"
+          style={{ width: `${pct}%` }}
+        />
+      </Box>
+      <Text fontSize="2xs" color="fg.muted" mt={1}>
+        {progress.current}/{progress.total}
+      </Text>
+    </Box>
+  );
+}
+
 export function RunView({ status }: { status: Status | null }) {
   const [log, setLog] = useState<Entry[]>([]);
   const [busy, setBusy] = useState<Kind | null>(null);
+  const [progress, setProgress] = useState<Progress | null>(null);
   const nextId = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   const run = async (kind: Kind) => {
     setBusy(kind);
+    setProgress(null);
+    const ac = new AbortController();
+    abortRef.current = ac;
     const id = nextId.current++;
     const time = new Date().toLocaleTimeString();
     try {
       const apiFn = kind === 'send' ? api.runSend : kind === 'poll' ? api.runPoll : api.runFetch;
-      const report = (await apiFn()) as Record<string, unknown>;
+      const report = (await apiFn({
+        signal: ac.signal,
+        onProgress: (current, total) => setProgress({ current, total }),
+      })) as Record<string, unknown>;
       setLog((l) => [{ id, kind, time, report }, ...l]);
     } catch (e) {
-      const error = toastError(`${kind} pass failed`, e);
-      setLog((l) => [{ id, kind, time, error }, ...l]);
+      if (ac.signal.aborted) {
+        setLog((l) => [{ id, kind, time, error: 'Stopped by user' }, ...l]);
+      } else {
+        const error = toastError(`${kind} pass failed`, e);
+        setLog((l) => [{ id, kind, time, error }, ...l]);
+      }
     } finally {
+      abortRef.current = null;
       setBusy(null);
+      setProgress(null);
     }
+  };
+
+  const stop = () => {
+    abortRef.current?.abort();
   };
 
   return (
@@ -172,16 +222,32 @@ export function RunView({ status }: { status: Status | null }) {
             <Text fontSize="sm" color="fg.muted">
               Reserve and send the next batch of outreach — respects each account's daily cap.
             </Text>
-            <Button
-              colorPalette="brand"
-              onClick={() => run('send')}
-              loading={busy === 'send'}
-              loadingText="Sending…"
-              alignSelf="flex-start"
-            >
-              <PlayIcon />
-              Run send pass
-            </Button>
+            <HStack>
+              <Button
+                colorPalette="brand"
+                onClick={() => run('send')}
+                loading={busy === 'send'}
+                loadingText="Sending…"
+                disabled={busy !== null && busy !== 'send'}
+                alignSelf="flex-start"
+              >
+                <PlayIcon />
+                Run send pass
+              </Button>
+              {busy === 'send' && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  colorPalette="red"
+                  onClick={stop}
+                  aria-label="Stop send pass"
+                >
+                  <StopIcon />
+                  Stop
+                </Button>
+              )}
+            </HStack>
+            {busy === 'send' && <ProgressBar progress={progress} />}
           </Card.Body>
         </Card.Root>
 
@@ -194,17 +260,33 @@ export function RunView({ status }: { status: Status | null }) {
             <Text fontSize="sm" color="fg.muted">
               Fetch new replies, match them to targets, and extract posting terms.
             </Text>
-            <Button
-              colorPalette="purple"
-              variant="outline"
-              onClick={() => run('poll')}
-              loading={busy === 'poll'}
-              loadingText="Polling…"
-              alignSelf="flex-start"
-            >
-              <RefreshIcon />
-              Run poll pass
-            </Button>
+            <HStack>
+              <Button
+                colorPalette="purple"
+                variant="outline"
+                onClick={() => run('poll')}
+                loading={busy === 'poll'}
+                loadingText="Polling…"
+                disabled={busy !== null && busy !== 'poll'}
+                alignSelf="flex-start"
+              >
+                <RefreshIcon />
+                Run poll pass
+              </Button>
+              {busy === 'poll' && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  colorPalette="red"
+                  onClick={stop}
+                  aria-label="Stop poll pass"
+                >
+                  <StopIcon />
+                  Stop
+                </Button>
+              )}
+            </HStack>
+            {busy === 'poll' && <ProgressBar progress={progress} />}
           </Card.Body>
         </Card.Root>
 
@@ -217,17 +299,33 @@ export function RunView({ status }: { status: Status | null }) {
             <Text fontSize="sm" color="fg.muted">
               Download new replies and store them — no AI extraction. Run poll pass afterward to process.
             </Text>
-            <Button
-              colorPalette="teal"
-              variant="outline"
-              onClick={() => run('fetch')}
-              loading={busy === 'fetch'}
-              loadingText="Fetching…"
-              alignSelf="flex-start"
-            >
-              <InboxIcon />
-              Fetch responses
-            </Button>
+            <HStack>
+              <Button
+                colorPalette="teal"
+                variant="outline"
+                onClick={() => run('fetch')}
+                loading={busy === 'fetch'}
+                loadingText="Fetching…"
+                disabled={busy !== null && busy !== 'fetch'}
+                alignSelf="flex-start"
+              >
+                <InboxIcon />
+                Fetch responses
+              </Button>
+              {busy === 'fetch' && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  colorPalette="red"
+                  onClick={stop}
+                  aria-label="Stop fetch pass"
+                >
+                  <StopIcon />
+                  Stop
+                </Button>
+              )}
+            </HStack>
+            {busy === 'fetch' && <ProgressBar progress={progress} />}
           </Card.Body>
         </Card.Root>
       </SimpleGrid>

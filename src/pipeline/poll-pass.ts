@@ -76,7 +76,14 @@ function emptyReport(): PollReport {
   };
 }
 
-export async function runPollPass(deps: PollDeps): Promise<PollReport> {
+export interface PollOpts {
+  /** Abort signal — checked before each account and message. */
+  signal?: AbortSignal;
+  /** Progress callback — (current, total). Total accumulates as accounts are fetched. */
+  onProgress?: (current: number, total: number) => void;
+}
+
+export async function runPollPass(deps: PollDeps, opts: PollOpts = {}): Promise<PollReport> {
   const { store, email, clock } = deps;
   const report = emptyReport();
 
@@ -90,7 +97,9 @@ export async function runPollPass(deps: PollDeps): Promise<PollReport> {
     .map((t) => ({ targetId: t.id, contactEmail: t.contactEmail }));
   const emailDomainMap = emailToDomains(allTargets);
 
+  let processed = 0;
   for (const account of await store.listAccounts()) {
+    if (opts.signal?.aborted) break;
     if (account.status === 'paused') continue;
     const since = account.pollCursor?.lastPolledAt
       ? new Date(account.pollCursor.lastPolledAt)
@@ -110,7 +119,9 @@ export async function runPollPass(deps: PollDeps): Promise<PollReport> {
     report.fetched += messages.length;
 
     for (const msg of messages) {
+      if (opts.signal?.aborted) break;
       await handleMessage(deps, account, msg, sentRefs, awaiting, emailDomainMap, report);
+      opts.onProgress?.(++processed, report.fetched);
     }
 
     // Advance the cursor. Merge (don't overwrite): the gmail-api provider may
@@ -125,7 +136,7 @@ export async function runPollPass(deps: PollDeps): Promise<PollReport> {
     }));
   }
 
-  await retryFailedExtractions(deps, report);
+  await retryFailedExtractions(deps, report, opts, processed);
 
   return report;
 }
@@ -137,8 +148,19 @@ async function persistDiscovered(store: Store, discovered: Niche[], clock: Clock
   }
 }
 
-async function retryFailedExtractions(deps: PollDeps, report: PollReport): Promise<void> {
-  const { extracted, failed, ignored } = await extractPendingReplies(deps);
+async function retryFailedExtractions(
+  deps: PollDeps,
+  report: PollReport,
+  pollOpts: PollOpts = {},
+  fetchPhaseCount: number = 0,
+): Promise<void> {
+  const { extracted, failed, ignored } = await extractPendingReplies(deps, {
+    signal: pollOpts.signal,
+    // Offset progress so the bar continues from where the fetch phase left off.
+    onProgress: pollOpts.onProgress
+      ? (current, total) => pollOpts.onProgress!(fetchPhaseCount + current, fetchPhaseCount + total)
+      : undefined,
+  });
   report.extracted += extracted;
   report.extractionFailed += failed;
   report.ignored += ignored;
@@ -176,6 +198,10 @@ export interface ExtractOptions {
    * passed and short enough that three of them cost half a minute.
    */
   retrySleepMs?: number;
+  /** Abort signal — checked before each reply. */
+  signal?: AbortSignal;
+  /** Progress callback — (current, total) called after each reply is processed. */
+  onProgress?: (current: number, total: number) => void;
 }
 
 /** Serializes async sections: each caller waits for the previous one to settle. */
@@ -279,6 +305,7 @@ export async function extractPendingReplies(
         const offers = reply.parsed?.offers?.length ?? 0;
         log(`[${n}/${work.length}] ok   ${subject} — intent=${reply.parsed?.intent ?? 'answer'}, ${offers} offer(s)`);
       }
+      opts.onProgress?.(n, work.length);
     } catch (err) {
       // Usage/session limit → stop the run WITHOUT marking this reply failed, so a
       // later run resumes exactly here. State is per-reply, so this is safe, and
@@ -303,6 +330,7 @@ export async function extractPendingReplies(
       });
       if (account) await applyLabel(deps, account, reply.emailId, LABELS.matched);
       failed++;
+      opts.onProgress?.(n, work.length);
       // Full detail (cause chain, code, stack) goes to the log sink; the console
       // line stays a one-liner so a long run remains readable.
       logger.error('extraction failed', {
@@ -340,6 +368,7 @@ export async function extractPendingReplies(
   // usage limit stops the run.
   const worker = async (): Promise<void> => {
     while (!limitHit && !exhausted) {
+      if (opts.signal?.aborted) return;
       const next = work[cursor++];
       if (!next) return;
       await runOne(next);

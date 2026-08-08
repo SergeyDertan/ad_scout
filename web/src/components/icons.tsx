@@ -151,3 +151,7 @@ export const DownloadIcon = make(
     <line x1="12" y1="15" x2="12" y2="3" />
   </>,
 );
+
+export const StopIcon = make(
+  <rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor" stroke="none" />,
+);

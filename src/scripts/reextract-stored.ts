@@ -21,6 +21,11 @@
 //                   minutes, so a serial run over the whole DB is many hours;
 //                   only the model call overlaps, every DB write stays
 //                   serialized. Lower it to 1 to reproduce the old behaviour.
+//   --attempts N    tries per reply before the run gives up (default 3). Any
+//                   error is retried, whatever it is; if a reply still fails
+//                   after N, the RUN STOPS rather than spend the rest of the
+//                   queue on an error that is clearly not transient.
+//   --retry-sleep MS pause between those attempts (default 10000).
 //
 // Cost note: re-extraction makes one LLM call per matched reply (some fetch
 // linked pricing pages → slower, multi-turn). Mind provider usage on large DBs.
@@ -28,7 +33,9 @@
 // Exit codes (scripts/reextract-loop.sh branches on these):
 //   0  every reply extracted, nothing left to do.
 //   2  paused at the Claude usage limit — resume after the window resets.
-//   3  the pass finished but N replies are left 'failed'. Distinct from 0 so an
+//   3  replies are left 'failed' — either the pass finished with some, or it
+//      aborted because one reply failed every --attempts try (i.e. the provider
+//      is refusing everything). Distinct from 0 so an
 //      unattended wrapper can retry them: --extract-only re-picks 'failed'
 //      alongside 'pending', so a plain re-run retries exactly those replies, and
 //      most extraction failures are transient (CLI timeout/kill, a tool_use
@@ -53,6 +60,8 @@ async function main() {
   const limit = numArg('--limit');
   const sleepMs = numArg('--sleep');
   const concurrency = numArg('--concurrency') ?? 5;
+  const attemptsPerReply = numArg('--attempts');
+  const retrySleepMs = numArg('--retry-sleep');
   const config = loadConfig();
 
   // A full re-extraction is a long unattended run — tee every line (and the full
@@ -142,13 +151,15 @@ async function main() {
   }
 
   // --- Phase 2: re-extract in place, no fetch -----------------------------
-  const { extracted, failed, ignored, stoppedByLimit, resetAt } = await extractPendingReplies(
+  const { extracted, failed, ignored, stoppedByLimit, stoppedByFailures, resetAt } = await extractPendingReplies(
     { store, email, extractor, clock: systemClock, config },
     {
       log: (m) => logger.info(m),
       concurrency,
       ...(limit != null ? { limit } : {}),
       ...(sleepMs != null ? { sleepMs } : {}),
+      ...(attemptsPerReply != null ? { attemptsPerReply } : {}),
+      ...(retrySleepMs != null ? { retrySleepMs } : {}),
     },
   );
   if (stoppedByLimit) {
@@ -158,6 +169,16 @@ async function main() {
         `\nRe-run the same command to resume (already-done replies are skipped).`,
     );
     process.exitCode = 2; // distinct code so a wrapping loop can detect the pause
+  } else if (stoppedByFailures) {
+    // Everything was failing back-to-back, so the rest of the queue was almost
+    // certainly going to fail too. Exit 3 (not 2): the cause is unknown, and 3
+    // already means "left failed, retry them".
+    logger.info(
+      `\nABORTED — a reply failed all ${attemptsPerReply ?? 3} attempts. ${extracted} extracted, ${failed} failed, ${ignored} ignored this run.` +
+        `\nCheck logs/adscout-<date>.log for the error: an unrecognized usage limit or a provider outage looks like this.` +
+        `\nRe-run --extract-only to resume (the failed replies are re-picked).`,
+    );
+    process.exitCode = 3;
   } else {
     logger.info(`\nre-extraction complete: ${extracted} extracted, ${failed} failed, ${ignored} ignored (spam).`);
     if (failed > 0) {

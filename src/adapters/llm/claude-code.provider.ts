@@ -26,7 +26,7 @@ import type {
   LlmProvider,
   LlmTextRequest,
 } from '../../ports/llm-provider';
-import { detectUsageLimit } from '../../lib/errors';
+import { detectUsageLimit, type UsageLimitError } from '../../lib/errors';
 import { logger } from '../../lib/logger';
 import { stageAttachments } from './stage-attachments';
 
@@ -49,6 +49,27 @@ interface ClaudeCliResult {
   result: string;
   structured_output?: unknown;
   total_cost_usd?: number;
+}
+
+/**
+ * Pull a usage-limit out of what the CLI wrote to stdout. On a limit it exits
+ * NON-ZERO but still prints its normal JSON payload, carrying the message in
+ * `result` (`is_error: true`, `terminal_reason: "api_error"`, zero cost/tokens):
+ *
+ *   {"is_error":true,…,"result":"You've hit your session limit · resets 4:20pm (Europe/Kiev)"}
+ *
+ * Match on that field alone rather than the whole blob — the payload also carries
+ * the model's own output, which is derived from the email being extracted. Falls
+ * back to scanning the raw text only when stdout isn't JSON at all.
+ */
+function usageLimitFromCliOutput(stdout: string | undefined): UsageLimitError | undefined {
+  if (!stdout) return undefined;
+  try {
+    const parsed = JSON.parse(stdout) as Partial<ClaudeCliResult>;
+    return typeof parsed.result === 'string' ? detectUsageLimit(parsed.result) : undefined;
+  } catch {
+    return detectUsageLimit(stdout);
+  }
 }
 
 export class ClaudeCodeLlmProvider implements LlmProvider {
@@ -88,7 +109,10 @@ export class ClaudeCodeLlmProvider implements LlmProvider {
       });
       // A subscription usage/session-limit is not a transient failure — surface it
       // as a typed error so the extraction driver can stop and resume later.
-      const limit = detectUsageLimit(e.stdout) ?? detectUsageLimit(e.stderr) ?? detectUsageLimit(e.message);
+      // NOT `e.message`: execFile builds it as "Command failed: claude -p <prompt>",
+      // echoing the publisher email we are extracting, so a publisher writing "we've
+      // reached our limit" would read as OUR limit and halt the run.
+      const limit = usageLimitFromCliOutput(e.stdout) ?? detectUsageLimit(e.stderr);
       if (limit) throw limit;
       const detail = e.killed ? `timed out/killed (signal ${e.signal})` : (e.stdout?.trim() || e.stderr?.trim() || e.message);
       throw new Error(`claude CLI failed (${label}): ${detail.slice(0, 500)}`);
@@ -100,6 +124,10 @@ export class ClaudeCodeLlmProvider implements LlmProvider {
       parsed = JSON.parse(stdout);
     } catch {
       logger.warn('claude-code stdout not JSON', { label, raw: stdout.slice(0, 2000) });
+      // A limit message printed as plain text on a zero exit would otherwise be
+      // read as a parse failure and retried against a window that is closed.
+      const limit = detectUsageLimit(stdout);
+      if (limit) throw limit;
       throw new Error(`claude CLI (${label}) returned non-JSON output`);
     }
     logger.info('claude-code call complete', {

@@ -13,6 +13,7 @@ import { PouchDbStore } from '../adapters/store/pouchdb.store';
 import { LABELS } from '../domain/labels';
 import type { Account, Batch, Target } from '../domain/types';
 import { fixedClock } from '../lib/clock';
+import { UsageLimitError } from '../lib/errors';
 import type { LlmProvider } from '../ports/llm-provider';
 import { Extractor } from '../services/extractor';
 import { extractPendingReplies, runPollPass } from './poll-pass';
@@ -686,6 +687,107 @@ test('the live poll pass stays sequential unless asked otherwise', async () => {
   const { llm, result } = await extractAll(undefined, 4);
   assert.equal(result.extracted, 4);
   assert.equal(llm.peak, 1, 'default concurrency must remain 1');
+});
+
+/** Refuses every call the way an unrecognized usage limit does: instantly. */
+class AlwaysFailsLlm implements LlmProvider {
+  readonly name = 'always-fails';
+  readonly model = 'x';
+  calls = 0;
+  async generateJson(): Promise<unknown> {
+    this.calls++;
+    throw new Error("claude CLI failed (generateJson): You've hit your brand-new-wording limit");
+  }
+  async generateText(): Promise<string> {
+    return '';
+  }
+}
+
+// The incident this guards: the CLI changed its limit wording, detectUsageLimit
+// stopped matching, and every call began failing in ~700ms — so one run marked
+// hundreds of good replies 'failed' before a human noticed. Detection is now
+// fixed for the KNOWN wordings; retry-then-give-up is the backstop for the next
+// change to them, and is deliberately blind to what the error actually says.
+test('a reply that fails every attempt stops the run instead of burning the queue', async () => {
+  const store = new MemoryStore();
+  await seedPendingReplies(store, 40);
+  const llm = new AlwaysFailsLlm();
+  const result = await extractPendingReplies(
+    { store, email: new DummyEmailProvider(), extractor: new Extractor(llm), clock, config },
+    { concurrency: 1, retrySleepMs: 0 },
+  );
+
+  assert.equal(result.stoppedByFailures, true);
+  assert.equal(result.failed, 1, 'one reply failed — the run stops, it does not move on');
+  assert.equal(llm.calls, 3, 'that reply got all 3 attempts, and no other reply was tried');
+  const replies = await store.listReplies();
+  assert.equal(replies.filter((r) => r.extractionStatus === 'pending').length, 39, 'the rest is untouched');
+});
+
+test('a transient error is retried, and the run carries on once it clears', async () => {
+  // Fails the first attempt of each reply, succeeds on the second: nothing is
+  // lost and the run must not abort.
+  const seen = new Map<string, number>();
+  const flaky: LlmProvider = {
+    name: 'flaky',
+    model: 'x',
+    async generateJson(req: { prompt: string }): Promise<unknown> {
+      const key = req.prompt;
+      const n = (seen.get(key) ?? 0) + 1;
+      seen.set(key, n);
+      if (n === 1) throw new Error('transient CLI timeout');
+      return {
+        optOut: false,
+        offers: [{ category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', priceRaw: '$50' }],
+        reasoning: 'test',
+        conditions: '',
+        notes: '',
+        fields: { price: { raw: '$50' } },
+      };
+    },
+    async generateText(): Promise<string> {
+      return '';
+    },
+  } as LlmProvider;
+  const store = new MemoryStore();
+  await seedPendingReplies(store, 5);
+  const result = await extractPendingReplies(
+    { store, email: new DummyEmailProvider(), extractor: new Extractor(flaky), clock, config },
+    { concurrency: 1, retrySleepMs: 0 },
+  );
+
+  assert.equal(result.stoppedByFailures, false, 'a retry that succeeds is not a failure');
+  assert.equal(result.extracted, 5);
+  assert.equal(result.failed, 0);
+});
+
+test('a usage limit is not retried — it stops the run and leaves the reply pending', async () => {
+  // Retrying a closed window inside a 10s loop cannot succeed, and marking the
+  // reply 'failed' would lose the "resume exactly here" property.
+  const llm: LlmProvider = {
+    name: 'limited',
+    model: 'x',
+    calls: 0,
+    async generateJson(): Promise<unknown> {
+      (this as { calls: number }).calls++;
+      throw new UsageLimitError("You've hit your session limit · resets 4:20pm (Europe/Kiev)");
+    },
+    async generateText(): Promise<string> {
+      return '';
+    },
+  } as LlmProvider & { calls: number };
+  const store = new MemoryStore();
+  await seedPendingReplies(store, 10);
+  const result = await extractPendingReplies(
+    { store, email: new DummyEmailProvider(), extractor: new Extractor(llm), clock, config },
+    { concurrency: 1, retrySleepMs: 0 },
+  );
+
+  assert.equal(result.stoppedByLimit, true);
+  assert.equal(result.failed, 0, 'the limit must not mark anything failed');
+  assert.equal((llm as unknown as { calls: number }).calls, 1, 'one call, no retries against a closed window');
+  const replies = await store.listReplies();
+  assert.equal(replies.filter((r) => r.extractionStatus === 'pending').length, 10, 'every reply resumes later');
 });
 
 /** Every reply reports the SAME brand-new niche, so all workers race to write

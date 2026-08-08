@@ -16,6 +16,44 @@ test('detectUsageLimit recognizes the CLI limit message and parses the reset epo
   assert.equal(detectUsageLimit(undefined), undefined);
 });
 
+// The messages the CLI actually emitted in logs/ on 2026-07-27 / 08-02 / 08-03 /
+// 08-04. None of them matched the original pattern, so every one was read as an
+// ordinary failure and the run kept going, burning the queue.
+test('detectUsageLimit recognizes the live "hit your … limit" CLI wording', () => {
+  const session = detectUsageLimit("You've hit your session limit · resets 4:20pm (Europe/Kiev)");
+  assert.ok(session instanceof UsageLimitError, 'session limit must be detected');
+
+  const monthly = detectUsageLimit(
+    "You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message",
+  );
+  assert.ok(monthly instanceof UsageLimitError, 'monthly spend limit must be detected');
+  assert.equal(monthly?.resetAt, undefined, 'a spend limit names no reset time');
+});
+
+test('detectUsageLimit reads "resets 4:20pm (Europe/Kiev)" as the next such instant', () => {
+  const err = detectUsageLimit("You've hit your session limit · resets 4:20pm (Europe/Kiev)");
+  const resetAt = err?.resetAt;
+  assert.ok(resetAt instanceof Date);
+  assert.ok(resetAt.getTime() > Date.now(), 'reset is in the future');
+  assert.ok(resetAt.getTime() - Date.now() <= 24 * 60 * 60 * 1000, 'and within a day');
+  // 4:20pm in Kyiv is what a clock there reads at that instant.
+  const wall = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Kiev',
+    hourCycle: 'h23',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(resetAt);
+  assert.equal(wall, '16:20');
+});
+
+test('detectUsageLimit ignores a publisher quoting limits of their own', () => {
+  // This text arrives inside the prompt, which the CLI error echoes back — a
+  // false positive here halts a run that had nothing wrong with it.
+  assert.equal(detectUsageLimit('We have a limit of 3 links per post.'), undefined);
+  assert.equal(detectUsageLimit('Our word limit is 1500 words for guest posts.'), undefined);
+  assert.equal(detectUsageLimit('claude CLI (generateJson) returned non-JSON output'), undefined);
+});
+
 test('unwraps undici "fetch failed" to the root DNS cause', () => {
   // Shape Node throws when offline: TypeError { cause: Error { code: ENOTFOUND } }.
   const root = Object.assign(new Error('getaddrinfo ENOTFOUND gmail.googleapis.com'), {

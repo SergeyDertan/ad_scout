@@ -24,24 +24,103 @@ export class UsageLimitError extends Error {
   }
 }
 
+// What the CLI actually says when the subscription window is exhausted. Verified
+// against logs/ — every real hit so far took one of these forms:
+//
+//   You've hit your session limit · resets 4:20pm (Europe/Kiev)
+//   You've hit your monthly spend limit · raise it at claude.ai/settings/usage?…
+//   Claude AI usage limit reached|1719763200
+//
+// The "hit your <window> limit" phrasing is the live one and matched NONE of the
+// original patterns, so the driver read a real limit as an ordinary failure and
+// marked every remaining reply 'failed' at ~700ms each. Keep the older forms too:
+// this string is the CLI's, not an API contract, and it has already changed once.
+const USAGE_LIMIT_RE =
+  /\b(?:hit|reached|exceeded)\s+(?:your|the)\s+[\w\s-]{0,24}?limit\b|\busage limit reached\b|\brate limit\b|\blimit reached\b|\bexceed(?:ed)? your (?:usage|plan|account) limit\b/i;
+
 /**
  * Detect a Claude Code usage/session-limit message in CLI output. Returns a typed
- * UsageLimitError (with the reset time when the CLI appended an epoch) or
- * undefined when the text is an ordinary error. Never throws.
+ * UsageLimitError (with the reset time when the CLI reported one) or undefined
+ * when the text is an ordinary error. Never throws.
+ *
+ * Feed this the CLI's OWN output only. The `result` field of its JSON payload is
+ * the right input; an execFile error `message` is not, because it echoes back the
+ * whole prompt — a publisher writing "we've reached our limit" in the email being
+ * extracted would otherwise stop the run.
  */
 export function detectUsageLimit(text: string | undefined): UsageLimitError | undefined {
   if (!text) return undefined;
-  if (!/usage limit reached|rate limit|limit reached|exceed(ed)? your (usage|plan|account) limit/i.test(text)) {
-    return undefined;
-  }
-  const m = text.match(/\|\s*(\d{10,13})\b/); // "…reached|1719763200"
-  let resetAt: Date | undefined;
-  if (m) {
-    const n = Number(m[1]);
+  if (!USAGE_LIMIT_RE.test(text)) return undefined;
+  return new UsageLimitError(text.trim().slice(0, 200), parseResetAt(text));
+}
+
+/**
+ * The reset moment named in a limit message, in either form the CLI uses: an
+ * appended unix epoch ("…reached|1719763200") or a human wall-clock time
+ * ("resets 4:20pm (Europe/Kiev)"). Undefined when it named none — a monthly
+ * spend limit has no reset time at all. Never throws.
+ */
+function parseResetAt(text: string): Date | undefined {
+  const epoch = text.match(/\|\s*(\d{10,13})\b/); // "…reached|1719763200"
+  if (epoch) {
+    const n = Number(epoch[1]);
     const d = new Date(n < 1e12 ? n * 1000 : n); // seconds vs milliseconds
-    if (!Number.isNaN(d.getTime())) resetAt = d;
+    if (!Number.isNaN(d.getTime())) return d;
   }
-  return new UsageLimitError(text.trim().slice(0, 200), resetAt);
+
+  // "resets 4:20pm (Europe/Kiev)" / "resets 16:20" — a wall clock with no date,
+  // so it means the NEXT time that clock reads it, in the zone the CLI named.
+  const m = text.match(/resets?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?:\s*\(([^)]+)\))?/i);
+  if (!m) return undefined;
+  let hour = Number(m[1]);
+  const minute = m[2] ? Number(m[2]) : 0;
+  const meridiem = m[3]?.toLowerCase();
+  if (meridiem === 'pm' && hour < 12) hour += 12;
+  if (meridiem === 'am' && hour === 12) hour = 0;
+  if (hour > 23 || minute > 59) return undefined;
+  return nextWallClock(hour, minute, m[4]);
+}
+
+/**
+ * The next instant at which local time in `timeZone` reads `hour:minute`. Falls
+ * back to the machine's own zone when the CLI named none, and returns undefined
+ * for a zone Intl rejects.
+ */
+function nextWallClock(hour: number, minute: number, timeZone: string | undefined): Date | undefined {
+  try {
+    const tz = timeZone?.trim() || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const now = Date.now();
+    // Wall-clock "now" in that zone, expressed as a UTC epoch so date arithmetic
+    // works with plain UTC getters.
+    const nowWall = now + zoneOffsetMs(tz, now);
+    const d = new Date(nowWall);
+    let targetWall = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), hour, minute);
+    if (targetWall <= nowWall) targetWall += 24 * 60 * 60 * 1000; // already past today
+    // Undo the offset to get a real instant, then re-resolve once: the offset at
+    // the target may differ from the offset now (a DST boundary in between).
+    const approx = targetWall - zoneOffsetMs(tz, now);
+    const exact = targetWall - zoneOffsetMs(tz, approx);
+    return Number.isNaN(exact) ? undefined : new Date(exact);
+  } catch {
+    return undefined; // unknown zone name
+  }
+}
+
+/** How far ahead of UTC `timeZone` is at instant `at`, in milliseconds. */
+function zoneOffsetMs(timeZone: string, at: number): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).formatToParts(new Date(at));
+  const get = (type: string): number => Number(parts.find((p) => p.type === type)?.value ?? '0');
+  const asUtc = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));
+  return asUtc - at;
 }
 
 interface ErrnoLike {

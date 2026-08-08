@@ -79,7 +79,10 @@ export class AntigravityLlmProvider implements LlmProvider {
         stderr: e.stderr?.slice(0, 2000),
         stdout: e.stdout?.slice(0, 2000),
       });
-      const limit = detectUsageLimit(e.stdout) ?? detectUsageLimit(e.stderr) ?? detectUsageLimit(e.message);
+      // Not `e.message`: execFile builds it from the command line, echoing the
+      // prompt (and the publisher email inside it) back at us — a publisher's own
+      // "we've reached our limit" would read as OUR limit and halt the run.
+      const limit = detectUsageLimit(e.stdout) ?? detectUsageLimit(e.stderr);
       if (limit) throw limit;
       const detail = e.killed ? `timed out/killed (signal ${e.signal})` : (e.stdout?.trim() || e.stderr?.trim() || e.message);
       throw new Error(`agy CLI failed (${label}): ${detail.slice(0, 500)}`);

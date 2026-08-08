@@ -159,6 +159,23 @@ export interface ExtractOptions {
    * because a single call takes minutes and a full run is hours of them.
    */
   concurrency?: number;
+  /**
+   * How many times to try the model call for one reply before giving up on it
+   * (default 3 — the first attempt plus two retries).
+   *
+   * Deliberately blind to the KIND of error. The CLI's usage-limit message is a
+   * UI string, not an API contract; when it changed under us detectUsageLimit
+   * stopped matching, every call began failing in ~700ms, and one run marked
+   * hundreds of perfectly good replies 'failed' before anyone noticed. Rather
+   * than keep guessing which errors are fatal, retry everything a few times —
+   * and if it STILL fails, treat that as fatal for the whole run (see below).
+   */
+  attemptsPerReply?: number;
+  /**
+   * Pause between those attempts (default 10s). Long enough that a blip has
+   * passed and short enough that three of them cost half a minute.
+   */
+  retrySleepMs?: number;
 }
 
 /** Serializes async sections: each caller waits for the previous one to settle. */
@@ -183,7 +200,15 @@ function createMutex(): { run<T>(fn: () => Promise<T>): Promise<T> } {
 export async function extractPendingReplies(
   deps: PollDeps,
   opts: ExtractOptions = {},
-): Promise<{ extracted: number; failed: number; ignored: number; stoppedByLimit: boolean; resetAt?: Date }> {
+): Promise<{
+  extracted: number;
+  failed: number;
+  ignored: number;
+  stoppedByLimit: boolean;
+  /** True when the consecutive-failure backstop aborted the run (see ExtractOptions). */
+  stoppedByFailures: boolean;
+  resetAt?: Date;
+}> {
   const { store } = deps;
   const log = opts.log ?? (() => {});
   const emailDomainMap = emailToDomains(await store.listTargets());
@@ -205,6 +230,10 @@ export async function extractPendingReplies(
   // Set by whichever worker hits the subscription limit first; the others then
   // finish what is in flight and stop pulling new work.
   let limitHit: UsageLimitError | undefined;
+  const attempts = Math.max(1, opts.attemptsPerReply ?? 3);
+  const retrySleepMs = opts.retrySleepMs ?? 10_000;
+  // Set once a reply has burned all its attempts: the run gives up entirely.
+  let exhausted = false;
   const persistLock = createMutex();
 
   const runOne = async (reply: Reply): Promise<void> => {
@@ -221,7 +250,19 @@ export async function extractPendingReplies(
     try {
       // Only this line runs concurrently; everything it produces is written
       // behind the lock below, in whatever order the calls happen to finish.
-      const extractedReply = await extractReply(deps, reply, target);
+      // Retried on ANY error (see attemptsPerReply) — the retry wraps the model
+      // call ONLY, which writes nothing, so a second attempt can never duplicate
+      // a half-written persist.
+      const extractedReply = await withRetries(
+        () => extractReply(deps, reply, target),
+        attempts,
+        retrySleepMs,
+        (attempt, err) =>
+          log(
+            `[${i}/${work.length}] retry ${attempt}/${attempts} ${subject} — ` +
+              `${err instanceof Error ? err.message.slice(0, 160) : String(err)}`,
+          ),
+      );
       const outcome = await persistLock.run(async () => {
         const result = await persistExtraction(deps, reply, target, emailDomainMap, extractedReply);
         await store.putReply(reply);
@@ -273,6 +314,24 @@ export async function extractPendingReplies(
         ...describeError(err),
       });
       log(`[${n}/${work.length}] FAIL ${subject} — ${err instanceof Error ? err.message : String(err)}`);
+      // This reply already got every attempt, spaced out, and still failed — so
+      // whatever is wrong is not transient, and the rest of the queue would meet
+      // it too. Stop the run rather than spend the queue on it: that is exactly
+      // how an unrecognized usage limit burned hundreds of good replies before.
+      // These replies ARE marked 'failed', but --extract-only re-picks 'failed',
+      // so a resume covers them.
+      if (!exhausted) {
+        exhausted = true;
+        logger.error('extraction aborted — a reply failed every attempt', {
+          replyId: reply.id,
+          attempts,
+          progress: `${n}/${work.length}`,
+        });
+        log(
+          `[${n}/${work.length}] ABORT failed ${attempts}/${attempts} attempts — stopping. ` +
+            `Check the log and re-run to resume.`,
+        );
+      }
     }
     if (opts.sleepMs) await sleep(opts.sleepMs);
   };
@@ -280,7 +339,7 @@ export async function extractPendingReplies(
   // `concurrency` workers each pull the next reply until the queue drains or the
   // usage limit stops the run.
   const worker = async (): Promise<void> => {
-    while (!limitHit) {
+    while (!limitHit && !exhausted) {
       const next = work[cursor++];
       if (!next) return;
       await runOne(next);
@@ -293,12 +352,40 @@ export async function extractPendingReplies(
     failed,
     ignored,
     stoppedByLimit: limitHit != null,
+    stoppedByFailures: exhausted,
     ...(limitHit?.resetAt ? { resetAt: limitHit.resetAt } : {}),
   };
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Run `fn`, retrying on ANY error up to `attempts` times with `sleepMs` between
+ * tries; rethrows the last error once they are spent. `onRetry` reports each
+ * failed attempt. `fn` must be side-effect free — it is called repeatedly.
+ *
+ * The one exception to "any error" is UsageLimitError: the window is closed for
+ * minutes or hours, so retrying it inside a 10s loop cannot succeed. It goes
+ * straight through to the caller, which stops the run and leaves the reply
+ * pending for a later resume.
+ */
+async function withRetries<T>(
+  fn: () => Promise<T>,
+  attempts: number,
+  sleepMs: number,
+  onRetry: (attempt: number, err: unknown) => void,
+): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err instanceof UsageLimitError || attempt >= attempts) throw err;
+      onRetry(attempt, err);
+      await sleep(sleepMs);
+    }
+  }
 }
 
 type IngestResult = { kind: 'done'; label: OutcomeLabel } | { kind: 'ignored' };

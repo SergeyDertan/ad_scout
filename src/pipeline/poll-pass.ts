@@ -39,6 +39,7 @@ import type { EmailProvider, IncomingEmail } from '../ports/email-provider';
 import type { Store } from '../ports/store';
 import type { ExtractionOutcome, Extractor } from '../services/extractor';
 import type { Config } from '../config';
+import { advanceCursor, rewindCursor } from './cursor';
 
 export interface PollDeps {
   store: Store;
@@ -105,6 +106,11 @@ export async function runPollPass(deps: PollDeps, opts: PollOpts = {}): Promise<
       ? new Date(account.pollCursor.lastPolledAt)
       : undefined;
 
+    // fetchReplies advances historyId before we've handled a single message, so
+    // remember where the cursor was: an interrupted account has to put it back or
+    // the messages it never got to become unreachable. See cursor.ts.
+    const cursorBefore = account.pollCursor?.historyId;
+
     let messages: IncomingEmail[];
     try {
       messages = await email.fetchReplies(account, since);
@@ -118,22 +124,34 @@ export async function runPollPass(deps: PollDeps, opts: PollOpts = {}): Promise<
     }
     report.fetched += messages.length;
 
-    for (const msg of messages) {
-      if (opts.signal?.aborted) break;
-      await handleMessage(deps, account, msg, sentRefs, awaiting, emailDomainMap, report);
-      opts.onProgress?.(++processed, report.fetched);
+    let handled = 0;
+    let aborted = false;
+    try {
+      for (const msg of messages) {
+        if (opts.signal?.aborted) {
+          aborted = true;
+          break;
+        }
+        await handleMessage(deps, account, msg, sentRefs, awaiting, emailDomainMap, report);
+        handled++;
+        opts.onProgress?.(++processed, report.fetched);
+      }
+    } catch (err) {
+      await rewindCursor(store, account.id, cursorBefore);
+      throw err;
     }
 
-    // Advance the cursor. Merge (don't overwrite): the gmail-api provider may
-    // have written a fresh historyId into pollCursor during fetchReplies.
-    await store.updateAccount(account.id, (current) => ({
-      ...current,
-      pollCursor: {
-        ...current.pollCursor,
-        mailbox: 'INBOX',
-        lastPolledAt: clock.now().toISOString(),
-      },
-    }));
+    if (aborted) {
+      logger.warn('poll pass aborted mid-account — rewinding cursor', {
+        account: account.id,
+        email: account.email,
+        unhandled: messages.length - handled,
+      });
+      await rewindCursor(store, account.id, cursorBefore);
+      break;
+    }
+
+    await advanceCursor(store, account.id, clock);
   }
 
   await retryFailedExtractions(deps, report, opts, processed);

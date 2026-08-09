@@ -12,6 +12,8 @@
 
 import { ALL_LABELS, LABEL_COLORS, type OutcomeLabel } from '../../domain/labels';
 import type { Account, EmailAttachment } from '../../domain/types';
+import { describeError } from '../../lib/errors';
+import { logger } from '../../lib/logger';
 import {
   MAX_ATTACHMENT_BYTES,
   type EmailProvider,
@@ -371,8 +373,20 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
           if (attachments.length) parsed.attachments = attachments;
           out.push(parsed);
         }
-      } catch {
-        // Skip individual malformed messages rather than failing the whole pass.
+      } catch (err) {
+        // A message we merely failed to DOWNLOAD must not be quietly dropped: the
+        // caller advances the historyId cursor right after this, so skipping one
+        // here loses that reply permanently. A transport failure (laptop asleep,
+        // DNS, reset) is transient, so fail the whole pass instead and let the
+        // next one retry from the same cursor. Only a message Gmail itself can't
+        // give us is skipped — and now it says so instead of vanishing.
+        const detail = describeError(err);
+        if (detail.network) throw err;
+        logger.warn('skipping unreadable message', {
+          account: account.id,
+          emailId: id,
+          ...detail,
+        });
       }
     }
     return out;

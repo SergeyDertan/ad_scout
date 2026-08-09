@@ -15,8 +15,10 @@ import type { Account, Batch, Target } from '../domain/types';
 import { fixedClock } from '../lib/clock';
 import { UsageLimitError } from '../lib/errors';
 import type { LlmProvider } from '../ports/llm-provider';
+import type { EmailProvider, IncomingEmail, SendResult } from '../ports/email-provider';
 import { Extractor } from '../services/extractor';
 import { extractPendingReplies, runPollPass } from './poll-pass';
+import { runFetchPass } from './fetch-pass';
 import { runSendPass } from './send-pass';
 
 const config = loadConfig({} as NodeJS.ProcessEnv);
@@ -837,4 +839,85 @@ test('parallel extraction does not lose writes to same-document contention', asy
     await store.close?.();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// A cursor-advancing provider, modelling gmail-api: fetchReplies writes the new
+// historyId into pollCursor BEFORE the caller has handled any of the messages it
+// returns, and only reports messages newer than that cursor. That's the shape
+// that makes an interrupted pass lose mail.
+class CursorAdvancingProvider implements EmailProvider {
+  readonly name = 'cursor-advancing';
+  readonly supportsThreadId = true;
+  constructor(
+    private readonly store: MemoryStore,
+    private readonly inbox: IncomingEmail[],
+  ) {}
+
+  async fetchReplies(account: Account): Promise<IncomingEmail[]> {
+    const from = Number(account.pollCursor?.historyId ?? '0');
+    const fresh = this.inbox.filter((_, i) => i + 1 > from);
+    await this.store.updateAccount(account.id, (current) => ({
+      ...current,
+      pollCursor: { ...current.pollCursor, mailbox: 'INBOX', historyId: String(this.inbox.length) },
+    }));
+    return fresh;
+  }
+
+  async send(): Promise<SendResult> {
+    throw new Error('not used');
+  }
+  async resolveThreadId(): Promise<string | undefined> {
+    return undefined;
+  }
+  async markRead(): Promise<void> {}
+  async applyLabel(): Promise<void> {}
+}
+
+function inbound(n: number): IncomingEmail {
+  return {
+    emailId: `msg${n}`,
+    rfcMessageId: `<msg${n}@pub.com>`,
+    fromAddress: 'info@t1.com',
+    subject: 'Re: sponsored post',
+    receivedAt: `2026-06-19T12:0${n}:00Z`,
+    text: `We can publish. $${n}00.`,
+  };
+}
+
+// Regression: goracio.smm.manager@gmail.com silently stopped ingesting for ~32h.
+// A manual fetch was cut short (the SSE client disconnects → AbortController
+// fires), but the provider had already advanced historyId past everything it
+// returned, and the pass still committed the cursor. The messages it never got to
+// sat behind the cursor and no later pass could ask Gmail for them again — 10
+// real replies lost, nothing in the logs. An aborted account must put the cursor
+// back so the next pass re-fetches the window.
+test('fetch-pass rewinds the cursor when aborted mid-account so no message is stranded', async () => {
+  const store = new MemoryStore();
+  await seed(store);
+  const email = new CursorAdvancingProvider(store, [inbound(1), inbound(2), inbound(3)]);
+
+  // Abort as soon as the first message has been handled.
+  const ac = new AbortController();
+  const report = await runFetchPass(
+    { store, email, clock },
+    { signal: ac.signal, onProgress: () => ac.abort() },
+  );
+
+  assert.equal(report.fetched, 3);
+  assert.equal((await store.listReplies()).length, 1, 'only the first message was handled');
+
+  const mid = await store.getAccount('acc1');
+  assert.equal(mid?.pollCursor?.historyId, undefined, 'cursor rewound to its pre-fetch value');
+  assert.equal(mid?.pollCursor?.lastPolledAt, undefined, 'an aborted account is not marked polled');
+
+  // The next, uninterrupted pass must still see all three: dedupe absorbs the
+  // one already stored and the two stranded ones finally land.
+  const second = await runFetchPass({ store, email, clock });
+  assert.equal(second.fetched, 3);
+  assert.equal(second.deduped, 1);
+  assert.equal(
+    (await store.listReplies()).map((r) => r.emailId).sort().join(','),
+    'msg1,msg2,msg3',
+  );
+  assert.equal((await store.getAccount('acc1'))?.pollCursor?.historyId, '3');
 });

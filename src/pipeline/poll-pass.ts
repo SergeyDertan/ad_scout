@@ -7,15 +7,12 @@
 
 import { normalizeDomain } from '../domain/domain';
 import { LABELS, labelForResult, type OutcomeLabel } from '../domain/labels';
-import { pitchStyleForBatch } from '../domain/pitch';
 import {
   attributeOffers,
   detectBounce,
   emailToDomains,
   matchReply,
   normalizeEmail,
-  senderSiteDomain,
-  senderSiteIsCredible,
   type AwaitingTargetRef,
   type DomainGroup,
   type SentOutreachRef,
@@ -37,9 +34,15 @@ import { newId } from '../lib/ids';
 import { logger } from '../lib/logger';
 import type { EmailProvider, IncomingEmail } from '../ports/email-provider';
 import type { Store } from '../ports/store';
-import type { ExtractionOutcome, Extractor } from '../services/extractor';
+import type { Extractor } from '../services/extractor';
 import type { Config } from '../config';
 import { advanceCursor, rewindCursor } from './cursor';
+import { extractReplyCore, type ExtractedReply } from './extract-core';
+
+// The model half lives in extract-core.ts so a remote worker can run the exact
+// same code with no database (see server/remote-hub.ts). Re-exported here
+// because this module is where callers expect the extraction API to live.
+export type { ExtractInput, ExtractedReply } from './extract-core';
 
 export interface PollDeps {
   store: Store;
@@ -453,19 +456,13 @@ export async function ingestReply(
   return persistExtraction(deps, reply, target, emailDomainMap, await extractReply(deps, reply, target));
 }
 
-/** What `extractReply` hands to `persistExtraction`. */
-export interface ExtractedReply {
-  outcome: ExtractionOutcome;
-  /** The site this reply is about, once vetted — what offers attribute to. */
-  ownDomain?: string;
-  /** What we inferred before vetting, kept for the review message. */
-  guessedDomain?: string;
-  senderSiteRejected: boolean;
-}
-
 /**
- * The SLOW half: the LLM call and the read-only context it needs. Writes
- * nothing, so many of these may be in flight at once (see ExtractOptions.concurrency).
+ * Gather the read-only context one extraction needs (learned niches + the pitch
+ * profile) and run the model over it. The work itself is in extract-core.ts,
+ * which takes that context as plain data — the same call a remote worker makes.
+ *
+ * Writes nothing, so many of these may be in flight at once (see
+ * ExtractOptions.concurrency).
  */
 export async function extractReply(
   deps: PollDeps,
@@ -473,39 +470,12 @@ export async function extractReply(
   target: Target | undefined,
 ): Promise<ExtractedReply> {
   const { store, extractor, config } = deps;
-  const knownNiches = await store.listNiches();
-  // The batch the target came from decides how a niche-less flat price is read:
-  // the historical casino-specific "first" batch ⇒ casino; everything else ⇒ broad.
-  // A targetless reply has no batch, and 'broad' is the right reading for it: we
-  // never asked it a casino-specific question (we never asked it anything).
-  const pitchStyle = pitchStyleForBatch(target?.batchId);
-  // The site this reply is ABOUT. With a target that is a fact; without one it is
-  // inferred from the sender's own domain, and is undefined for a free mailbox —
-  // in which case the model is told nothing rather than something wrong.
-  const guessedDomain = target
-    ? normalizeDomain(target.websiteUrl) || undefined
-    : senderSiteDomain(reply.fromAddress);
-  // An inferred domain has to earn it: a support desk, or a network rate card
-  // that never names the sender's own site, would otherwise file other people's
-  // prices under the sender's domain. Dropping it here also keeps the model from
-  // being told "prices belong to X" when X is not what the email is about.
-  const senderSiteRejected =
-    !target && guessedDomain != null && !senderSiteIsCredible(guessedDomain, reply.text);
-  const ownDomain = senderSiteRejected ? undefined : guessedDomain;
-  const outcome = await extractor.extract(
-    config.pitch,
-    reply.text,
-    knownNiches,
-    reply.attachments ?? [],
-    // siteDomain lets the model find THIS site's row in a multi-site price list.
-    { pitchStyle, ...(ownDomain ? { siteDomain: ownDomain } : {}) },
-  );
-  return {
-    outcome,
-    senderSiteRejected,
-    ...(ownDomain ? { ownDomain } : {}),
-    ...(guessedDomain ? { guessedDomain } : {}),
-  };
+  return extractReplyCore(extractor, {
+    reply,
+    ...(target ? { target } : {}),
+    niches: await store.listNiches(),
+    pitch: config.pitch,
+  });
 }
 
 /**
@@ -780,7 +750,9 @@ async function markRead(deps: PollDeps, account: Account, emailId: string): Prom
 }
 
 /** Apply a decision label to a message (best-effort, same non-fatal contract). */
-async function applyLabel(
+/** Best-effort mailbox labeling. Exported for the remote hub, which applies the
+ *  same label a local extraction would once a worker's result is persisted. */
+export async function applyLabel(
   deps: PollDeps,
   account: Account,
   emailId: string,

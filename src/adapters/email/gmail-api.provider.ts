@@ -291,7 +291,7 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
     return this.fetchViaSearch(account, since);
   }
 
-  /** Steady state: pull only INBOX additions since the stored historyId. */
+  /** Steady state: pull mailbox additions since the stored historyId. */
   private async fetchViaHistory(
     account: Account,
     startHistoryId: string,
@@ -301,10 +301,13 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
     let pageToken: string | undefined;
 
     do {
+      // No labelId filter: a reply Gmail misclassifies is delivered with SPAM and
+      // no INBOX label, so a server-side labelId=INBOX filter hides it from every
+      // poll until the cursor expires. We take every messageAdded record and scope
+      // by label per-message below instead.
       const params = new URLSearchParams({
         startHistoryId,
         historyTypes: 'messageAdded',
-        labelId: 'INBOX',
       });
       if (pageToken) params.set('pageToken', pageToken);
 
@@ -318,8 +321,7 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
       for (const record of page.history ?? []) {
         for (const added of record.messagesAdded ?? []) {
           const m = added.message;
-          // labelId=INBOX filters the records; double-check the message itself.
-          if (m?.id && (m.labelIds?.includes('INBOX') ?? true)) addedIds.add(m.id);
+          if (m?.id && isInboundDelivery(m.labelIds)) addedIds.add(m.id);
         }
       }
       pageToken = page.nextPageToken;
@@ -342,9 +344,8 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
     // ignore list + AI isSpam). The mailbox scope lives entirely in `q` here — a
     // labelIds=INBOX constraint would re-exclude Spam — and includeSpamTrash lifts
     // the API's default spam/trash filter while `q` keeps Trash out.
-    // NOTE: the incremental (historyId) path stays INBOX-only, so a message
-    // delivered straight to Spam AFTER this backfill is only caught on a full
-    // resync (cleared historyId), not by steady-state polling.
+    // The incremental (historyId) path scopes to the same set via
+    // isInboundDelivery, so Spam is covered by steady-state polling too.
     let q = '(in:inbox OR in:spam)';
     if (since) {
       // Gmail 'after:' takes Unix timestamp in seconds.
@@ -510,6 +511,23 @@ interface GmailHistoryResponse {
   nextPageToken?: string;
   // Current mailbox historyId; present even when `history` is empty.
   historyId?: string;
+}
+
+// Which mailbox additions count as inbound mail worth fetching. INBOX is the
+// normal case; SPAM is included because Gmail misclassifies real publisher
+// replies (and bounce NDRs) — genuine junk is dropped downstream by the ignore
+// list + AI isSpam, which is the layer that already owns that judgement.
+// Everything else the history feed reports — our own SENT copies, drafts, chats,
+// trashed mail — is not inbound and must stay out.
+const INBOUND_LABELS = ['INBOX', 'SPAM'];
+const NON_INBOUND_LABELS = ['SENT', 'DRAFT', 'CHAT', 'TRASH'];
+
+function isInboundDelivery(labelIds?: string[]): boolean {
+  // Unlabelled record: we can't classify it, so fetch and let the pipeline decide
+  // (an unmatched sender is dropped there). Dropping here would lose it for good.
+  if (!labelIds) return true;
+  if (labelIds.some((l) => NON_INBOUND_LABELS.includes(l))) return false;
+  return labelIds.some((l) => INBOUND_LABELS.includes(l));
 }
 
 function header(msg: GmailMessage, name: string): string {

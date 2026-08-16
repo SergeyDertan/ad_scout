@@ -106,6 +106,44 @@ test('fetchReplies: incremental history pull returns only added INBOX messages a
   assert.equal(after!.pollCursor!.historyId, '150');
 });
 
+// A publisher reply Gmail misclassifies carries SPAM and no INBOX label. The
+// history feed must still surface it — real junk is dropped downstream by the
+// ignore list + AI isSpam, but a missed reply is lost until the cursor expires.
+test('fetchReplies: incremental history pull includes spam-delivered messages', async () => {
+  const store = new MemoryStore();
+  const acct = account({ pollCursor: { mailbox: 'INBOX', historyId: '100' } });
+  await store.putAccount(acct);
+  const provider = new GmailApiProvider(store, 'cid', 'secret');
+
+  const { restore, calls } = stubFetch({
+    history: () => ({
+      status: 200,
+      body: {
+        history: [
+          { messagesAdded: [{ message: { id: 'm-spam', labelIds: ['CATEGORY_PERSONAL', 'SPAM'] } }] },
+          { messagesAdded: [{ message: { id: 'm-sent', labelIds: ['SENT'] } }] },
+          { messagesAdded: [{ message: { id: 'm-trash', labelIds: ['TRASH'] } }] },
+        ],
+        historyId: '150',
+      },
+    }),
+    get: (id) => ({ status: 200, body: gmailMessage(id) }),
+  });
+
+  try {
+    const replies = await provider.fetchReplies(acct);
+    assert.deepEqual(
+      replies.map((r) => r.emailId),
+      ['m-spam'],
+    );
+    // The server-side labelId=INBOX filter is what hid these; it must be gone.
+    const historyCall = calls.find((u) => u.includes('/history'))!;
+    assert.ok(!historyCall.includes('labelId'), `history call still filters: ${historyCall}`);
+  } finally {
+    restore();
+  }
+});
+
 test('fetchReplies: an expired history cursor (404) falls back to a search resync and reseeds', async () => {
   const store = new MemoryStore();
   const acct = account({ pollCursor: { mailbox: 'INBOX', historyId: '5' } });

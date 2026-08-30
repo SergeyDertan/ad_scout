@@ -5,15 +5,18 @@
 import type {
   Account,
   Batch,
+  Deal,
   DomainExclusion,
   IgnoreEntry,
   Niche,
   Outreach,
+  Placement,
   PriceRecord,
   PromptSnapshot,
   Reply,
   Suppression,
   Target,
+  ThreadLink,
 } from '../../domain/types';
 import { normalizeDomain } from '../../domain/domain';
 import { isSeedIgnoredDomain } from '../../domain/ignore-seed';
@@ -44,6 +47,9 @@ export class MemoryStore implements Store {
   private priceRecords = new Map<string, PriceRecord>(); // keyed by id
   private ignores = new Map<string, IgnoreEntry>(); // keyed by `${kind}:${value}`
   private domainExclusions = new Map<string, DomainExclusion>(); // keyed by domain
+  private deals = new Map<string, Deal>(); // keyed by id
+  private placements = new Map<string, Placement>(); // keyed by id
+  private threadLinks = new Map<string, ThreadLink>(); // keyed by threadId
   private listeners = new Set<ChangeListener>();
 
   private emit(type: DocType, action: ChangeEvent['action'], id: string): void {
@@ -257,6 +263,64 @@ export class MemoryStore implements Store {
   async deleteDomainExclusion(domain: string) {
     const key = normalizeDomain(domain);
     if (this.domainExclusions.delete(key)) this.emit('domainexclusion', 'delete', key);
+  }
+
+  // deals
+  async getDeal(id: string) {
+    const d = this.deals.get(id);
+    return d ? clone(d) : undefined;
+  }
+  async putDeal(d: Deal) {
+    const doc = clone({ ...d, counterpartyEmail: normalizeEmail(d.counterpartyEmail) });
+    this.deals.set(doc.id, doc);
+    this.emit('deal', 'put', doc.id);
+    return clone(doc);
+  }
+  async listDeals() {
+    return [...this.deals.values()].map(clone);
+  }
+  async deleteDeal(id: string) {
+    if (this.deals.delete(id)) this.emit('deal', 'delete', id);
+  }
+
+  // placements
+  async getPlacement(id: string) {
+    const p = this.placements.get(id);
+    return p ? clone(p) : undefined;
+  }
+  async putPlacement(p: Placement) {
+    const doc = clone({ ...p, domain: normalizeDomain(p.domain) });
+    this.placements.set(doc.id, doc);
+    this.emit('placement', 'put', doc.id);
+    return clone(doc);
+  }
+  async listPlacements(filter?: { dealId?: string }) {
+    let out = [...this.placements.values()];
+    if (filter?.dealId) out = out.filter((p) => p.dealId === filter.dealId);
+    return out.map(clone);
+  }
+  async deletePlacement(id: string) {
+    if (this.placements.delete(id)) this.emit('placement', 'delete', id);
+  }
+
+  // thread links (keyed by threadId)
+  async putThreadLink(l: ThreadLink) {
+    const doc = clone({ ...l, id: l.threadId });
+    this.threadLinks.set(doc.threadId, doc);
+    this.emit('threadlink', 'put', doc.threadId);
+    return clone(doc);
+  }
+  async getThreadLink(threadId: string) {
+    const l = this.threadLinks.get(threadId);
+    return l ? clone(l) : undefined;
+  }
+  async listThreadLinks(filter?: { dealId?: string }) {
+    let out = [...this.threadLinks.values()];
+    if (filter?.dealId) out = out.filter((l) => l.dealId === filter.dealId);
+    return out.map(clone);
+  }
+  async deleteThreadLink(threadId: string) {
+    if (this.threadLinks.delete(threadId)) this.emit('threadlink', 'delete', threadId);
   }
 
   subscribe(listener: ChangeListener): () => void {

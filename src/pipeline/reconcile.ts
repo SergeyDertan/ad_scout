@@ -59,7 +59,8 @@ export async function runReconcile(deps: ReconcileDeps): Promise<ReconcileReport
         report.recoveredSent++;
       } else {
         await store.putOutreach({ ...o, status: 'needs_review' });
-        const target = await store.getTarget(o.targetId);
+        // Manual deal messages carry no target — nothing to roll a status back to.
+        const target = o.targetId ? await store.getTarget(o.targetId) : undefined;
         if (target && target.status === 'reserved') {
           await store.updateTarget(target.id, (t) =>
             t.status === 'reserved' ? { ...t, status: 'needs_review' } : t,

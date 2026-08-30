@@ -5,16 +5,19 @@
 import type {
   Account,
   Batch,
+  Deal,
   DomainExclusion,
   IgnoreEntry,
   Niche,
   Outreach,
+  Placement,
   PriceRecord,
   PromptSnapshot,
   Reply,
   Suppression,
   Target,
   TargetStatus,
+  ThreadLink,
 } from '../domain/types';
 
 export type DocType =
@@ -28,6 +31,9 @@ export type DocType =
   | 'pricerecord'
   | 'ignore'
   | 'domainexclusion'
+  | 'deal'
+  | 'placement'
+  | 'threadlink'
   | 'prompt';
 
 export interface ChangeEvent {
@@ -128,6 +134,25 @@ export interface Store {
   isDomainExcluded(domain: string): Promise<boolean>;
   listDomainExclusions(): Promise<DomainExclusion[]>;
   deleteDomainExclusion(domain: string): Promise<void>;
+
+  // deals (human-operated negotiations — see domain/types.ts)
+  getDeal(id: string): Promise<Deal | undefined>;
+  putDeal(d: Deal): Promise<Deal>;
+  listDeals(): Promise<Deal[]>;
+  deleteDeal(id: string): Promise<void>;
+
+  // placements (one post on one domain, inside a deal)
+  getPlacement(id: string): Promise<Placement | undefined>;
+  putPlacement(p: Placement): Promise<Placement>;
+  listPlacements(filter?: { dealId?: string }): Promise<Placement[]>;
+  deletePlacement(id: string): Promise<void>;
+
+  // thread → deal reverse index. `getThreadLink` is on the poll pass's hot path
+  // (once per inbound message), so it must stay a point read.
+  putThreadLink(l: ThreadLink): Promise<ThreadLink>;
+  getThreadLink(threadId: string): Promise<ThreadLink | undefined>;
+  listThreadLinks(filter?: { dealId?: string }): Promise<ThreadLink[]>;
+  deleteThreadLink(threadId: string): Promise<void>;
 
   // live feed
   subscribe(listener: ChangeListener): () => void;

@@ -196,10 +196,17 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
   async send(msg: OutgoingEmail): Promise<SendResult> {
     const raw = buildRfc2822(msg);
     const b64 = Buffer.from(raw).toString('base64url');
+    // `threadId` in the request body AS WELL AS the In-Reply-To/References
+    // headers in `raw`. Gmail wants both: given only the headers it grafts the
+    // message onto the thread inconsistently, and given only threadId it rejects
+    // the send when the subject doesn't match the thread's.
     const result = await this.gmailFetch<{ id: string; threadId: string }>(
       msg.account,
       '/messages/send',
-      { method: 'POST', body: JSON.stringify({ raw: b64 }) },
+      {
+        method: 'POST',
+        body: JSON.stringify({ raw: b64, ...(msg.threadId ? { threadId: msg.threadId } : {}) }),
+      },
     );
     // Gmail API returns threadId immediately — no IMAP lookup needed.
     return { rfcMessageId: msg.rfcMessageId, threadId: result.threadId };
@@ -463,6 +470,12 @@ function buildRfc2822(msg: OutgoingEmail): string {
     `To: ${msg.to}`,
     `Subject: ${encodeHeader(msg.subject)}`,
     `Message-Id: ${msg.rfcMessageId}`,
+    // Threading headers, emitted only for a message that continues a thread.
+    // Without them a reply arrives in the publisher's inbox as an unrelated new
+    // email — the cold sequence has always sent none, and still sends none,
+    // because only manual/deal sends set these fields.
+    ...(msg.inReplyTo ? [`In-Reply-To: ${msg.inReplyTo}`] : []),
+    ...(msg.references?.length ? [`References: ${msg.references.join(' ')}`] : []),
     `MIME-Version: 1.0`,
     `Content-Type: text/plain; charset=utf-8`,
     `Content-Transfer-Encoding: quoted-printable`,

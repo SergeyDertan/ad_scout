@@ -246,6 +246,12 @@ export function ResponseDetailModal({
                   {row.batchName ? ` · ${row.batchName}` : ''}
                   {row.receivedAt ? ` · ${new Date(row.receivedAt).toLocaleString()}` : ''}
                 </Text>
+                <Text fontSize="xs" color="fg.muted">
+                  replied to{' '}
+                  <Text as="span" fontWeight="medium" color="fg">
+                    {row.accountEmail ?? 'an unknown mailbox'}
+                  </Text>
+                </Text>
               </VStack>
             </Dialog.Header>
 

@@ -18,6 +18,7 @@ import { logger } from '../lib/logger';
 import type { EmailProvider, IncomingEmail } from '../ports/email-provider';
 import type { Store } from '../ports/store';
 import { advanceCursor, rewindCursor } from './cursor';
+import { heldDeal } from './deal-hold';
 
 export interface FetchDeps {
   store: Store;
@@ -35,6 +36,8 @@ export interface FetchReport {
   skipped: number;
   /** Inbound dropped pre-storage because the sender is on the ignore list. */
   ignored: number;
+  /** Stored untouched because their thread belongs to an open deal. */
+  held: number;
 }
 
 export interface FetchOpts {
@@ -54,11 +57,14 @@ export async function runFetchPass(deps: FetchDeps, opts: FetchOpts = {}): Promi
     unmatched: 0,
     skipped: 0,
     ignored: 0,
+    held: 0,
   };
 
+  // `o.targetId` guard: a 'manual' deal message can have none, and a ref with no
+  // target could not resolve a reply to one anyway.
   const sentRefs: SentOutreachRef[] = (await store.listOutreaches())
-    .filter((o) => o.threadId)
-    .map((o) => ({ targetId: o.targetId, threadId: o.threadId }));
+    .filter((o) => o.threadId && o.targetId)
+    .map((o) => ({ targetId: o.targetId!, threadId: o.threadId }));
   const awaiting: AwaitingTargetRef[] = (await store.listTargets())
     .filter((t) => t.status === 'contacted' || t.status === 'reserved')
     .map((t) => ({ targetId: t.id, contactEmail: t.contactEmail }));
@@ -174,12 +180,22 @@ async function handleMessage(
     return;
   }
 
+  // Is a human negotiating on this thread? Resolved BEFORE markRead, because a
+  // held message must stay unread. This pass is the one the drip scheduler runs,
+  // so the hold has to be honoured here too, not only in the poll pass.
+  const deal = await heldDeal(store, msg.threadId);
+
   // The system has now fetched and seen this message — mark it read regardless of
   // what we decide about it below. The label records the decision.
-  await markRead(deps, account, msg.emailId);
+  //
+  // Except on a held thread: a PERSON is reading these, so clearing UNREAD would
+  // hide the very message they are waiting for.
+  if (!deal) await markRead(deps, account, msg.emailId);
 
   // Ignore list (D6): drop spam / automated senders before any work or storage.
-  if (await store.isIgnored(msg.fromAddress)) {
+  // An open deal overrides it — opening one is a person saying "this
+  // correspondence matters", which outranks any earlier automated verdict.
+  if (!deal && (await store.isIgnored(msg.fromAddress))) {
     await applyLabel(deps, account, msg.emailId, LABELS.ignored);
     report.ignored++;
     return;
@@ -230,10 +246,22 @@ async function handleMessage(
     // to match can still be a real quote about a real site — price history is
     // keyed by domain, so it has somewhere to land. Only an empty body is
     // genuinely nothing to extract.
-    extractionStatus: isEmpty ? 'skipped' : 'pending',
+    // A held reply is 'skipped' whatever its body: it must never enter the
+    // extraction queue (extractPendingReplies takes pending/failed only).
+    extractionStatus: deal || isEmpty ? 'skipped' : 'pending',
+    ...(deal ? { dealId: deal.id } : {}),
   };
 
   await store.putReply(reply);
+
+  // Held: stored for the deal's timeline, and nothing else. In particular the
+  // target's status is left alone below — a message mid-negotiation must not
+  // move a target to 'replied'.
+  if (deal) {
+    await applyLabel(deps, account, msg.emailId, LABELS.deal);
+    report.held++;
+    return;
+  }
 
   if (!match.targetId) {
     await applyLabel(deps, account, msg.emailId, LABELS.unmatched);

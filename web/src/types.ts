@@ -285,11 +285,14 @@ export interface Target {
 
 
 export type SendStatus = 'reserved' | 'sent' | 'failed' | 'needs_review';
-export type OutreachKind = 'initial' | 'followup';
+/** 'manual' = a message a person wrote from the Deals view. */
+export type OutreachKind = 'initial' | 'followup' | 'manual';
 
 export interface Outreach {
   id: string;
-  targetId: string;
+  /** Absent on a 'manual' deal message to a domain with no target row. */
+  targetId?: string;
+  dealId?: string;
   accountId: string;
   kind: OutreachKind;
   sequenceNo: number;
@@ -611,4 +614,72 @@ export interface BatchRow extends Batch {
 export interface NewBatch {
   name?: string;
   advertised?: { url: string; description?: string };
+}
+
+// --- Deals -------------------------------------------------------------------
+
+/** Coarse on purpose: the middle of a deal has no fixed order (sometimes they
+ *  publish first, sometimes we pay first), so it is one stage, not three. */
+export type DealStatus = 'negotiation' | 'fulfilment' | 'done' | 'closed';
+
+export interface Deal {
+  id: string;
+  counterpartyEmail: string;
+  accountId: string;
+  status: DealStatus;
+  origin: 'manual' | 'human_reply';
+  openedAt: string;
+  closedAt?: string;
+  closedReason?: string;
+  note?: string;
+}
+
+/** A deal in the list, with the counts the server derived from its placements. */
+export interface DealRow extends Deal {
+  /** The mailbox this negotiation runs through — which address they reply to. */
+  accountEmail?: string;
+  domains: string[];
+  placementCount: number;
+  paidCount: number;
+  liveCount: number;
+}
+
+/** One post on one domain. `paidAt` and `liveAt` are independent facts, not
+ *  stages — either can be set first. */
+export interface Placement {
+  id: string;
+  dealId: string;
+  domain: string;
+  contentText?: string;
+  contentUrl?: string;
+  agreedPrice?: PriceValue;
+  paymentMethod?: string;
+  paidAt?: string;
+  publishedUrl?: string;
+  liveAt?: string;
+  note?: string;
+}
+
+export type DealTimelineItem =
+  | { kind: 'sent'; at: string; outreach: Outreach }
+  | { kind: 'received'; at: string; reply: DealReply };
+
+/** A received message on a deal thread. Never extracted — `parsed` is absent by
+ *  design, which is the whole point of holding the thread. */
+export interface DealReply {
+  id: string;
+  fromAddress: string;
+  subject?: string;
+  receivedAt: string;
+  text: string;
+  attachments?: EmailAttachment[];
+}
+
+export interface DealDetail {
+  deal: Deal;
+  accountEmail?: string;
+  placements: Placement[];
+  domains: string[];
+  threadIds: string[];
+  timeline: DealTimelineItem[];
 }

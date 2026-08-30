@@ -84,6 +84,7 @@ async function main(): Promise<void> {
     webDir: process.env.WEB_DIR ?? './web/dist',
     providers: { llm: agent.llm.name, email: config.dummyEmail ? 'dummy' : 'real', store: config.store },
     gmailOAuth,
+    email: agent.email, // deal messages are sent straight from the Deals UI
   });
 
   const scheduler = new DripScheduler({

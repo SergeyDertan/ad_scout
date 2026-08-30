@@ -13,15 +13,18 @@ import { normalizeEmail } from '../../domain/reply-matching';
 import type {
   Account,
   Batch,
+  Deal,
   DomainExclusion,
   IgnoreEntry,
   Niche,
   Outreach,
+  Placement,
   PriceRecord,
   PromptSnapshot,
   Reply,
   Suppression,
   Target,
+  ThreadLink,
 } from '../../domain/types';
 import type {
   ChangeEvent,
@@ -44,7 +47,7 @@ export class PouchDbStore implements Store {
     if (this.db) return this.db;
     const mod: any = await import('pouchdb' as string);
     const PouchDB = mod.default ?? mod;
-    this.db = new PouchDB(this.location);
+    this.db = new PouchDB(this.location, { auto_compaction: true });
     return this.db;
   }
 
@@ -315,6 +318,56 @@ export class PouchDbStore implements Store {
   }
   deleteDomainExclusion(domain: string) {
     return this.delete('domainexclusion', normalizeDomain(domain));
+  }
+
+  // deals
+  getDeal(id: string) {
+    return this.get<Deal>('deal', id);
+  }
+  async putDeal(d: Deal) {
+    const doc = { ...d, counterpartyEmail: normalizeEmail(d.counterpartyEmail) };
+    await this.put('deal', doc);
+    return doc;
+  }
+  listDeals() {
+    return this.listByType<Deal>('deal');
+  }
+  deleteDeal(id: string) {
+    return this.delete('deal', id);
+  }
+
+  // placements
+  getPlacement(id: string) {
+    return this.get<Placement>('placement', id);
+  }
+  async putPlacement(p: Placement) {
+    const doc = { ...p, domain: normalizeDomain(p.domain) };
+    await this.put('placement', doc);
+    return doc;
+  }
+  async listPlacements(filter?: { dealId?: string }) {
+    const all = await this.listByType<Placement>('placement');
+    return filter?.dealId ? all.filter((p) => p.dealId === filter.dealId) : all;
+  }
+  deletePlacement(id: string) {
+    return this.delete('placement', id);
+  }
+
+  // thread links (doc id = threadId)
+  async putThreadLink(l: ThreadLink) {
+    const doc = { ...l, id: l.threadId };
+    await this.put('threadlink', doc);
+    return doc;
+  }
+  getThreadLink(threadId: string) {
+    return this.get<ThreadLink>('threadlink', threadId);
+  }
+  async listThreadLinks(filter?: { dealId?: string }) {
+    const all = await this.listByType<ThreadLink>('threadlink');
+    return filter?.dealId ? all.filter((l) => l.dealId === filter.dealId) : all;
+  }
+  deleteThreadLink(threadId: string) {
+    return this.delete('threadlink', threadId);
   }
 
   subscribe(listener: ChangeListener): () => void {

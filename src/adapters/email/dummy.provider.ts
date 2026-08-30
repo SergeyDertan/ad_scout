@@ -26,8 +26,13 @@ export class DummyEmailProvider implements EmailProvider {
   private inbox: IncomingEmail[] = [];
   private seq = 0;
 
+  /** Every message sent, in order — so tests can assert on threading headers. */
+  sent: OutgoingEmail[] = [];
+
   async send(msg: OutgoingEmail): Promise<SendResult> {
-    const threadId = threadIdFor(msg.rfcMessageId);
+    this.sent.push(msg);
+    // A reply joins the thread it names; anything else opens a new one.
+    const threadId = msg.threadId ?? threadIdFor(msg.rfcMessageId);
     this.threads.set(msg.rfcMessageId, threadId);
     return { rfcMessageId: msg.rfcMessageId, threadId };
   }

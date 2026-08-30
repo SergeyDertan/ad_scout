@@ -80,12 +80,18 @@ async function main() {
   const priceRecords = await store.listPriceRecords();
   const declinedExclusions = (await store.listDomainExclusions()).filter((e) => e.reason === 'declined');
 
+  // Deal correspondence is NEVER re-extracted. `extractionStatus !== 'pending'`
+  // would otherwise sweep up every held reply and flip it to 'pending', handing
+  // the extractor a whole negotiation at once — the exact outcome holding the
+  // thread exists to prevent, except retroactively and in bulk. A held reply is
+  // identified by `dealId`, which the poll pass stamps at ingest.
   const repliesToClear = replies.filter(
     (r) =>
-      r.parsed !== undefined ||
-      r.review !== undefined ||
-      r.extraction !== undefined ||
-      r.extractionStatus !== 'pending',
+      r.dealId === undefined &&
+      (r.parsed !== undefined ||
+        r.review !== undefined ||
+        r.extraction !== undefined ||
+        r.extractionStatus !== 'pending'),
   );
   const targetsToClear = targets.filter((t) => t.result !== undefined || t.status === 'replied' || t.status === 'excluded');
   const matched = replies.filter((r) => r.targetId).length;

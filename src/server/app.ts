@@ -15,6 +15,16 @@
 //   POST   /api/batches                 { name?, advertised?{url,description} } → creates an import batch
 //   GET    /api/responses?batchId=
 //   GET    /api/suppressions
+//   GET    /api/deals                    → deals + derived domains/paid/live counts
+//   POST   /api/deals                    { counterpartyEmail, accountId, threadIds?, domains?, note? }
+//   GET    /api/deals/:id                → { deal, placements, domains, threadIds, timeline }
+//   PATCH  /api/deals/:id                { status?, closedReason?, note? }
+//   DELETE /api/deals/:id                (releases its threads; keeps the messages)
+//   POST   /api/deals/:id/threads        { threadId | threadIds }
+//   POST   /api/deals/:id/placements     { domain | domains }
+//   POST   /api/deals/:id/messages       { subject, body, threadId? } → sends, holds the thread
+//   PATCH  /api/placements/:id           { contentText?, contentUrl?, agreedPrice?, paidAt?, ... }
+//   DELETE /api/placements/:id
 //   POST   /api/run/send | /api/run/poll | /api/run/fetch
 //   GET    /api/stream                  (Server-Sent Events: store change feed)
 //   GET    /*                           (static web UI)
@@ -29,6 +39,7 @@ import type {
   AccountStatus,
   Batch,
   CanPost,
+  DealStatus,
   ExtractionProvenance,
   ID,
   OutreachResult,
@@ -42,7 +53,7 @@ import { allNiches, categorizeTopic } from '../domain/niches';
 import { attributeOffers, emailToDomains, normalizeEmail } from '../domain/reply-matching';
 import { normalizeDomain } from '../domain/domain';
 import { accountSendState } from '../domain/account-state';
-import { assembleResult, type RawExtraction, type RawOffer } from '../domain/extraction';
+import { assembleResult, parsePrice, type RawExtraction, type RawOffer } from '../domain/extraction';
 import { resolveProfile } from '../domain/pitch';
 import {
   buildBatchRows,
@@ -55,7 +66,18 @@ import type { Clock } from '../lib/clock';
 import { newId } from '../lib/ids';
 import { draftEmail } from '../services/drafter';
 import { logger } from '../lib/logger';
+import type { EmailProvider } from '../ports/email-provider';
 import type { Store } from '../ports/store';
+import { dealTimeline, sendDealMessage } from '../pipeline/deal-send';
+import {
+  addDomains,
+  attachThreads,
+  DealTransitionError,
+  openDeal,
+  setDealStatus,
+  updatePlacement,
+} from '../pipeline/deal-ops';
+import { dealDomains } from '../domain/deals';
 import { isWithinSendWindow } from '../scheduler/window';
 
 export interface ServerDeps {
@@ -74,6 +96,9 @@ export interface ServerDeps {
   providers?: { llm: string; email: string; store: string };
   /** Present when Google OAuth is configured — drives /api/oauth/* endpoints. */
   gmailOAuth?: GmailOAuthHandler;
+  /** The email provider, for sending deal messages from the Deals UI. Absent in
+   *  tests that never post one; those routes then answer 503. */
+  email?: EmailProvider;
 }
 
 const MIME: Record<string, string> = {
@@ -478,7 +503,12 @@ async function handle(
       const outreaches = await store.listOutreaches({ targetId: target.id });
       const allReplies = await store.listReplies();
       const replies = allReplies.filter((r) => r.targetId === target.id);
-      return sendJson(res, 200, { target, outreaches, replies });
+      // Which mailbox each side of the conversation used. Without this the UI can
+      // show the publisher's address but not our own, and with several sending
+      // accounts there is no way to tell which one they actually replied to.
+      const accountEmails: Record<string, string> = {};
+      for (const a of await store.listAccounts()) accountEmails[a.id] = a.email;
+      return sendJson(res, 200, { target, outreaches, replies, accountEmails });
     }
 
     // POST /api/targets — queue a new outreach target
@@ -764,6 +794,187 @@ async function handle(
       return sendJson(res, 200, { ok: true, domain });
     }
 
+    // --- deals (human-operated negotiations) ---
+    //
+    // Everything under here is deliberately dumb: it moves fields a person typed.
+    // No extraction, no inference, and in particular a placement's agreedPrice
+    // never becomes a PriceRecord — a negotiated figure must not rewrite the
+    // publisher's standing rate (see domain/types.ts `Placement`).
+
+    // GET /api/deals — the list, each with its derived domains and counts.
+    if (method === 'GET' && seg[1] === 'deals' && seg.length === 2) {
+      const deals = await store.listDeals();
+      const accountEmails = new Map((await store.listAccounts()).map((a) => [a.id, a.email]));
+      const rows = [];
+      for (const deal of deals) {
+        const placements = await store.listPlacements({ dealId: deal.id });
+        rows.push({
+          ...deal,
+          accountEmail: accountEmails.get(deal.accountId),
+          domains: dealDomains(placements),
+          placementCount: placements.length,
+          paidCount: placements.filter((p) => p.paidAt).length,
+          liveCount: placements.filter((p) => p.liveAt ?? p.publishedUrl).length,
+        });
+      }
+      rows.sort((a, b) => b.openedAt.localeCompare(a.openedAt));
+      return sendJson(res, 200, rows);
+    }
+
+    // POST /api/deals — open one. Idempotent per open thread (see openDeal).
+    if (method === 'POST' && seg[1] === 'deals' && seg.length === 2) {
+      const body = (await readJsonBody(req)) as Record<string, unknown>;
+      const counterpartyEmail = normalizeEmail(str(body.counterpartyEmail) ?? '');
+      const accountId = str(body.accountId);
+      if (!counterpartyEmail) return sendJson(res, 400, { error: 'counterpartyEmail is required' });
+      if (!accountId) return sendJson(res, 400, { error: 'accountId is required' });
+      if (!(await store.getAccount(accountId))) {
+        return sendJson(res, 404, { error: 'account not found' });
+      }
+      const deal = await openDeal(store, deps.clock, {
+        counterpartyEmail,
+        accountId,
+        ...(Array.isArray(body.threadIds) ? { threadIds: body.threadIds.map(String) } : {}),
+        ...(Array.isArray(body.domains) ? { domains: body.domains.map(String) } : {}),
+        ...(str(body.note) ? { note: str(body.note)! } : {}),
+      });
+      return sendJson(res, 201, deal);
+    }
+
+    // GET /api/deals/:id — the deal, its placements, and its full message timeline.
+    if (method === 'GET' && seg[1] === 'deals' && seg[2] && seg.length === 3) {
+      const deal = await store.getDeal(seg[2]);
+      if (!deal) return sendJson(res, 404, { error: 'deal not found' });
+      const placements = await store.listPlacements({ dealId: deal.id });
+      const dealAccount = await store.getAccount(deal.accountId);
+      return sendJson(res, 200, {
+        deal,
+        accountEmail: dealAccount?.email,
+        placements: placements.sort((a, b) => a.domain.localeCompare(b.domain)),
+        domains: dealDomains(placements),
+        threadIds: (await store.listThreadLinks({ dealId: deal.id })).map((l) => l.threadId),
+        timeline: await dealTimeline(store, deal.id),
+      });
+    }
+
+    // PATCH /api/deals/:id — status, note. Status moves are validated.
+    if (method === 'PATCH' && seg[1] === 'deals' && seg[2] && seg.length === 3) {
+      const body = (await readJsonBody(req)) as Record<string, unknown>;
+      const existing = await store.getDeal(seg[2]);
+      if (!existing) return sendJson(res, 404, { error: 'deal not found' });
+
+      let deal = existing;
+      const status = str(body.status);
+      if (status && status !== existing.status) {
+        try {
+          deal = await setDealStatus(
+            store, deps.clock, existing.id, status as DealStatus, str(body.closedReason),
+          );
+        } catch (err) {
+          if (err instanceof DealTransitionError) return sendJson(res, 400, { error: err.message });
+          throw err;
+        }
+      }
+      if (body.note !== undefined) {
+        const note = str(body.note);
+        const { note: _drop, ...rest } = deal;
+        deal = await store.putDeal({ ...rest, ...(note ? { note } : {}) });
+      }
+      return sendJson(res, 200, deal);
+    }
+
+    // DELETE /api/deals/:id — remove the deal, its placements and its links.
+    // Deleting RELEASES every thread it held; the messages themselves are kept.
+    if (method === 'DELETE' && seg[1] === 'deals' && seg[2] && seg.length === 3) {
+      const deal = await store.getDeal(seg[2]);
+      if (!deal) return sendJson(res, 404, { error: 'deal not found' });
+      for (const p of await store.listPlacements({ dealId: deal.id })) {
+        await store.deletePlacement(p.id);
+      }
+      for (const l of await store.listThreadLinks({ dealId: deal.id })) {
+        await store.deleteThreadLink(l.threadId);
+      }
+      await store.deleteDeal(deal.id);
+      return sendJson(res, 200, { ok: true, id: deal.id });
+    }
+
+    // POST /api/deals/:id/threads — attach an existing conversation to the deal.
+    if (method === 'POST' && seg[1] === 'deals' && seg[2] && seg[3] === 'threads') {
+      const body = (await readJsonBody(req)) as Record<string, unknown>;
+      const threadIds = Array.isArray(body.threadIds)
+        ? body.threadIds.map(String)
+        : [str(body.threadId) ?? ''].filter(Boolean);
+      if (threadIds.length === 0) return sendJson(res, 400, { error: 'threadId(s) required' });
+      if (!(await store.getDeal(seg[2]))) return sendJson(res, 404, { error: 'deal not found' });
+      await attachThreads(store, seg[2], threadIds);
+      return sendJson(res, 200, { ok: true, threadIds });
+    }
+
+    // POST /api/deals/:id/placements — add domains as draft placements.
+    if (method === 'POST' && seg[1] === 'deals' && seg[2] && seg[3] === 'placements') {
+      const body = (await readJsonBody(req)) as Record<string, unknown>;
+      const domains = Array.isArray(body.domains)
+        ? body.domains.map(String)
+        : [str(body.domain) ?? ''].filter(Boolean);
+      if (domains.length === 0) return sendJson(res, 400, { error: 'domain(s) required' });
+      if (!(await store.getDeal(seg[2]))) return sendJson(res, 404, { error: 'deal not found' });
+      return sendJson(res, 201, await addDomains(store, seg[2], domains));
+    }
+
+    // POST /api/deals/:id/messages — write into the conversation.
+    if (method === 'POST' && seg[1] === 'deals' && seg[2] && seg[3] === 'messages') {
+      if (!deps.email) return sendJson(res, 503, { error: 'no email provider wired' });
+      const body = (await readJsonBody(req)) as Record<string, unknown>;
+      const subject = str(body.subject);
+      const text = str(body.body);
+      if (!subject) return sendJson(res, 400, { error: 'subject is required' });
+      if (!text) return sendJson(res, 400, { error: 'body is required' });
+      if (!(await store.getDeal(seg[2]))) return sendJson(res, 404, { error: 'deal not found' });
+      try {
+        const sent = await sendDealMessage(
+          { store, email: deps.email, clock: deps.clock },
+          {
+            dealId: seg[2],
+            subject,
+            body: text,
+            ...(str(body.threadId) ? { threadId: str(body.threadId)! } : {}),
+          },
+        );
+        return sendJson(res, 201, sent);
+      } catch (err) {
+        // The Outreach is already recorded as 'failed' — report, don't swallow.
+        return sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    // PATCH /api/placements/:id — content, price, paid, published.
+    if (method === 'PATCH' && seg[1] === 'placements' && seg[2] && seg.length === 3) {
+      const body = (await readJsonBody(req)) as Record<string, unknown>;
+      if (!(await store.getPlacement(seg[2]))) {
+        return sendJson(res, 404, { error: 'placement not found' });
+      }
+      const patch: Record<string, unknown> = {};
+      for (const field of [
+        'contentText', 'contentUrl', 'publishedUrl', 'paymentMethod',
+        'paidAt', 'liveAt', 'note',
+      ]) {
+        if (body[field] !== undefined) patch[field] = str(body[field]) || undefined;
+      }
+      // agreedPrice is stored as a PriceValue so it formats like every other
+      // amount. `raw` keeps exactly what was typed.
+      if (body.agreedPrice !== undefined) {
+        const raw = str(body.agreedPrice);
+        patch.agreedPrice = raw ? parsePrice(raw) : undefined;
+      }
+      return sendJson(res, 200, await updatePlacement(store, seg[2], patch));
+    }
+
+    // DELETE /api/placements/:id
+    if (method === 'DELETE' && seg[1] === 'placements' && seg[2] && seg.length === 3) {
+      await store.deletePlacement(seg[2]);
+      return sendJson(res, 200, { ok: true, id: seg[2] });
+    }
+
     // POST /api/run/send | /api/run/poll | /api/run/fetch — SSE progress stream
     if (method === 'POST' && seg[1] === 'run' && seg[2]) {
       const runFn =
@@ -903,6 +1114,22 @@ async function serveStatic(webDir: string, pathname: string, res: ServerResponse
     res.writeHead(200, { 'Content-Type': MIME[extname(full)] ?? 'application/octet-stream' });
     res.end(data);
   } catch {
+    // SPA fallback: the UI uses real paths (/deals/<id>), so a refresh or a
+    // shared link asks the server for a file that was never built. Hand those
+    // back index.html and let the client router resolve them. Only for
+    // extension-less paths — a missing .js or .png is a genuine 404, and
+    // answering it with HTML would turn a broken asset into a confusing parse
+    // error instead of an honest one.
+    if (!extname(full)) {
+      try {
+        const html = await readFile(join(base, 'index.html'));
+        res.writeHead(200, { 'Content-Type': MIME['.html']! });
+        res.end(html);
+        return;
+      } catch {
+        /* no index.html to fall back to — fall through to the 404 */
+      }
+    }
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('not found');
   }

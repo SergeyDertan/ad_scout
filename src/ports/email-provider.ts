@@ -15,6 +15,19 @@ export interface OutgoingEmail {
   body: string;
   rfcMessageId: string; // we set our own Message-Id for exact self-lookup
   account: Account; // sending identity + credentialRef
+  /**
+   * Reply threading. All three are set together or not at all, and only for a
+   * message that continues an existing conversation.
+   *
+   * `inReplyTo`/`references` are the RFC 5322 headers every mail client threads
+   * on. `threadId` is the provider's own id, which Gmail additionally requires
+   * in the send request: with the headers but no threadId it grafts the message
+   * onto the thread only sometimes, and with neither it silently starts a new
+   * one. Belt and braces is the only reliable combination.
+   */
+  inReplyTo?: string;
+  references?: string[];
+  threadId?: string;
 }
 
 export interface SendResult {

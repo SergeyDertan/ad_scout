@@ -43,6 +43,7 @@ const METRIC_PALETTE: Record<string, string> = {
   bounced: 'red',
   unmatched: 'orange',
   extractionFailed: 'red',
+  held: 'teal', // on a deal thread — a human has it (matches the AS/Deal label)
   skipped: 'gray',
   deduped: 'gray',
   fetched: 'gray',

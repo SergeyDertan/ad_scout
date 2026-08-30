@@ -2,6 +2,10 @@ import type {
   Account,
   Batch,
   BatchRow,
+  Deal,
+  DealDetail,
+  DealRow,
+  DealStatus,
   DomainDetail,
   DomainExclusion,
   DomainSummary,
@@ -12,6 +16,7 @@ import type {
   NewTarget,
   Niche,
   Outreach,
+  Placement,
   ResponseRow,
   Status,
   Suppression,
@@ -62,7 +67,13 @@ export const api = {
     return req<Target[]>('/targets' + (qs ? `?${qs}` : ''));
   },
   getTargetThread: (id: string) =>
-    req<{ target: Target; outreaches: Outreach[]; replies: ThreadReply[] }>(`/targets/${id}/thread`),
+    req<{
+      target: Target;
+      outreaches: Outreach[];
+      replies: ThreadReply[];
+      /** accountId → email, so the timeline can name OUR side of it too. */
+      accountEmails: Record<string, string>;
+    }>(`/targets/${id}/thread`),
   createTarget: (body: NewTarget) =>
     req<Target>('/targets', { method: 'POST', body: JSON.stringify(body) }),
   deleteTarget: (id: string) => req<{ ok: boolean }>(`/targets/${id}`, { method: 'DELETE' }),
@@ -117,6 +128,34 @@ export const api = {
     req<DomainExclusion>('/exclusions', { method: 'POST', body: JSON.stringify({ domain }) }),
   deleteExclusion: (domain: string) =>
     req<{ ok: boolean }>(`/exclusions/${encodeURIComponent(domain)}`, { method: 'DELETE' }),
+
+  // deals (human-operated negotiations)
+  listDeals: () => req<DealRow[]>('/deals'),
+  getDeal: (id: string) => req<DealDetail>(`/deals/${id}`),
+  openDeal: (body: {
+    counterpartyEmail: string;
+    accountId: string;
+    threadIds?: string[];
+    domains?: string[];
+    note?: string;
+  }) => req<Deal>('/deals', { method: 'POST', body: JSON.stringify(body) }),
+  patchDeal: (id: string, body: { status?: DealStatus; closedReason?: string; note?: string }) =>
+    req<Deal>(`/deals/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteDeal: (id: string) => req<{ ok: boolean }>(`/deals/${id}`, { method: 'DELETE' }),
+  addDealDomains: (id: string, domains: string[]) =>
+    req<Placement[]>(`/deals/${id}/placements`, { method: 'POST', body: JSON.stringify({ domains }) }),
+  attachDealThreads: (id: string, threadIds: string[]) =>
+    req<{ ok: boolean }>(`/deals/${id}/threads`, { method: 'POST', body: JSON.stringify({ threadIds }) }),
+  sendDealMessage: (id: string, body: { subject: string; body: string; threadId?: string }) =>
+    req<{ outreach: Outreach; threadId?: string }>(`/deals/${id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  patchPlacement: (
+    id: string,
+    body: Partial<Omit<Placement, 'id' | 'dealId' | 'agreedPrice'>> & { agreedPrice?: string },
+  ) => req<Placement>(`/placements/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deletePlacement: (id: string) => req<{ ok: boolean }>(`/placements/${id}`, { method: 'DELETE' }),
 
   // manual passes — SSE streaming with progress
   runSend: (opts?: RunPassOpts) => runPass('/run/send', opts),

@@ -72,6 +72,11 @@ export class SmtpImapProvider implements EmailProvider {
       subject: msg.subject,
       text: msg.body,
       messageId: msg.rfcMessageId, // set our own Message-Id for exact self-lookup
+      // Threading, set only on a message continuing a thread (manual/deal sends).
+      // There is no SMTP equivalent of Gmail's threadId — the headers are the
+      // whole mechanism here, which is why they are also sent to the Gmail API.
+      ...(msg.inReplyTo ? { inReplyTo: msg.inReplyTo } : {}),
+      ...(msg.references?.length ? { references: msg.references } : {}),
     });
     // SMTP returns no thread id — resolved post-send via resolveThreadId().
     return { rfcMessageId: msg.rfcMessageId };

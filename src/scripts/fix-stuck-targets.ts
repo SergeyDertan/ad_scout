@@ -17,22 +17,24 @@ async function main() {
   const targets = await store.listTargets();
   const targetById = new Map(targets.map((t) => [t.id, t]));
 
+  // targetId is non-null throughout: every filter here is gated on an 'initial'
+  // send, and only a 'manual' deal message can lack a target.
   const mismatches = outreaches.filter((o) => {
     if (o.kind !== 'initial' || o.status !== 'sent') return false;
-    const t = targetById.get(o.targetId);
+    const t = targetById.get(o.targetId!);
     return t && (t.status === 'pending' || t.status === 'reserved');
   });
 
   console.log(`found ${mismatches.length} target(s) to fix`);
 
   for (const o of mismatches) {
-    const before = targetById.get(o.targetId)!;
-    const updated = await store.updateTarget(o.targetId, (t) =>
+    const before = targetById.get(o.targetId!)!;
+    const updated = await store.updateTarget(o.targetId!, (t) =>
       t.status === 'pending' || t.status === 'reserved'
         ? { ...t, status: 'contacted', assignedAccountId: o.accountId, lastOutreachAt: o.sentAt ?? t.lastOutreachAt }
         : t,
     );
-    console.log(`  ${o.targetId}: ${before.status} -> ${updated.status}`);
+    console.log(`  ${o.targetId!}: ${before.status} -> ${updated.status}`);
   }
 
   await store.close?.();

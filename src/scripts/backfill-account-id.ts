@@ -68,6 +68,9 @@ async function main() {
   const accountsByTarget = new Map<ID, Set<ID>>();
   for (const o of await store.listOutreaches()) {
     if (o.threadId && !accountByThread.has(o.threadId)) accountByThread.set(o.threadId, o.accountId);
+    // A 'manual' deal message has no target and so contributes no target→account
+    // evidence; its thread is still indexed above.
+    if (!o.targetId) continue;
     const set = accountsByTarget.get(o.targetId) ?? new Set<ID>();
     set.add(o.accountId);
     accountsByTarget.set(o.targetId, set);

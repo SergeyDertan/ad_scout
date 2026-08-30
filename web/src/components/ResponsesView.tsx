@@ -90,9 +90,24 @@ function VirtualRow({ index, style, rows, onShow, onEdit, readOnly }: RowCompone
       _hover={{ bg: 'bg.muted' }}
       transition="background 0.1s"
     >
-      <Text fontWeight="medium" overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
-        {r.fromAddress}
-      </Text>
+      <Box minW={0}>
+        <Text fontWeight="medium" overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
+          {r.fromAddress}
+        </Text>
+        {/* Which of OUR mailboxes they replied to. With several sending accounts
+            this is the difference between "someone answered" and knowing where
+            to go read the thread. */}
+        <Text
+          color="fg.subtle"
+          fontSize="xs"
+          overflow="hidden"
+          textOverflow="ellipsis"
+          whiteSpace="nowrap"
+          title={r.accountEmail ? `replied to ${r.accountEmail}` : undefined}
+        >
+          {r.accountEmail ? `\u2192 ${r.accountEmail}` : '\u2192 unknown mailbox'}
+        </Text>
+      </Box>
       <Text color="fg.muted" overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
         {r.website ?? '—'}
       </Text>
@@ -161,7 +176,12 @@ export function ResponsesView({ tick, readOnly }: { tick: number; readOnly?: boo
 
   const q = search.trim().toLowerCase();
   const rows = allRows.filter((r) => {
-    if (q && !r.fromAddress.toLowerCase().includes(q) && !(r.website ?? '').toLowerCase().includes(q))
+    if (
+      q &&
+      !r.fromAddress.toLowerCase().includes(q) &&
+      !(r.website ?? '').toLowerCase().includes(q) &&
+      !(r.accountEmail ?? '').toLowerCase().includes(q)
+    )
       return false;
     if (reviewFilter === 'review' && !needsReview(r)) return false;
     if (reviewFilter === 'awaiting' && !isAwaiting(r)) return false;
@@ -339,7 +359,7 @@ export function ResponsesView({ tick, readOnly }: { tick: number; readOnly?: boo
             textTransform="uppercase"
             letterSpacing="wide"
           >
-            <Text>From</Text>
+            <Text>From / to our mailbox</Text>
             <Text>Site</Text>
             <Text>Batch</Text>
             <Text>Match</Text>

@@ -66,14 +66,16 @@ async function main() {
   // 4. Target-status consistency: an 'initial' send marked 'sent' should have
   //    moved its target off 'pending'/'reserved' — a mismatch here is exactly
   //    the class of lost-update bug fixed earlier today (pre-fix casualties).
+  // targetId is non-null in these checks: they are gated on 'initial'/'followup'
+  // sends, and only a 'manual' deal message can lack a target.
   const initialSentMismatch = outreaches.filter((o) => {
     if (o.kind !== 'initial' || o.status !== 'sent') return false;
-    const t = targetById.get(o.targetId);
+    const t = targetById.get(o.targetId!);
     return t && (t.status === 'pending' || t.status === 'reserved');
   });
   console.log(`\ninitial sends marked 'sent' but target still pending/reserved: ${initialSentMismatch.length}`);
   for (const o of initialSentMismatch.slice(0, 20)) {
-    const t = targetById.get(o.targetId);
+    const t = targetById.get(o.targetId!);
     console.log(`  - outreach=${o.id} target=${o.targetId} targetStatus=${t?.status} sentAt=${o.sentAt}`);
   }
 
@@ -82,7 +84,7 @@ async function main() {
   const followupSentByTarget = new Map<string, number>();
   for (const o of outreaches) {
     if (o.kind === 'followup' && o.status === 'sent') {
-      followupSentByTarget.set(o.targetId, (followupSentByTarget.get(o.targetId) ?? 0) + 1);
+      followupSentByTarget.set(o.targetId!, (followupSentByTarget.get(o.targetId!) ?? 0) + 1);
     }
   }
   const followupMismatch = [...followupSentByTarget.entries()].filter(([targetId, count]) => {

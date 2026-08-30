@@ -1,6 +1,7 @@
 import {
   Badge,
   Box,
+  Button,
   Circle,
   Flex,
   Heading,
@@ -14,12 +15,14 @@ import {
 } from '@chakra-ui/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './api';
+import { useRoute } from './hooks/useRoute';
 import type { BatchRow, Status } from './types';
 import { useStream, type LiveState } from './hooks/useStream';
 import { AccountsView } from './components/AccountsView';
 import { TargetsView } from './components/TargetsView';
 import { BatchesView } from './components/BatchesView';
 import { ResponsesView } from './components/ResponsesView';
+import { DealsView } from './components/DealsView';
 import { DomainsView } from './components/DomainsView';
 import { IgnoreView } from './components/IgnoreView';
 import { SuppressionsView } from './components/SuppressionsView';
@@ -27,8 +30,10 @@ import { LabelsView } from './components/LabelsView';
 import { RunView } from './components/RunView';
 import { StatCards } from './components/StatCards';
 import {
+  ChevronDownIcon,
   InboxIcon,
   LabelsIcon,
+  MegaphoneIcon,
   PlayIcon,
   ShieldIcon,
   TagIcon,
@@ -43,17 +48,26 @@ const TABS: {
   label: string;
   icon: ComponentType<IconProps>;
   count?: (s: Status | null) => number | undefined;
+  /** Does the outreach funnel actually describe this page? The stats are about
+   *  targets and sends, so they are noise on Deals, Accounts or Labels — a whole
+   *  screen of numbers that answer nothing you came to that page to ask. */
+  stats?: boolean;
 }[] = [
   { id: 'accounts', label: 'Accounts', icon: UsersIcon, count: (s) => s?.accounts },
-  { id: 'targets', label: 'Targets', icon: TargetIcon, count: (s) => s?.targets.total },
-  { id: 'batches', label: 'Batches', icon: TagIcon },
-  { id: 'responses', label: 'Responses', icon: InboxIcon },
-  { id: 'domains', label: 'Domains', icon: TagIcon },
+  { id: 'targets', label: 'Targets', icon: TargetIcon, count: (s) => s?.targets.total, stats: true },
+  { id: 'batches', label: 'Batches', icon: TagIcon, stats: true },
+  { id: 'responses', label: 'Responses', icon: InboxIcon, stats: true },
+  { id: 'domains', label: 'Domains', icon: TagIcon, stats: true },
+  { id: 'deals', label: 'Deals', icon: MegaphoneIcon },
   { id: 'suppressions', label: 'Suppressions', icon: ShieldIcon },
   { id: 'ignore', label: 'Ignore', icon: ShieldIcon },
   { id: 'labels', label: 'Labels', icon: LabelsIcon },
-  { id: 'run', label: 'Run', icon: PlayIcon },
+  { id: 'run', label: 'Run', icon: PlayIcon, stats: true },
 ];
+
+const TAB_IDS = new Set(TABS.map((t) => t.id));
+const DEFAULT_TAB = 'targets';
+const STATS_COLLAPSED_KEY = 'adscout.statsCollapsed';
 
 const LIVE: Record<LiveState, { color: string; label: string }> = {
   connecting: { color: 'gray.400', label: 'Connecting' },
@@ -94,8 +108,8 @@ function ConnectionPill({ live }: { live: LiveState }) {
 }
 
 // Per-type tick counters — each view only refetches when its data type changes.
-type Ticks = { batch: number; account: number; target: number; reply: number; suppression: number };
-const ZERO_TICKS: Ticks = { batch: 0, account: 0, target: 0, reply: 0, suppression: 0 };
+type Ticks = { batch: number; account: number; target: number; reply: number; suppression: number; deal: number };
+const ZERO_TICKS: Ticks = { batch: 0, account: 0, target: 0, reply: 0, suppression: 0, deal: 0 };
 
 /** A batch's display label: its name, else a short id (manual adds are unnamed). */
 function batchLabel(b: BatchRow): string {
@@ -103,7 +117,29 @@ function batchLabel(b: BatchRow): string {
 }
 
 export function App() {
-  const [tab, setTab] = useState<string>('targets');
+  const { route, navigate } = useRoute(DEFAULT_TAB);
+  // An unknown path (a stale bookmark, a typo) shows the default rather than a
+  // blank screen with every tab unselected.
+  const tab = TAB_IDS.has(route.tab) ? route.tab : DEFAULT_TAB;
+  const tabMeta = TABS.find((t) => t.id === tab);
+  const [statsCollapsed, setStatsCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(STATS_COLLAPSED_KEY) === '1';
+    } catch {
+      return false; // private window / storage blocked — just show them
+    }
+  });
+  const toggleStats = useCallback(() => {
+    setStatsCollapsed((v) => {
+      try {
+        localStorage.setItem(STATS_COLLAPSED_KEY, v ? '0' : '1');
+      } catch {
+        /* not being able to remember the choice must not break the toggle */
+      }
+      return !v;
+    });
+  }, []);
+  const showStats = Boolean(tabMeta?.stats);
   const [status, setStatus] = useState<Status | null>(null);
   const [statusErr, setStatusErr] = useState(false);
   const [ticks, setTicks] = useState<Ticks>(ZERO_TICKS);
@@ -126,12 +162,15 @@ export function App() {
 
   const onChange = useCallback((type?: string) => {
     void refreshStatus();
-    const key = type as keyof Ticks | undefined;
+    // Placements and thread links are parts of a deal — they drive the same tick,
+    // so editing a post refreshes the Deals view and nothing else.
+    const mapped = type === 'placement' || type === 'threadlink' ? 'deal' : type;
+    const key = mapped as keyof Ticks | undefined;
     if (key && key in ZERO_TICKS) {
       setTicks((t) => ({ ...t, [key]: t[key] + 1 }));
     } else {
       // Unknown type — bump everything.
-      setTicks((t) => ({ batch: t.batch+1, account: t.account+1, target: t.target+1, reply: t.reply+1, suppression: t.suppression+1 }));
+      setTicks((t) => ({ batch: t.batch+1, account: t.account+1, target: t.target+1, reply: t.reply+1, suppression: t.suppression+1, deal: t.deal+1 }));
     }
   }, [refreshStatus]);
 
@@ -228,37 +267,70 @@ export function App() {
           </Box>
         )}
 
-        <Flex align="center" justify="space-between" gap={3} mb={3} flexWrap="wrap">
-          <Text fontSize="sm" fontWeight="semibold" color="fg.muted" textTransform="uppercase" letterSpacing="wider">
-            {(() => {
-              const b = batches.find((x) => x.id === statBatch);
-              return b ? `Statistics · ${batchLabel(b)}` : 'Statistics · all batches';
-            })()}
-          </Text>
-          <HStack gap={2} bg="bg.panel" borderWidth="1px" borderColor="border" rounded="lg" pl={3} pr={1.5} py={1}>
-            <NativeSelect.Root size="sm" width="48" variant="plain">
-              <NativeSelect.Field
-                value={statBatch}
-                onChange={(e) => setStatBatch(e.target.value)}
-                fontWeight="medium"
-              >
-                <option value="">all batches</option>
-                {batches.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {batchLabel(b)}
-                  </option>
-                ))}
-              </NativeSelect.Field>
-              <NativeSelect.Indicator />
-            </NativeSelect.Root>
-          </HStack>
-        </Flex>
+        {/* The funnel is only rendered where it describes the page you are on,
+            and stays collapsed if you told it to. */}
+        {showStats && (
+          <>
+            <Flex align="center" justify="space-between" gap={3} mb={3} flexWrap="wrap">
+              <HStack gap={2}>
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  color="fg.muted"
+                  px={1}
+                  onClick={toggleStats}
+                  aria-expanded={!statsCollapsed}
+                  aria-label={statsCollapsed ? 'Show statistics' : 'Hide statistics'}
+                >
+                  <ChevronDownIcon
+                    boxSize={4}
+                    transform={statsCollapsed ? 'rotate(-90deg)' : undefined}
+                    transition="transform 0.15s"
+                  />
+                </Button>
+                <Text
+                  fontSize="sm"
+                  fontWeight="semibold"
+                  color="fg.muted"
+                  textTransform="uppercase"
+                  letterSpacing="wider"
+                  cursor="pointer"
+                  onClick={toggleStats}
+                >
+                  {(() => {
+                    const b = batches.find((x) => x.id === statBatch);
+                    return b ? `Statistics · ${batchLabel(b)}` : 'Statistics · all batches';
+                  })()}
+                </Text>
+              </HStack>
+              {!statsCollapsed && (
+                <HStack gap={2} bg="bg.panel" borderWidth="1px" borderColor="border" rounded="lg" pl={3} pr={1.5} py={1}>
+                  <NativeSelect.Root size="sm" width="48" variant="plain">
+                    <NativeSelect.Field
+                      value={statBatch}
+                      onChange={(e) => setStatBatch(e.target.value)}
+                      fontWeight="medium"
+                    >
+                      <option value="">all batches</option>
+                      {batches.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {batchLabel(b)}
+                        </option>
+                      ))}
+                    </NativeSelect.Field>
+                    <NativeSelect.Indicator />
+                  </NativeSelect.Root>
+                </HStack>
+              )}
+            </Flex>
 
-        <StatCards status={status} />
+            {!statsCollapsed && <StatCards status={status} />}
+          </>
+        )}
 
         <Tabs.Root
           value={tab}
-          onValueChange={(e) => setTab(e.value)}
+          onValueChange={(e) => navigate(e.value)}
           variant="enclosed"
           colorPalette="brand"
           size="md"
@@ -300,6 +372,13 @@ export function App() {
           </Tabs.Content>
           <Tabs.Content value="domains">
             <DomainsView tick={ticks.reply + ticks.target} />
+          </Tabs.Content>
+          <Tabs.Content value="deals">
+            <DealsView
+              tick={ticks.deal}
+              dealId={route.tab === 'deals' ? route.id : undefined}
+              onSelect={(id) => navigate('deals', id)}
+            />
           </Tabs.Content>
           <Tabs.Content value="suppressions">
             <SuppressionsView tick={ticks.suppression} />

@@ -4,6 +4,11 @@
 // (PRICE-HISTORY-PLAN.md §5.2). Opt-outs and bounces add to the persistent
 // suppression list; blanket declines add a domain exclusion; AI-flagged spam
 // grows the ignore list.
+//
+// One thing short-circuits all of that: a thread belonging to an OPEN DEAL is
+// held. A human is negotiating there, so the message is stored and labelled and
+// nothing else happens to it — no extraction, no rollup, no price record, no
+// exclusion, no suppression. See deal-hold.ts and domain/types.ts `Deal`.
 
 import { normalizeDomain } from '../domain/domain';
 import { LABELS, labelForResult, type OutcomeLabel } from '../domain/labels';
@@ -37,6 +42,7 @@ import type { Store } from '../ports/store';
 import type { Extractor } from '../services/extractor';
 import type { Config } from '../config';
 import { advanceCursor, rewindCursor } from './cursor';
+import { heldDeal, openDealThreadIds } from './deal-hold';
 import { extractReplyCore, type ExtractedReply } from './extract-core';
 
 // The model half lives in extract-core.ts so a remote worker can run the exact
@@ -64,6 +70,8 @@ export interface PollReport {
   skipped: number;
   /** Inbound dropped pre-processing (ignore list) or set aside as AI-detected spam. */
   ignored: number;
+  /** Stored untouched because their thread belongs to an open deal. */
+  held: number;
 }
 
 function emptyReport(): PollReport {
@@ -77,6 +85,7 @@ function emptyReport(): PollReport {
     extractionFailed: 0,
     skipped: 0,
     ignored: 0,
+    held: 0,
   };
 }
 
@@ -92,9 +101,11 @@ export async function runPollPass(deps: PollDeps, opts: PollOpts = {}): Promise<
   const report = emptyReport();
 
   // Matching refs computed once for the pass.
+  // `o.targetId` guard: a 'manual' deal message can have none, and a ref with no
+  // target could not resolve a reply to one anyway.
   const sentRefs: SentOutreachRef[] = (await store.listOutreaches())
-    .filter((o) => o.threadId)
-    .map((o) => ({ targetId: o.targetId, threadId: o.threadId }));
+    .filter((o) => o.threadId && o.targetId)
+    .map((o) => ({ targetId: o.targetId!, threadId: o.threadId }));
   const allTargets = await store.listTargets();
   const awaiting: AwaitingTargetRef[] = allTargets
     .filter((t) => t.status === 'contacted' || t.status === 'reserved')
@@ -259,13 +270,22 @@ export async function extractPendingReplies(
   const { store } = deps;
   const log = opts.log ?? (() => {});
   const emailDomainMap = emailToDomains(await store.listTargets());
+  // Threads under an open deal, resolved once for the whole run. A reply already
+  // ingested as 'pending' or 'failed' can have its thread pulled into a deal
+  // afterwards — you open one on a conversation that was already going — and
+  // without this it would be extracted on the very next pass, hold or no hold.
+  // The hold has to be evaluated HERE, at extraction time, not only at ingest.
+  const heldThreads = await openDealThreadIds(store);
   // No `&& r.targetId` here: price history is keyed by DOMAIN, so a reply we
   // could not tie to a target can still carry a real quote about a real site
   // (a publisher answering from a mailbox we never wrote to, or an unsolicited
   // rate card). ingestReply handles a missing target; what protects us from
   // extracting junk is the AI's own isSpam verdict plus MAX_DOMAINS_PER_REPLY.
   const pending = (await store.listReplies()).filter(
-    (r) => r.extractionStatus === 'failed' || r.extractionStatus === 'pending',
+    (r) =>
+      (r.extractionStatus === 'failed' || r.extractionStatus === 'pending') &&
+      r.dealId === undefined &&
+      !(r.threadId && heldThreads.has(r.threadId)),
   );
   const work = opts.limit != null ? pending.slice(0, opts.limit) : pending;
   const concurrency = Math.max(1, Math.min(opts.concurrency ?? 1, work.length || 1));
@@ -782,18 +802,32 @@ async function handleMessage(
     return;
   }
 
+  // Is a human negotiating on this thread? Resolved BEFORE markRead because a
+  // held message must stay unread — see below.
+  const deal = await heldDeal(store, msg.threadId);
+
   // The system has now fetched and seen this message — mark it read regardless of
   // what we decide about it below. The label records the decision.
-  await markRead(deps, account, msg.emailId);
+  //
+  // Except on a held thread: the whole point of a deal is that a PERSON is
+  // reading these, so clearing UNREAD would hide the very message they are
+  // waiting for. Leave it bold and let the AS/Deal label say why we skipped it.
+  if (!deal) await markRead(deps, account, msg.emailId);
 
   // Ignore list (D6): drop spam / automated senders before any work or storage.
-  if (await store.isIgnored(msg.fromAddress)) {
+  // An open deal overrides it: opening one is a person saying "this
+  // correspondence matters", which outranks any earlier automated verdict about
+  // the sender — otherwise one stale isSpam call could swallow a live
+  // negotiation without trace.
+  if (!deal && (await store.isIgnored(msg.fromAddress))) {
     await applyLabel(deps, account, msg.emailId, LABELS.ignored);
     report.ignored++;
     return;
   }
 
-  // Bounce?
+  // Bounce? Still checked on a held thread — a dead address is a fact the
+  // negotiation needs, and detectBounce keys on mailer-daemon/postmaster
+  // envelopes rather than on anything a publisher would write by hand.
   const bounce = detectBounce(msg.fromAddress, msg.text);
   if (bounce.isBounce) {
     const failed = bounce.failedRecipient;
@@ -831,6 +865,19 @@ async function handleMessage(
     ...(msg.attachments?.length ? { attachments: msg.attachments } : {}),
     extractionStatus: 'pending',
   };
+
+  // Held: store it for the deal's timeline and stop. No extractor call, no
+  // rollUp, no PriceRecord, no DomainExclusion, no Suppression, no ignore entry.
+  // 'skipped' keeps it out of extractPendingReplies (which takes only
+  // pending/failed), so it never leaks back into the queue on a later pass.
+  if (deal) {
+    reply.dealId = deal.id;
+    reply.extractionStatus = 'skipped';
+    await applyLabel(deps, account, msg.emailId, LABELS.deal);
+    report.held++;
+    await store.putReply(reply);
+    return;
+  }
 
   if (!match.targetId) {
     await applyLabel(deps, account, msg.emailId, LABELS.unmatched);

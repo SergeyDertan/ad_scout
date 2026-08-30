@@ -25,6 +25,9 @@ export const LABELS = {
   holding: 'AS/Holding',
   /** Asked to stop being contacted (optOut) — overrides intent. */
   unsubscribe: 'AS/Unsubscribe',
+  /** On a thread belonging to an open deal: a human is handling this one, so the
+   *  pipeline stored it and did nothing else. Never set by extraction. */
+  deal: 'AS/Deal',
   /** Delivery failure / NDR. */
   bounced: 'AS/Bounced',
   /** Inbound we could not tie to any target — a human may want to look. */
@@ -58,6 +61,7 @@ export const LABEL_COLORS: Record<OutcomeLabel, LabelColor> = {
   [LABELS.autoReply]: { backgroundColor: '#999999', textColor: '#ffffff' }, // gray
   [LABELS.declined]: { backgroundColor: '#fb4c2f', textColor: '#ffffff' }, // red
   [LABELS.unsubscribe]: { backgroundColor: '#a479e2', textColor: '#ffffff' }, // purple
+  [LABELS.deal]: { backgroundColor: '#2da2bb', textColor: '#ffffff' }, // teal (a human has it)
   [LABELS.matched]: { backgroundColor: '#cccccc', textColor: '#000000' }, // light gray (provisional)
   [LABELS.bounced]: { backgroundColor: '#cc3a21', textColor: '#ffffff' }, // dark red
   [LABELS.unmatched]: { backgroundColor: '#fad165', textColor: '#000000' }, // yellow (look at me)

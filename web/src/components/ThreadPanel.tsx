@@ -17,7 +17,7 @@ function buildThread(outreaches: Outreach[], replies: ThreadReply[]): ThreadItem
   return items.sort((a, b) => a.time.localeCompare(b.time));
 }
 
-function SentItem({ o }: { o: Outreach }) {
+function SentItem({ o, fromEmail }: { o: Outreach; fromEmail?: string }) {
   const [open, setOpen] = useState(false);
   return (
     <Box
@@ -31,7 +31,11 @@ function SentItem({ o }: { o: Outreach }) {
       <HStack mb={1} justify="space-between" wrap="wrap" gap={2}>
         <HStack gap={2}>
           <Badge size="sm" colorPalette="brand" variant="subtle">
-            {o.kind === 'followup' ? `Follow-up #${o.sequenceNo}` : 'Initial'}
+            {o.kind === 'followup'
+              ? `Follow-up #${o.sequenceNo}`
+              : o.kind === 'manual'
+                ? 'Written by you'
+                : 'Initial'}
           </Badge>
           <Badge
             size="sm"
@@ -46,6 +50,10 @@ function SentItem({ o }: { o: Outreach }) {
         </Text>
       </HStack>
       <Text fontSize="sm" fontWeight="semibold" mb={1}>{o.subject}</Text>
+      {/* Which of our mailboxes this went out from — the address they'd reply to. */}
+      <Text fontSize="xs" color="fg.muted" mb={1}>
+        from {fromEmail ?? 'an unknown mailbox'}
+      </Text>
       {open ? (
         <>
           <Text as="pre" fontSize="xs" whiteSpace="pre-wrap" fontFamily="inherit" color="fg" lineHeight="1.6">
@@ -114,11 +122,15 @@ function ReceivedItem({ r, onDeleted }: { r: ThreadReply; onDeleted: () => void 
  *  the Targets thread panel and the Responses detail modal. */
 export function ThreadTimeline({ targetId }: { targetId: string }) {
   const [items, setItems] = useState<ThreadItem[] | null>(null);
+  const [accountEmails, setAccountEmails] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
 
   const load = () => {
     api.getTargetThread(targetId)
-      .then(({ outreaches, replies }) => setItems(buildThread(outreaches, replies)))
+      .then(({ outreaches, replies, accountEmails: emails }) => {
+        setItems(buildThread(outreaches, replies));
+        setAccountEmails(emails ?? {});
+      })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   };
 
@@ -136,7 +148,7 @@ export function ThreadTimeline({ targetId }: { targetId: string }) {
     <VStack gap={3} align="stretch">
       {items.map((item) =>
         item.kind === 'sent'
-          ? <SentItem key={item.data.id} o={item.data} />
+          ? <SentItem key={item.data.id} o={item.data} fromEmail={accountEmails[item.data.accountId]} />
           : <ReceivedItem key={item.data.id} r={item.data} onDeleted={load} />
       )}
     </VStack>

@@ -112,11 +112,25 @@ export interface Batch {
 // --- Outreach (append-only send attempt) ------------------------------------
 
 export type SendStatus = 'reserved' | 'sent' | 'failed' | 'needs_review';
-export type OutreachKind = 'initial' | 'followup';
+/**
+ * 'initial'/'followup' are the automated cold sequence. 'manual' is a message a
+ * person wrote and sent from the Deals UI: it is recorded in the same log (so
+ * the account's daily count reflects every mail the mailbox actually sent — a
+ * deal message costs deliverability exactly like any other), but the send pass
+ * never generates one, never sequences it, and the drip quota never blocks it.
+ */
+export type OutreachKind = 'initial' | 'followup' | 'manual';
 
 export interface Outreach {
   id: ID;
-  targetId: ID;
+  /**
+   * Absent only on a 'manual' deal message: a deal can run on a domain that
+   * never had a target row (a price that arrived unsolicited, a site added by
+   * hand). Every automated send always has one.
+   */
+  targetId?: ID;
+  /** Set on a 'manual' send — which deal's conversation this message belongs to. */
+  dealId?: ID;
   accountId: ID;
   kind: OutreachKind;
   sequenceNo: number; // 0 = initial, 1.. = follow-ups
@@ -160,6 +174,11 @@ export interface Reply {
   /** The email's subject line, as received. */
   subject?: string;
   targetId?: ID;
+  /** Set when this message arrived on a thread belonging to an open deal. Its
+   *  presence is what made the pipeline hold it (extractionStatus 'skipped'),
+   *  and it lets the deal's timeline read its messages without joining through
+   *  ThreadLink. Stamped once, at ingest — never recomputed. */
+  dealId?: ID;
   matchMethod: MatchMethod;
   receivedAt: ISO;
   text: string;
@@ -369,6 +388,114 @@ export interface DomainExclusion {
   reason: 'declined' | 'manual';
   sourceReplyId?: ID; // provenance
   at: ISO;
+}
+
+// --- Deals (human-operated conversations) ------------------------------------
+
+/**
+ * How far along a negotiation is. Deliberately coarse: the middle of a deal has
+ * no fixed order — sometimes they publish first, sometimes we pay first — so
+ * encoding a sequence there would be a lie the UI then has to work around.
+ */
+export type DealStatus =
+  /** Asking whether they'll publish; agreeing the price and who goes first. */
+  | 'negotiation'
+  /** Pay · publish · verify. One unordered stage, not three. */
+  | 'fulfilment'
+  | 'done'
+  | 'closed';
+
+/**
+ * Statuses whose threads are HELD: stored, but never extracted and never allowed
+ * to write a consequence. Closing the deal is what lifts the hold — there is
+ * deliberately no timer, because a deal that stalls for a month must not
+ * silently re-arm the extractor on a live conversation.
+ */
+export const OPEN_DEAL_STATUSES: DealStatus[] = ['negotiation', 'fulfilment'];
+
+/**
+ * A negotiation with one webmaster about publishing one or more posts.
+ *
+ * A deal is human-operated end to end. While it is open, every message on its
+ * threads is stored for the record but never sent to the extractor, never rolled
+ * up onto a target, and never allowed to write a PriceRecord, DomainExclusion,
+ * Suppression or ignore entry (see `handleMessage` in pipeline/poll-pass.ts).
+ * The pipeline's only job here is to stay out of the way.
+ *
+ * Keyed by neither thread nor email. One negotiation can span several threads (a
+ * fresh thread about a second site joins the same deal), and the same webmaster
+ * can be a new deal months later. Domains are NOT stored on the deal: a domain
+ * in a deal IS a `Placement`, so the two can never drift apart.
+ */
+export interface Deal {
+  id: ID;
+  /** The webmaster we're negotiating with (normalized). */
+  counterpartyEmail: string;
+  /** The mailbox the conversation lives in. */
+  accountId: ID;
+  status: DealStatus;
+  /** 'manual' = opened from the UI. 'human_reply' = detected from a message a
+   *  human wrote into a thread from the mailbox itself. */
+  origin: 'manual' | 'human_reply';
+  openedAt: ISO;
+  closedAt?: ISO;
+  /** Why it ended, when it ends as 'closed' rather than 'done'. */
+  closedReason?: string;
+  note?: string;
+}
+
+/**
+ * One post on one domain, inside a deal. Adding a domain to a deal IS creating
+ * one of these, which is why a deal carries no domain list of its own.
+ *
+ * Flag-shaped rather than status-shaped, for the same reason `DealStatus` is
+ * coarse: `paidAt` and `liveAt` are independent facts that arrive in either
+ * order. Both are timestamps rather than booleans — the UI renders a checkbox
+ * from `paidAt != null`, and the date answers "how long has this been sitting?",
+ * which a boolean could never be upgraded to record after the fact.
+ */
+export interface Placement {
+  id: ID;
+  dealId: ID;
+  /** Normalized website domain the post goes on. */
+  domain: string;
+  /** The post itself — either the text… */
+  contentText?: string;
+  /** …or a link to it (Google Doc, etc). */
+  contentUrl?: string;
+  /**
+   * What we agreed to pay. Reuses PriceValue so amounts and currencies format
+   * identically everywhere, with `raw` holding whatever was typed.
+   *
+   * NEVER written to a PriceRecord. This is a negotiated, deal-specific figure —
+   * a discount, a bundle, a partial — and letting it reach the price sheet would
+   * silently rewrite the publisher's standing rate with a number that was only
+   * ever true for one transaction.
+   */
+  agreedPrice?: PriceValue;
+  paymentMethod?: string;
+  paidAt?: ISO;
+  /** The published post on the target domain. */
+  publishedUrl?: string;
+  /** When it went live. Separate from `publishedUrl`, because "they published it,
+   *  link to follow" is a real state we need to be able to record. */
+  liveAt?: ISO;
+  note?: string;
+}
+
+/**
+ * Reverse index: thread → deal. The deal holds no thread list; this doc does the
+ * lookup instead, because `handleMessage` asks "is this thread held?" of EVERY
+ * inbound message and that has to stay a point read.
+ *
+ * Kept for the life of the deal, including after it closes — a closed deal's
+ * threads are still part of its record, and the hold itself is decided by the
+ * deal's status (see OPEN_DEAL_STATUSES), never by the link's existence alone.
+ */
+export interface ThreadLink {
+  id: ID; // = threadId
+  threadId: string;
+  dealId: ID;
 }
 
 /**

@@ -29,8 +29,17 @@ async function main() {
   const priceRecords = await store.listPriceRecords();
   const declinedExclusions = (await store.listDomainExclusions()).filter((e) => e.reason === 'declined');
 
+  // The `dealId` guard is belt-and-braces: a held reply is 'skipped' with no
+  // `parsed`, so it already falls outside this filter. Stated explicitly anyway,
+  // because this script and reextract-stored.ts look interchangeable and are not
+  // — that one's filter DOES reach 'skipped' replies (see the note there), and a
+  // reader comparing the two should not have to work out which is which.
   const processedReplies = replies.filter(
-    (r) => r.parsed !== undefined || r.extractionStatus === 'done' || r.extractionStatus === 'failed',
+    (r) =>
+      r.dealId === undefined &&
+      (r.parsed !== undefined ||
+        r.extractionStatus === 'done' ||
+        r.extractionStatus === 'failed'),
   );
   const analysedTargets = targets.filter(
     (t) => t.result !== undefined && (includeExcluded || t.status !== 'excluded'),

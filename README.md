@@ -10,6 +10,9 @@ Local AI outreach agent.
   Gmail accounts, queue targets, and operate the outreach loop.
 - [**docs/ARCHITECTURE.md**](./docs/ARCHITECTURE.md) — code structure, the logic
   in each layer, data model, and key flows.
+- [**docs/REMOTE-ADMIN-PLAN.md**](./docs/REMOTE-ADMIN-PLAN.md) — giving a
+  second person write access to deals: the code survey, the options weighed,
+  and the agreed shape (Firebase auth + a VPS host). Design, not yet built.
 - [`overview.md`](./overview.md) — the original design document.
 
 ## Quick start

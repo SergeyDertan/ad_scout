@@ -1,14 +1,18 @@
-import { Box, Circle, Flex, HStack, SimpleGrid, Square, Stack, Text, Wrap } from '@chakra-ui/react';
+import { Box, Flex, HStack, SimpleGrid, Square, Stack, Text } from '@chakra-ui/react';
 import { useState, type ComponentType } from 'react';
-import type { Engagement, Status } from '../types';
+import type { Status } from '../types';
 import type { IconProps } from '@chakra-ui/react';
 import { ChevronDownIcon, InboxIcon, RefreshIcon, SendIcon, TagIcon, UsersIcon } from './icons';
+import {
+  deliveredCount,
+  pct,
+  EngagementBar,
+  EngagementDetailRows,
+  EngagementLegend,
+  OutcomeRows,
+} from './engagement';
 
 type IconCmp = ComponentType<IconProps>;
-
-function pct(n: number, base: number): string {
-  return base > 0 ? `${Math.round((n / base) * 100)}%` : '0%';
-}
 
 function StatCard({
   icon: IconEl,
@@ -55,74 +59,12 @@ function StatCard({
   );
 }
 
-// One row of meaning for every engagement bucket: label, dot colour, and a plain
-// explanation surfaced in the expanded detail view.
-const META: Record<keyof Engagement, { label: string; palette: string; desc: string }> = {
-  queued: { label: 'Queued', palette: 'gray', desc: 'Not emailed yet (pending or reserved).' },
-  contacted: { label: 'Awaiting', palette: 'blue', desc: 'Emailed — still waiting for any reply.' },
-  replied: {
-    label: 'Replied',
-    palette: 'green',
-    desc: 'Everyone who wrote back — answered, acknowledged, declined, other or opted-out.',
-  },
-  answered: { label: 'Answered', palette: 'green', desc: 'Substantive reply — pricing or willingness to post.' },
-  acknowledged: {
-    label: 'Acknowledged',
-    palette: 'cyan',
-    desc: 'Auto-reply or “we’ll get back to you” — no real info yet.',
-  },
-  declined: { label: 'Declined', palette: 'orange', desc: 'Replied to say they’re not interested.' },
-  other: { label: 'Other', palette: 'teal', desc: 'Replied with a question or something off-topic.' },
-  optedOut: { label: 'Opted out', palette: 'purple', desc: 'Asked to stop / unsubscribed — now suppressed.' },
-  bounced: { label: 'Bounced', palette: 'red', desc: 'Delivery failed — the address bounced.' },
-  excluded: { label: 'Excluded', palette: 'pink', desc: 'Suppressed without replying.' },
-};
-
-// Segments in the proportional bar = everyone whose email was delivered (Awaiting +
-// everyone who replied). Reconciles exactly with the top cards; bounces/excluded
-// stay out of the denominator and appear only in the legend/detail.
-const DELIVERED_KEYS: (keyof Engagement)[] = [
-  'answered',
-  'acknowledged',
-  'declined',
-  'other',
-  'optedOut',
-  'contacted',
-];
-
-// Legend + detail order (funnel, most → least engaged). 'replied' is a subtotal
-// header for the four reply buckets; the detail view indents its children.
-const DETAIL_ROWS: { key: keyof Engagement; indent?: boolean }[] = [
-  { key: 'queued' },
-  { key: 'contacted' },
-  { key: 'replied' },
-  { key: 'answered', indent: true },
-  { key: 'acknowledged', indent: true },
-  { key: 'declined', indent: true },
-  { key: 'other', indent: true },
-  { key: 'optedOut', indent: true },
-  { key: 'bounced' },
-  { key: 'excluded' },
-];
-
-const LEGEND_KEYS: (keyof Engagement)[] = [
-  'answered',
-  'acknowledged',
-  'declined',
-  'other',
-  'optedOut',
-  'contacted',
-  'queued',
-  'bounced',
-  'excluded',
-];
-
 function EngagementPanel({ status }: { status: Status }) {
   const [open, setOpen] = useState(false);
   const eng = status.engagement!;
   const total = status.targets.total;
   const out = status.outcomes;
-  const contacted = DELIVERED_KEYS.reduce((sum, k) => sum + eng[k], 0);
+  const contacted = deliveredCount(eng);
 
   return (
     <Box bg="bg.panel" borderWidth="1px" borderColor="border" rounded="xl" boxShadow="xs" px={4} py={3} mb={6}>
@@ -138,34 +80,11 @@ function EngagementPanel({ status }: { status: Status }) {
         </Text>
       </HStack>
 
-      {/* Proportional bar of everyone whose email was delivered. */}
-      <Flex h={2} rounded="full" overflow="hidden" bg="bg.muted" mb={3}>
-        {contacted === 0
-          ? null
-          : DELIVERED_KEYS.filter((k) => eng[k] > 0).map((k) => (
-              <Box
-                key={k}
-                w={`${(eng[k] / contacted) * 100}%`}
-                bg={`${META[k].palette}.solid`}
-                title={`${META[k].label}: ${eng[k]}`}
-              />
-            ))}
-      </Flex>
+      <Box mb={3}>
+        <EngagementBar eng={eng} />
+      </Box>
 
-      {/* Compact legend, always visible. */}
-      <Wrap columnGap={4} rowGap={1.5}>
-        {LEGEND_KEYS.filter((k) => eng[k] > 0).map((k) => (
-          <HStack key={k} gap={1.5}>
-            <Circle size="2" bg={`${META[k].palette}.solid`} />
-            <Text fontSize="sm" color="fg.muted">
-              {META[k].label}
-            </Text>
-            <Text fontSize="sm" fontWeight="semibold">
-              {eng[k]}
-            </Text>
-          </HStack>
-        ))}
-      </Wrap>
+      <EngagementLegend eng={eng} />
 
       {/* Expandable, explained breakdown. */}
       <HStack
@@ -189,53 +108,10 @@ function EngagementPanel({ status }: { status: Status }) {
 
       {open ? (
         <Stack gap={0} mt={2} pt={2} borderTopWidth="1px" borderColor="border">
-          {DETAIL_ROWS.filter((r) => eng[r.key] > 0 || r.key === 'replied').map(({ key, indent }) => {
-            const m = META[key];
-            const header = key === 'replied';
-            return (
-              <HStack key={key} align="baseline" py={1.5} pl={indent ? 5 : 0} gap={2}>
-                <Circle size="2" bg={`${m.palette}.solid`} flexShrink={0} alignSelf="center" />
-                <Text fontSize="sm" fontWeight={header ? 'bold' : 'medium'} minW="7.5rem">
-                  {m.label}
-                </Text>
-                <Text fontSize="xs" color="fg.muted" flex="1" display={{ base: 'none', sm: 'block' }}>
-                  {m.desc}
-                </Text>
-                <Text fontSize="sm" fontWeight="semibold" textAlign="right" minW="3rem">
-                  {eng[key]}
-                </Text>
-                <Text fontSize="xs" color="fg.muted" textAlign="right" minW="3rem">
-                  {pct(eng[key], total)}
-                </Text>
-              </HStack>
-            );
-          })}
-
+          <EngagementDetailRows eng={eng} total={total} />
           {out ? (
             <Box mt={2} pt={2} borderTopWidth="1px" borderColor="border">
-              <Text fontSize="xs" color="fg.muted" fontWeight="medium" textTransform="uppercase" letterSpacing="wider" mb={1}>
-                Outcomes (of {eng.replied} replied)
-              </Text>
-              {[
-                { label: 'Priced', value: out.priced, desc: 'Quoted at least one price.' },
-                { label: 'Posting available', value: out.postingYes, desc: 'Said yes to posting for ≥1 niche.' },
-                { label: 'Posting declined', value: out.postingNo, desc: 'Said no to posting.' },
-              ].map((r) => (
-                <HStack key={r.label} align="baseline" py={1.5} gap={2}>
-                  <Text fontSize="sm" fontWeight="medium" minW="9.5rem">
-                    {r.label}
-                  </Text>
-                  <Text fontSize="xs" color="fg.muted" flex="1" display={{ base: 'none', sm: 'block' }}>
-                    {r.desc}
-                  </Text>
-                  <Text fontSize="sm" fontWeight="semibold" textAlign="right" minW="3rem">
-                    {r.value}
-                  </Text>
-                  <Text fontSize="xs" color="fg.muted" textAlign="right" minW="3rem">
-                    {pct(r.value, eng.replied)}
-                  </Text>
-                </HStack>
-              ))}
+              <OutcomeRows outcomes={out} replied={eng.replied} />
             </Box>
           ) : null}
         </Stack>

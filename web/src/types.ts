@@ -238,6 +238,7 @@ export interface Account {
   lastError?: string;
   oauthConnected?: boolean; // gmail-api accounts: true after OAuth flow completes
   state?: AccountSendState; // live, server-derived send state (GET /api/accounts)
+  stats?: AccountStats; // lifetime, server-derived results (GET /api/accounts)
 }
 
 /** Live per-account send state derived on the server from the Outreach log +
@@ -254,6 +255,30 @@ export interface AccountSendState {
   gapMs: number | null; // current drip gap between sends (null when idle)
   perHour: number | null; // same rate as sends/hour (null when idle)
   projectedToday: number; // total sends expected today given time left in window
+}
+
+/**
+ * Lifetime per-account statistics derived on the server from the Outreach log +
+ * targets/replies. Mirrors src/domain/account-stats.ts.
+ *
+ * Two keys, deliberately: the volume counts are what THIS mailbox put on the
+ * wire, while the funnel covers the targets it OWNS (the ones whose opening
+ * message it sent). A follow-up sent by another mailbox therefore shows up in
+ * that mailbox's `messagesSent` but in this one's funnel.
+ */
+export interface AccountStats {
+  messagesSent: number; // delivered messages, all kinds
+  initials: number; // of those: opening messages
+  followUps: number; // of those: follow-ups
+  manual: number; // of those: hand-written deal messages
+  failed: number; // sends that errored (nothing delivered)
+  reserved: number; // drafted, not yet on the wire
+  lastSentAt?: string; // newest send; absent if it never sent
+  targetsContacted: number; // targets this mailbox opened and got out the door
+  engagement: Engagement; // funnel over the owned targets
+  outcomes: Outcomes; // commercial outcomes over the owned targets
+  bounceRate: number; // bounced / targetsContacted (0..1)
+  replyRate: number; // replied / (targetsContacted - bounced) (0..1)
 }
 
 export type TargetStatus =

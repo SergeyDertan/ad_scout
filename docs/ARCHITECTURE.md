@@ -122,6 +122,37 @@ The split that keeps the fragile part testable:
   tolerant of missing answers. **The LLM does NLP only; this code does the
   parsing**, so prices/lists/enums are unit-tested rather than model-dependent.
 
+### `engagement.ts`
+The funnel every rollup is counted with, so no two of them can disagree:
+- `engagementOf(targets, repliedTargetIds)` — buckets targets into
+  `queued · contacted · acknowledged · answered · declined · other · optedOut ·
+  excluded · bounced`, exactly one bucket each, plus the `replied` subtotal. The
+  reply-id set is what separates a silent `contacted` from one that only sent a
+  holding message, and an opt-out from a hand-suppressed target.
+- `outcomesOf(targets)` — `informative · priced · postingYes · postingNo` over
+  whatever carries an extracted result.
+
+Used twice: globally on `GET /api/status`, and per account (below).
+
+### `account-stats.ts`
+Lifetime per-account statistics — the sibling of `account-state.ts` (which
+answers "what is this mailbox doing right now"). `accountStats(account,
+outreaches, targets, repliedTargetIds)` returns:
+- **Volume**, counted off the `Outreach` log by `accountId`: `messagesSent`
+  split into `initials`/`followUps`/`manual`, plus `failed`, `reserved` and
+  `lastSentAt`.
+- **Reach**, counted over the targets the mailbox *owns* (`assignedAccountId`,
+  stamped when the send pass reserves the **initial**): `targetsContacted`, the
+  full `engagement` funnel and `outcomes`.
+- **Rates**: `bounceRate` (bounced / contacted, the same math as `health.ts`)
+  and `replyRate` (replied / delivered — bounces leave the denominator, since a
+  dead address never had the chance to answer).
+
+The two keys are deliberate. Follow-ups are round-robined independently of the
+initial, so a follow-up sent by mailbox B on mailbox A's conversation counts as
+B's volume but stays in A's funnel. Ownership being exclusive is what makes the
+per-account funnels add back up to the global one.
+
 ### `health.ts`
 `evaluateHealth(input)` → `none | pause | cooldown`: auth/security error ⇒ pause
 immediately; bounce rate over `bounceRateThreshold` (default 10%) with at least
@@ -434,6 +465,7 @@ which is the whole point of the lazy-adapter boundary.
 | Change how emails are written | `src/services/drafter.ts` |
 | Change how replies are parsed | `src/domain/extraction.ts` + `src/services/extractor.ts` |
 | Change sending limits / warmup | `src/domain/warmup.ts` + `limits.ts` |
+| Change what the stats count | `src/domain/engagement.ts` (funnel) + `account-stats.ts` (per account) |
 | Change pacing / send window | `src/scheduler/window.ts` |
 | Add/modify an API route | `src/server/app.ts` |
 | Swap or add a provider | `src/lib/factory.ts` + `src/adapters/…` |

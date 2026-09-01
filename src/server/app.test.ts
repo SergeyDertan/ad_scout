@@ -199,6 +199,92 @@ test('GET /api/accounts lists accounts', async () => {
   }
 });
 
+test('GET /api/accounts carries lifetime per-account statistics', async () => {
+  const h = await start(); // seeds a1 + t1 (pending) + t2 (contacted)
+  try {
+    // a2 opens one site and it bounces; a1 owns t2 (contacted) and t3 (replied),
+    // and a2 also chases t3 with a follow-up on a1's conversation.
+    await h.store.putAccount({
+      id: 'a2',
+      email: 'ivan@example.com',
+      providerType: 'smtp-imap',
+      credentialRef: 'IVAN',
+      senderName: 'Ivan',
+      status: 'active',
+      createdAt: '2026-05-01T00:00:00Z',
+      maxDailyLimit: 40,
+    });
+    await h.store.updateTarget('t2', (t) => ({ ...t, assignedAccountId: 'a1' }));
+    await h.store.putTarget({
+      id: 't3',
+      batchId: 'b1',
+      websiteUrl: 'site3.com',
+      contactEmail: 'c@site3.com',
+      status: 'replied',
+      assignedAccountId: 'a1',
+      followUpCount: 1,
+      createdAt: '2026-06-01T00:00:00Z',
+      result: { canPost: 'yes', optOut: false, intent: 'answer', offers: [] },
+    });
+    await h.store.putTarget({
+      id: 't4',
+      batchId: 'b1',
+      websiteUrl: 'site4.com',
+      contactEmail: 'd@site4.com',
+      status: 'bounced',
+      assignedAccountId: 'a2',
+      followUpCount: 0,
+      createdAt: '2026-06-01T00:00:00Z',
+    });
+    const sent = (id: string, accountId: string, targetId: string, kind: 'initial' | 'followup') => ({
+      id,
+      targetId,
+      accountId,
+      kind,
+      sequenceNo: kind === 'initial' ? 0 : 1,
+      status: 'sent' as const,
+      rfcMessageId: `<${id}@x>`,
+      subject: 's',
+      body: 'b',
+      reservedAt: '2026-06-02T09:00:00.000Z',
+      sentAt: '2026-06-02T09:00:00.000Z',
+      attempts: 1,
+    });
+    await h.store.putOutreach(sent('o1', 'a1', 't2', 'initial'));
+    await h.store.putOutreach(sent('o2', 'a1', 't3', 'initial'));
+    await h.store.putOutreach(sent('o3', 'a2', 't4', 'initial'));
+    await h.store.putOutreach(sent('o4', 'a2', 't3', 'followup'));
+
+    const accs = await J(`${h.base}/api/accounts`);
+    const a1 = accs.find((a: any) => a.id === 'a1').stats;
+    const a2 = accs.find((a: any) => a.id === 'a2').stats;
+
+    assert.equal(a1.messagesSent, 2);
+    assert.equal(a1.targetsContacted, 2);
+    assert.equal(a1.engagement.replied, 1);
+    assert.equal(a1.replyRate, 0.5);
+    assert.equal(a1.bounceRate, 0);
+
+    // a2 sent two messages, but only one of them opened a conversation of its
+    // own — the follow-up landed on a target a1 owns, so a1 keeps that reply.
+    assert.equal(a2.messagesSent, 2);
+    assert.equal(a2.followUps, 1);
+    assert.equal(a2.targetsContacted, 1);
+    assert.equal(a2.engagement.replied, 0);
+    assert.equal(a2.bounceRate, 1);
+
+    // The per-account funnels reconcile with the global one on /api/status.
+    const status = await J(`${h.base}/api/status`);
+    assert.equal(
+      a1.engagement.replied + a2.engagement.replied,
+      status.engagement.replied,
+    );
+    assert.equal(a1.engagement.bounced + a2.engagement.bounced, status.engagement.bounced);
+  } finally {
+    await h.close();
+  }
+});
+
 test('pause / resume an account', async () => {
   const h = await start();
   try {

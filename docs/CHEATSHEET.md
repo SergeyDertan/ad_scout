@@ -45,6 +45,12 @@ Gmail = `smtp-imap` + app password. Creds by credentialRef:
 - **Health rules (`evaluateHealth`) exist but aren't auto-wired** — bounces show
   in Suppressions; pause/limit manually.
 - LLM is used **only for reply extraction**; drafting is template-based.
+- **Per-account stats use two keys.** Volume (messages sent) is counted by the
+  outreach's `accountId`; the funnel is counted over the targets the mailbox
+  *owns* (`assignedAccountId`, set on the **initial** send). A follow-up is
+  round-robined independently, so it can add to one mailbox's volume while its
+  reply lands in another's funnel. Ownership is exclusive ⇒ the per-account
+  funnels sum to the global one on `/api/status`.
 
 ## Flow
 
@@ -56,7 +62,7 @@ threadId → fromAddress → unmatched.
 
 ```
 GET  /api/status                              GET/POST /api/campaigns
-GET/POST /api/accounts                        PATCH /api/accounts/:id
+GET/POST /api/accounts   (+ per-account state+stats)   PATCH /api/accounts/:id
 POST /api/accounts/:id/pause|resume           DELETE /api/accounts/:id
 GET/POST /api/targets?status=                 DELETE /api/targets/:id
 GET  /api/responses | /api/suppressions       POST /api/run/send | /run/poll
@@ -64,6 +70,8 @@ GET  /api/responses | /api/suppressions       POST /api/run/send | /run/poll
 
 ## Change what, where
 
+statistics `domain/engagement.ts` (funnel, global + per account) +
+`domain/account-stats.ts` (per mailbox) ·
 drafting `services/drafter.ts` · extraction `domain/extraction.ts` +
 `services/extractor.ts` · limits/warmup `domain/limits.ts` + `warmup.ts` ·
 pacing `scheduler/window.ts` · routes `server/app.ts` · provider wiring

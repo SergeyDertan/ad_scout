@@ -1,7 +1,7 @@
-import { Badge, Box, Button, Flex, HStack, Input, Table, Text } from '@chakra-ui/react';
-import { useCallback, useState } from 'react';
+import { Badge, Box, Button, Flex, HStack, Input, SimpleGrid, Stack, Table, Text } from '@chakra-ui/react';
+import { Fragment, useCallback, useState } from 'react';
 import { api } from '../api';
-import type { Account, AccountSendState } from '../types';
+import type { Account, AccountSendState, AccountStats } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { AddAccountForm } from './AddAccountForm';
 import { DataPanel } from './DataPanel';
@@ -9,7 +9,8 @@ import { Empty } from './Empty';
 import { useConfirm } from './Confirm';
 import { toaster, toastError } from './Toaster';
 import { useResource } from '../hooks/useResource';
-import { ClockIcon, PauseIcon, PlayIcon, PlusIcon, TrashIcon, UsersIcon } from './icons';
+import { ChevronDownIcon, ClockIcon, PauseIcon, PlayIcon, PlusIcon, TrashIcon, UsersIcon } from './icons';
+import { EngagementBar, EngagementDetailRows, OutcomeRows, pct } from './engagement';
 
 function fmtGap(ms: number): string {
   if (ms < 90_000) return `${Math.round(ms / 1000)}s`;
@@ -18,10 +19,10 @@ function fmtGap(ms: number): string {
 
 /** Slim usage bar: `used` of `total`, tinted amber past 80%. */
 function UsageBar({ used, total }: { used: number; total: number }) {
-  const pct = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0;
+  const filled = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0;
   return (
     <Box mt={1} h="4px" w="100%" maxW="120px" bg="bg.muted" borderRadius="full" overflow="hidden">
-      <Box h="100%" w={`${pct}%`} bg={pct >= 80 ? 'orange.solid' : 'brand.solid'} />
+      <Box h="100%" w={`${filled}%`} bg={filled >= 80 ? 'orange.solid' : 'brand.solid'} />
     </Box>
   );
 }
@@ -96,8 +97,140 @@ function LimitHint({ s }: { s: AccountSendState }) {
   );
 }
 
+function fmtDateTime(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+/** "Results" cell: what this mailbox's outreach has actually produced, for its
+ *  whole life — how many sites it opened, how many wrote back, how many bounced.
+ *  Click to expand the full funnel below the row. */
+function ResultsCell({ s, open }: { s: AccountStats; open: boolean }) {
+  const eng = s.engagement;
+  if (s.targetsContacted === 0) {
+    return (
+      <Text color="fg.muted" fontSize="sm">
+        {s.messagesSent > 0 ? `${s.messagesSent} sent, no targets of its own` : 'nothing sent yet'}
+      </Text>
+    );
+  }
+  return (
+    <Box>
+      <HStack gap={1} whiteSpace="nowrap">
+        <Text fontWeight="semibold">
+          {s.targetsContacted} <Text as="span" color="fg.muted" fontWeight="normal">contacted</Text>
+        </Text>
+        <ChevronDownIcon
+          boxSize={3.5}
+          color="fg.muted"
+          transform={open ? 'rotate(0deg)' : 'rotate(-90deg)'}
+          transition="transform 0.15s"
+        />
+      </HStack>
+      <Box mt={1} maxW="120px">
+        <EngagementBar eng={eng} h="4px" />
+      </Box>
+      <HStack gap={1.5} mt={1} fontSize="xs" color="fg.muted" whiteSpace="nowrap">
+        <Text>
+          <Text as="span" fontWeight="semibold" color="fg">
+            {eng.replied}
+          </Text>{' '}
+          replied · {pct(eng.replied, s.targetsContacted - eng.bounced)}
+        </Text>
+        {eng.bounced > 0 && (
+          <>
+            <Text>·</Text>
+            <Text color="red.fg">
+              {eng.bounced} bounced · {pct(eng.bounced, s.targetsContacted)}
+            </Text>
+          </>
+        )}
+      </HStack>
+    </Box>
+  );
+}
+
+/** One labelled number in the volume column. */
+function VolumeRow({ label, value, desc }: { label: string; value: string | number; desc?: string }) {
+  return (
+    <HStack align="baseline" py={1.5} gap={2}>
+      <Text fontSize="sm" fontWeight="medium" minW="9.5rem">
+        {label}
+      </Text>
+      <Text fontSize="xs" color="fg.muted" flex="1" minW={0} display={{ base: 'none', sm: 'block' }}>
+        {desc}
+      </Text>
+      <Text fontSize="sm" fontWeight="semibold" textAlign="right" minW="4rem">
+        {value}
+      </Text>
+    </HStack>
+  );
+}
+
+/**
+ * The expanded per-account panel. Two columns, because they answer two different
+ * questions and are counted on two different keys:
+ *
+ *   Volume — every message this mailbox put on the wire, follow-ups it took over
+ *   for other mailboxes included. This is the deliverability side.
+ *
+ *   Results — the funnel over the targets this mailbox OWNS (the ones whose
+ *   opening message it sent). Ownership is exclusive, so these columns across all
+ *   accounts add back up to the totals at the top of the page.
+ */
+function AccountStatsDetail({ s }: { s: AccountStats }) {
+  const eng = s.engagement;
+  return (
+    // The row this sits in is as wide as the (scrollable) table, so cap the
+    // panel: a breakdown you have to scroll sideways to read is no breakdown.
+    // Table cells inherit `white-space: nowrap` from Chakra's recipe, which the
+    // explanatory text here needs undone or it runs straight over the counts.
+    <Box px={2} py={2} maxW="1040px" whiteSpace="normal">
+      <SimpleGrid columns={{ base: 1, xl: 2 }} gap={{ base: 6, xl: 8 }}>
+        <Box>
+          <Text fontSize="xs" color="fg.muted" fontWeight="medium" textTransform="uppercase" letterSpacing="wider" mb={1}>
+            Messages sent ({s.messagesSent})
+          </Text>
+          <Stack gap={0}>
+            <VolumeRow label="Opening messages" value={s.initials} desc="First contact with a new site." />
+            <VolumeRow label="Follow-ups" value={s.followUps} desc="Chasers on a conversation that went quiet." />
+            {s.manual > 0 && (
+              <VolumeRow label="Deal messages" value={s.manual} desc="Written by hand from the Deals tab." />
+            )}
+            {s.reserved > 0 && (
+              <VolumeRow label="In flight" value={s.reserved} desc="Drafted and holding a slot, not yet away." />
+            )}
+            {s.failed > 0 && (
+              <VolumeRow label="Failed sends" value={s.failed} desc="Errored out — nothing was delivered." />
+            )}
+            <VolumeRow label="Last sent" value={s.lastSentAt ? fmtDateTime(s.lastSentAt) : '—'} />
+          </Stack>
+        </Box>
+
+        <Box>
+          <Text fontSize="xs" color="fg.muted" fontWeight="medium" textTransform="uppercase" letterSpacing="wider" mb={1}>
+            Outreach results ({s.targetsContacted} contacted)
+          </Text>
+          <Stack gap={0}>
+            <EngagementDetailRows eng={eng} total={s.targetsContacted} />
+            {eng.replied > 0 && (
+              <Box mt={2} pt={2} borderTopWidth="1px" borderColor="border">
+                <OutcomeRows outcomes={s.outcomes} replied={eng.replied} />
+              </Box>
+            )}
+          </Stack>
+        </Box>
+      </SimpleGrid>
+    </Box>
+  );
+}
+
 export function AccountsView({ tick }: { tick: number }) {
   const [adding, setAdding] = useState(false);
+  // Which accounts have their statistics panel open. A Set, not a single id:
+  // comparing two mailboxes side by side is the whole point of the breakdown.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const confirm = useConfirm();
   const {
     rows: accounts,
@@ -108,6 +241,13 @@ export function AccountsView({ tick }: { tick: number }) {
 
   // Only `active` accounts send. Anything else (paused / cooldown)
   // gets a one-click "Activate"; an active account gets "Pause".
+  const toggleExpanded = (id: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+
   const setActive = async (a: Account, active: boolean) => {
     try {
       if (active) await api.resumeAccount(a.id);
@@ -198,7 +338,7 @@ export function AccountsView({ tick }: { tick: number }) {
       <Flex mb={4} align="center" gap={3}>
         <Text color="fg.muted" fontSize="sm" maxW="60ch">
           Sending identities. The daily-limit override is per account; leave it blank to follow the
-          warmup ramp toward max.
+          warmup ramp toward max. Click a mailbox's results to break down what its outreach produced.
         </Text>
         <Box flex="1" />
         <Button
@@ -240,7 +380,10 @@ export function AccountsView({ tick }: { tick: number }) {
           </Empty>
         }
       >
-        <Table.Root size="md" variant="line" interactive>
+        {/* Eight columns don't fit 1100px on a laptop, and Panel clips its
+            overflow — scroll the table rather than lose the Actions column. */}
+        <Table.ScrollArea>
+        <Table.Root size="md" variant="line" interactive minW="1180px">
           <Table.Header>
             <Table.Row bg="bg.subtle">
               <Table.ColumnHeader>Account</Table.ColumnHeader>
@@ -248,13 +391,15 @@ export function AccountsView({ tick }: { tick: number }) {
               <Table.ColumnHeader>Provider</Table.ColumnHeader>
               <Table.ColumnHeader>Today</Table.ColumnHeader>
               <Table.ColumnHeader>Rate</Table.ColumnHeader>
+              <Table.ColumnHeader>Results</Table.ColumnHeader>
               <Table.ColumnHeader>Daily limit</Table.ColumnHeader>
               <Table.ColumnHeader textAlign="end">Actions</Table.ColumnHeader>
             </Table.Row>
           </Table.Header>
           <Table.Body>
             {accounts.map((a) => (
-              <Table.Row key={a.id}>
+              <Fragment key={a.id}>
+              <Table.Row>
                 <Table.Cell>
                   <Text fontWeight="semibold">{a.senderName}</Text>
                   <Text color="fg.muted" fontSize="xs">
@@ -289,6 +434,13 @@ export function AccountsView({ tick }: { tick: number }) {
                 <Table.Cell>{a.state ? <TodayCell s={a.state} /> : null}</Table.Cell>
                 <Table.Cell>
                   {a.state ? <RateCell s={a.state} active={a.status === 'active'} /> : null}
+                </Table.Cell>
+                <Table.Cell
+                  onClick={a.stats ? () => toggleExpanded(a.id) : undefined}
+                  cursor={a.stats ? 'pointer' : undefined}
+                  title={a.stats ? 'Show the full breakdown for this mailbox' : undefined}
+                >
+                  {a.stats ? <ResultsCell s={a.stats} open={expanded.has(a.id)} /> : null}
                 </Table.Cell>
                 <Table.Cell>
                   <Input
@@ -372,9 +524,18 @@ export function AccountsView({ tick }: { tick: number }) {
                   </HStack>
                 </Table.Cell>
               </Table.Row>
+              {a.stats && expanded.has(a.id) ? (
+                <Table.Row bg="bg.subtle">
+                  <Table.Cell colSpan={8} py={0}>
+                    <AccountStatsDetail s={a.stats} />
+                  </Table.Cell>
+                </Table.Row>
+              ) : null}
+              </Fragment>
             ))}
           </Table.Body>
         </Table.Root>
+        </Table.ScrollArea>
       </DataPanel>
     </Box>
   );

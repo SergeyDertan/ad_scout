@@ -17,6 +17,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { List, type RowComponentProps } from 'react-window';
 import { api } from '../api';
+import { useIsManager } from '../role';
 import { DataPanel } from './DataPanel';
 import { Empty } from './Empty';
 import { useResource } from '../hooks/useResource';
@@ -280,13 +281,22 @@ function DomainDetailModal({
   domain,
   onClose,
   onChanged,
-  readOnly,
+  readOnly: readOnlyProp,
 }: {
   domain: string;
   onClose: () => void;
   onChanged: () => void;
   readOnly?: boolean;
 }) {
+  // The viewer build already passes readOnly; a manager is read-only here for
+  // the same reason — POST/DELETE /api/exclusions is an operator route. Folding
+  // it into the existing flag keeps one notion of "cannot edit this panel".
+  //
+  // The hook is called unconditionally and combined after: `readOnlyProp ||
+  // useIsManager()` would skip the call whenever the prop is true, which is a
+  // conditional hook and breaks the moment that prop changes.
+  const isManager = useIsManager();
+  const readOnly = readOnlyProp || isManager;
   const [detail, setDetail] = useState<DomainDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);

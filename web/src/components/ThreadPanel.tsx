@@ -1,6 +1,7 @@
 import { Badge, Box, Button, Heading, HStack, Spinner, Text, VStack } from '@chakra-ui/react';
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import { useIsManager } from '../role';
 import type { Outreach, Target, ThreadReply } from '../types';
 import { toaster, toastError } from './Toaster';
 import { TrashIcon } from './icons';
@@ -70,6 +71,8 @@ function SentItem({ o, fromEmail }: { o: Outreach; fromEmail?: string }) {
 }
 
 function ReceivedItem({ r, onDeleted }: { r: ThreadReply; onDeleted: () => void }) {
+  // A manager reads the whole thread but cannot delete a reply out of it.
+  const isManager = useIsManager();
   const [open, setOpen] = useState(true);
 
   const remove = async () => {
@@ -98,7 +101,7 @@ function ReceivedItem({ r, onDeleted }: { r: ThreadReply; onDeleted: () => void 
         </HStack>
         <HStack gap={1}>
           <Text fontSize="xs" color="fg.muted">{new Date(r.receivedAt).toLocaleString()}</Text>
-          <Button size="xs" variant="ghost" colorPalette="red" onClick={remove} title="Delete reply">
+          <Button size="xs" variant="ghost" colorPalette="red" hidden={isManager} onClick={remove} title="Delete reply">
             <TrashIcon />
           </Button>
         </HStack>

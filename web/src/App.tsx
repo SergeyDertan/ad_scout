@@ -16,6 +16,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './api';
 import { useRoute } from './hooks/useRoute';
+import { useIsManager } from './role';
 import type { BatchRow, Status } from './types';
 import { useStream, type LiveState } from './hooks/useStream';
 import { AccountsView } from './components/AccountsView';
@@ -52,6 +53,9 @@ const TABS: {
    *  targets and sends, so they are noise on Deals, Accounts or Labels — a whole
    *  screen of numbers that answer nothing you came to that page to ask. */
   stats?: boolean;
+  /** Hidden from a manager. The server refuses these routes regardless — this
+   *  only keeps a control out of the UI that could never work. */
+  adminOnly?: boolean;
 }[] = [
   { id: 'accounts', label: 'Accounts', icon: UsersIcon, count: (s) => s?.accounts },
   { id: 'targets', label: 'Targets', icon: TargetIcon, count: (s) => s?.targets.total, stats: true },
@@ -62,7 +66,8 @@ const TABS: {
   { id: 'suppressions', label: 'Suppressions', icon: ShieldIcon },
   { id: 'ignore', label: 'Ignore', icon: ShieldIcon },
   { id: 'labels', label: 'Labels', icon: LabelsIcon },
-  { id: 'run', label: 'Run', icon: PlayIcon, stats: true },
+  // Starting a send pass is the operator's call, not a deal manager's.
+  { id: 'run', label: 'Run', icon: PlayIcon, stats: true, adminOnly: true },
 ];
 
 const TAB_IDS = new Set(TABS.map((t) => t.id));
@@ -120,7 +125,13 @@ export function App() {
   const { route, navigate } = useRoute(DEFAULT_TAB);
   // An unknown path (a stale bookmark, a typo) shows the default rather than a
   // blank screen with every tab unselected.
-  const tab = TAB_IDS.has(route.tab) ? route.tab : DEFAULT_TAB;
+  const isManager = useIsManager();
+  const tabs = isManager ? TABS.filter((t) => !t.adminOnly) : TABS;
+  const visibleTabIds = new Set(tabs.map((t) => t.id));
+  // Fall back to the default rather than render a tab that is not in the list:
+  // a manager arriving on a bookmarked #run would otherwise land on a tab with
+  // no trigger, which reads as a blank page.
+  const tab = visibleTabIds.has(route.tab) ? route.tab : TAB_IDS.has(route.tab) && !isManager ? route.tab : DEFAULT_TAB;
   const tabMeta = TABS.find((t) => t.id === tab);
   const [statsCollapsed, setStatsCollapsed] = useState<boolean>(() => {
     try {
@@ -337,7 +348,7 @@ export function App() {
           lazyMount
         >
           <Tabs.List bg="bg.muted" rounded="lg" p={1} mb={1} flexWrap="wrap">
-            {TABS.map((t) => {
+            {tabs.map((t) => {
               const count = t.count?.(status);
               return (
                 <Tabs.Trigger key={t.id} value={t.id} gap={2}>
@@ -389,9 +400,11 @@ export function App() {
           <Tabs.Content value="labels">
             <LabelsView />
           </Tabs.Content>
-          <Tabs.Content value="run">
-            <RunView status={status} />
-          </Tabs.Content>
+          {!isManager && (
+            <Tabs.Content value="run">
+              <RunView status={status} />
+            </Tabs.Content>
+          )}
         </Tabs.Root>
       </Box>
     </Box>

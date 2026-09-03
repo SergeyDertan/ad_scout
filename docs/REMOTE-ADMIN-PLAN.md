@@ -4,9 +4,11 @@ Giving a second person **write** access to deals — read the negotiation, see e
 email on the thread, answer, and record the link/price/paid — from wherever they
 are, without handing over the mailboxes.
 
-> Status: **design agreed, not implemented.** This is the survey and the
-> decisions taken, written down so the next session starts from the conclusion
-> rather than re-deriving it. Implementation items are in §7.
+> Status: **partly implemented** — items 7.1–7.7 are built; see §7 for what is
+> done and what is left. The migration runbook that came out of this is
+> [VPS-DEPLOY.md](./VPS-DEPLOY.md). This document remains the survey and the
+> decisions taken, so the next session starts from the conclusion rather than
+> re-deriving it.
 
 The read-only sibling already exists — see [VIEWER.md](./VIEWER.md), which shares
 *prices* one-way. This is the opposite problem: few people, full write access,
@@ -231,19 +233,38 @@ failed reply), and `--until-empty` exits when the queue drains. Also set
 
 ## 7. Work items, in order
 
-1. **`serve.ts` + hub integration** — mount `createRemoteHub` inside `serve.ts`
-   sharing `passLock`, behind a config flag. ~15 lines + flag. Test that a worker
-   result and a scheduled send cannot race.
-2. **`data:dump` / `data:load` scripts** (see §8) — makes the migration
-   verifiable rather than hopeful.
-3. **VPS migration** — §8.
-4. **ID-token verification** in `app.ts` + `ADMIN_EMAILS` config. ~60 lines.
-5. **`Access-Control-Allow-Headers: Content-Type, Authorization`.** One line.
-6. **`useStream` → fetch-based SSE** with reconnect. ~30 lines.
-7. **`api.ts`: configurable base URL + token injection.** ~15 lines.
-8. **Route scoping** for the remote admin (deals-only). Decide the shape first.
-9. **`VITE_TARGET=admin` build** + second `firebase.json` hosting target. Config
-   only; reuses `DealsView`/`ThreadPanel` unchanged.
+1. ~~**`serve.ts` + hub integration**~~ — **done.** The hub is mounted in
+   `serve.ts` sharing `passLock`, on by default (`REMOTE_HUB=off` disables). It
+   needs `REMOTE_TOKEN`; unlike the CLI it will not invent one, since a token
+   that changed every restart would lock the worker out silently.
+   `REMOTE_MAX_FAILED` defaults to 10 rather than the CLI's 1 — see §9.
+2. ~~**`data:dump` / `data:load` scripts**~~ — **done**, and exercised against
+   the real store: 7,878 docs round-tripped byte-identical. `data:load` verifies
+   against the dump manifest and exits non-zero on a mismatch.
+3. ~~**VPS migration**~~ — **written up** in [VPS-DEPLOY.md](./VPS-DEPLOY.md),
+   with `deploy/adscout.service` and `deploy/Caddyfile`. Not yet executed.
+4. ~~**ID-token verification**~~ — **done**: `src/server/auth.ts`, gated on
+   `ADMIN_EMAILS`. Verification needs only a project id, so it does **not**
+   require `firebase-service-account.json`. No loopback exemption, deliberately:
+   behind a reverse proxy every request arrives from 127.0.0.1, so that
+   convenience would disable auth for the whole internet.
+5. ~~**`Access-Control-Allow-Headers`**~~ — **done.**
+6. ~~**`useStream` → fetch-based SSE**~~ — **done**, with a jittered-backoff
+   reconnect loop replacing EventSource's built-in one.
+7. ~~**`api.ts`: configurable base URL + token injection**~~ — **done**, as
+   `web/src/apiBase.ts` (`VITE_API_ORIGIN` + a token *provider*, not a cached
+   token, since ID tokens expire hourly).
+8. ~~**Route scoping**~~ — **done**, as two roles rather than a deals-only port.
+   `ADMIN_EMAILS` is the operator; `MANAGER_EMAILS` is viewer + deal manager —
+   reads everything and runs the negotiation, but cannot import, touch mailboxes
+   or start a send pass. `mayAccess()` is default-deny for managers so a route
+   added later is not silently reachable. The console hides what a manager
+   cannot use, but that is cosmetic — the server is the boundary.
+9. ~~**`VITE_TARGET=admin` build**~~ — **superseded, and not needed.** The
+   public `GET /api/auth` tells the front end whether sign-in is required, so
+   ONE build serves both the open laptop console and the gated VPS. Firebase is
+   loaded by dynamic import only when it is, which costs the local bundle 2.7 KB
+   instead of 140 KB. No second hosting target, no third Vite target.
 
 ---
 

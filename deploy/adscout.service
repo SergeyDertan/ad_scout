@@ -1,0 +1,69 @@
+# systemd unit for the AdScout server (dashboard + API + drip scheduler +
+# extraction hub). Install to /etc/systemd/system/adscout.service.
+#
+#   sudo cp deploy/adscout.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now adscout
+#   journalctl -u adscout -f
+#
+# Adjust User, WorkingDirectory and the pnpm path (`which pnpm`) to the box.
+
+[Unit]
+Description=AdScout cold-outreach agent
+Documentation=file:///opt/adscout/docs/VPS-DEPLOY.md
+# network-online, not just network: the boot reconcile and the first poll both
+# talk to Gmail, and a unit that starts before DNS resolves logs a scary failure.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=adscout
+Group=adscout
+WorkingDirectory=/opt/adscout
+
+# THE IMPORTANT LINE. The send window (scheduler/window.ts) and the daily quota
+# reset (domain/limits.ts) are computed with getHours() / setHours() — local
+# clock, no timezone argument anywhere. A VPS that defaults to UTC does not fail;
+# it silently sends at the wrong hours and rolls the quota at the wrong moment.
+# Set here as well as in .env so it holds even if .env is missing or reordered.
+Environment=TZ=Europe/Kyiv
+Environment=NODE_ENV=production
+
+# Listen on loopback only. nginx proxies to 127.0.0.1, and the SSH tunnel to the
+# hub terminates there too, so nothing legitimate needs an external interface.
+# Defence in depth: with this set, a missing firewall rule is harmless rather
+# than publishing the dashboard and the extraction hub to the internet.
+Environment=BIND_HOST=127.0.0.1
+
+# .env is deliberately NOT loaded via EnvironmentFile: the app parses it with
+# dotenv, which handles quoting and inline comments that systemd's parser does
+# not. One loader, one set of rules.
+
+ExecStart=/usr/local/bin/pnpm serve
+
+Restart=always
+RestartSec=10
+# serve.ts traps SIGTERM: it stops the scheduler, closes the store and releases
+# data/agent.lock. Give it room — a kill -9 leaves a lock the next boot must
+# reap and can interrupt a LevelDB write.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=adscout
+
+# --- hardening ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+# Everything the process writes: the store, the daily log files, and the lock.
+ReadWritePaths=/opt/adscout/data /opt/adscout/logs
+
+[Install]
+WantedBy=multi-user.target

@@ -1,6 +1,7 @@
 import { Badge, Box, Button, Flex, HStack, Input, SimpleGrid, Stack, Table, Text } from '@chakra-ui/react';
 import { Fragment, useCallback, useState } from 'react';
 import { api } from '../api';
+import { useIsManager } from '../role';
 import type { Account, AccountSendState, AccountStats } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { AddAccountForm } from './AddAccountForm';
@@ -227,6 +228,8 @@ function AccountStatsDetail({ s }: { s: AccountStats }) {
 }
 
 export function AccountsView({ tick }: { tick: number }) {
+  // A manager reads this page but cannot change anything on it.
+  const isManager = useIsManager();
   const [adding, setAdding] = useState(false);
   // Which accounts have their statistics panel open. A Set, not a single id:
   // comparing two mailboxes side by side is the whole point of the breakdown.
@@ -341,22 +344,24 @@ export function AccountsView({ tick }: { tick: number }) {
           warmup ramp toward max. Click a mailbox's results to break down what its outreach produced.
         </Text>
         <Box flex="1" />
-        <Button
-          size="sm"
-          colorPalette="brand"
-          variant={adding ? 'outline' : 'solid'}
-          onClick={() => setAdding((v) => !v)}
-        >
-          {adding ? 'Close' : (
-            <>
-              <PlusIcon />
-              Add account
-            </>
-          )}
-        </Button>
+        {!isManager && (
+          <Button
+            size="sm"
+            colorPalette="brand"
+            variant={adding ? 'outline' : 'solid'}
+            onClick={() => setAdding((v) => !v)}
+          >
+            {adding ? 'Close' : (
+              <>
+                <PlusIcon />
+                Add account
+              </>
+            )}
+          </Button>
+        )}
       </Flex>
 
-      {adding && <AddAccountForm onClose={() => setAdding(false)} onCreated={load} />}
+      {adding && !isManager && <AddAccountForm onClose={() => setAdding(false)} onCreated={load} />}
 
       {error && (
         <Text color="red.fg" fontSize="sm" mb={3}>
@@ -373,10 +378,12 @@ export function AccountsView({ tick }: { tick: number }) {
             title="No sending accounts yet"
             description="Add a Gmail account, then activate it to start sending outreach."
           >
-            <Button size="sm" colorPalette="brand" mt={2} onClick={() => setAdding(true)}>
-              <PlusIcon />
-              Add account
-            </Button>
+            {!isManager && (
+              <Button size="sm" colorPalette="brand" mt={2} onClick={() => setAdding(true)}>
+                <PlusIcon />
+                Add account
+              </Button>
+            )}
           </Empty>
         }
       >
@@ -447,9 +454,10 @@ export function AccountsView({ tick }: { tick: number }) {
                     size="sm"
                     type="number"
                     width="28"
+                    readOnly={isManager}
                     defaultValue={a.dailyLimitOverride ?? ''}
                     placeholder={`ramp → ${a.maxDailyLimit}`}
-                    onBlur={(e) => saveLimit(a, e.target.value)}
+                    onBlur={isManager ? undefined : (e) => saveLimit(a, e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
                     }}
@@ -457,7 +465,9 @@ export function AccountsView({ tick }: { tick: number }) {
                   {a.state ? <LimitHint s={a.state} /> : null}
                 </Table.Cell>
                 <Table.Cell>
-                  <HStack justify="flex-end" gap={2}>
+                  {/* Connect/pause/rollback/delete are all operator actions —
+                      mayAccess() refuses every one of them for a manager. */}
+                  <HStack justify="flex-end" gap={2} display={isManager ? 'none' : undefined}>
                     {a.providerType === 'smtp-imap' && (
                       <Button
                         size="xs"

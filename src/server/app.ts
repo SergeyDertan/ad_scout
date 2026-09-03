@@ -30,6 +30,7 @@
 //   GET    /*                           (static web UI)
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { authEnabled, createAuthenticator, loadAuthConfig, mayAccess, type AuthResult } from './auth';
 import { readFile } from 'node:fs/promises';
 import { extname, normalize, join } from 'node:path';
 import type { Config } from '../config';
@@ -101,6 +102,10 @@ export interface ServerDeps {
   /** The email provider, for sending deal messages from the Deals UI. Absent in
    *  tests that never post one; those routes then answer 503. */
   email?: EmailProvider;
+  /** Per-request Google ID-token check. Built from ADMIN_EMAILS when omitted;
+   *  injected directly by tests. Absent + no ADMIN_EMAILS ⇒ the API is open,
+   *  which is the local-development case. See server/auth.ts. */
+  authenticate?: (req: IncomingMessage) => Promise<AuthResult>;
 }
 
 const MIME: Record<string, string> = {
@@ -239,8 +244,22 @@ async function syncPriceRecords(
 export function createApiServer(deps: ServerDeps): Server {
   const webDir = deps.webDir ?? './web';
 
+  // Auth is opt-in via ADMIN_EMAILS (see server/auth.ts). Resolve it once here so
+  // a misconfiguration — an allowlist with no project id — fails at boot rather
+  // than on the first request from someone locked out with no way to tell why.
+  const authConfig = deps.authenticate ? null : authEnabled() ? loadAuthConfig() : null;
+  const authenticate = deps.authenticate ?? (authConfig ? createAuthenticator(authConfig) : undefined);
+  if (authenticate) {
+    logger.info('API authentication ENABLED — a verified Google account on an allowlist is required', {
+      ...(authConfig ? { admins: authConfig.adminEmails.size, managers: authConfig.managerEmails.size } : {}),
+    });
+  } else {
+    logger.warn('API authentication is OFF (ADMIN_EMAILS unset) — do not expose this port publicly');
+  }
+  const guarded: ServerDeps = authenticate ? { ...deps, authenticate } : deps;
+
   const server = createServer((req, res) => {
-    handle(deps, webDir, req, res).catch((err) => {
+    handle(guarded, webDir, req, res).catch((err) => {
       logger.error('request handler crashed', { error: String(err) });
       if (!res.headersSent) sendJson(res, 500, { error: 'internal error' });
     });
@@ -263,7 +282,9 @@ async function handle(
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      // Authorization, or the browser rejects every authenticated call at
+      // preflight and the failure looks like CORS rather than auth.
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     });
     res.end();
     return;
@@ -271,6 +292,49 @@ async function handle(
 
   // ---- API ----
   if (seg[0] === 'api') {
+    // GET /api/auth — PUBLIC, and deliberately so. It answers one question:
+    // "does this instance require sign-in?" The front end has to know that
+    // before it can decide whether to show a sign-in screen, and it cannot ask
+    // an endpoint that needs the token it does not have yet. Leaking the answer
+    // costs nothing — a 401 from any other route reveals the same thing — and it
+    // is what lets ONE build serve both the open local console and the gated VPS.
+    if (method === 'GET' && seg[1] === 'auth' && seg.length === 2) {
+      if (!deps.authenticate) return sendJson(res, 200, { required: false });
+      // With a token present, also report WHO you are and WHAT you may do, so
+      // the console can hide controls that would only 403. Without one it still
+      // answers 200 — that is the point of the route.
+      const who = await deps.authenticate(req);
+      return sendJson(
+        res,
+        200,
+        who.ok ? { required: true, email: who.identity.email, role: who.identity.role } : { required: true },
+      );
+    }
+
+    // Everything else under /api is gated once ADMIN_EMAILS is configured, with
+    // one structural exemption: Google redirects the BROWSER to
+    // /api/oauth/callback, so that request cannot carry an Authorization header.
+    // It is not a hole — the route is useless without a valid authorization
+    // `code` minted by Google for this OAuth client and redirect URI, which an
+    // attacker cannot forge. (/api/oauth/start is a normal fetch and stays gated.)
+    const isOAuthCallback = seg[1] === 'oauth' && seg[2] === 'callback';
+    if (deps.authenticate && !isOAuthCallback) {
+      const result = await deps.authenticate(req);
+      if (!result.ok) return sendJson(res, result.status, { error: result.error });
+      // Authentication said who; authorization says what. A manager reads
+      // everything and runs deals, but must not reach mailboxes, imports or a
+      // send pass — see mayAccess() for the rule and why it is default-deny.
+      if (!mayAccess(result.identity.role, method, seg)) {
+        logger.warn('role refused a route', {
+          email: result.identity.email,
+          role: result.identity.role,
+          method,
+          path: url.pathname,
+        });
+        return sendJson(res, 403, { error: `your role (${result.identity.role}) cannot do that` });
+      }
+    }
+
     // GET /api/status
     if (method === 'GET' && seg[1] === 'status' && seg.length === 2) {
       const batchId = url.searchParams.get('batchId') || undefined;

@@ -35,6 +35,8 @@
     "refetch:replies": "tsx src/scripts/refetch-replies.ts",
     "backfill:replies": "tsx src/scripts/backfill-missing-replies.ts",
     "publish:snapshot": "tsx src/scripts/publish-snapshot.ts",
+    "data:dump": "tsx src/scripts/data-dump.ts",
+    "data:load": "tsx src/scripts/data-load.ts",
     "serve": "tsx src/serve.ts",
     "dev": "tsx watch src/serve.ts",
     "web:build": "pnpm --filter adscout-web build",

@@ -14,6 +14,7 @@ import {
 import { useCallback, useMemo, useState } from 'react';
 import { List, type RowComponentProps } from 'react-window';
 import { api } from '../api';
+import { useIsManager } from '../role';
 import type { BatchRow, Target, TargetStatus } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { AddTargetForm } from './AddTargetForm';
@@ -90,11 +91,13 @@ interface RowData {
   targets: Target[];
   batchNames: Record<string, string>;
   onRemove: (t: Target) => void;
+  /** False for a manager: DELETE /api/targets/:id is refused for that role. */
+  canRemove: boolean;
   onThread: (t: Target) => void;
   threadId: string | null;
 }
 
-function VirtualRow({ index, style, targets, batchNames, onRemove, onThread, threadId }: RowComponentProps<RowData>) {
+function VirtualRow({ index, style, targets, batchNames, onRemove, canRemove, onThread, threadId }: RowComponentProps<RowData>) {
   const t = targets[index]!;
   const isThreadOpen = threadId === t.id;
   return (
@@ -152,7 +155,7 @@ function VirtualRow({ index, style, targets, batchNames, onRemove, onThread, thr
         >
           {isThreadOpen ? '↑' : 'Thread'}
         </Button>
-        <Button size="xs" variant="ghost" colorPalette="red" onClick={() => onRemove(t)}>
+        <Button size="xs" variant="ghost" colorPalette="red" hidden={!canRemove} onClick={() => onRemove(t)}>
           <TrashIcon />
         </Button>
       </HStack>
@@ -161,6 +164,8 @@ function VirtualRow({ index, style, targets, batchNames, onRemove, onThread, thr
 }
 
 export function TargetsView({ tick }: { tick: number }) {
+  // Importing targets is explicitly not a manager's job; reading them is.
+  const isManager = useIsManager();
   const [statusFilter, setStatusFilter] = useState<TargetStatus | ''>('');
   const [batchFilter, setBatchFilter] = useState('');
   const [search, setSearch] = useState('');
@@ -248,6 +253,7 @@ export function TargetsView({ tick }: { tick: number }) {
     targets,
     batchNames,
     onRemove: remove,
+    canRemove: !isManager,
     onThread: handleThread,
     threadId: threadTarget?.id ?? null,
   };
@@ -345,25 +351,29 @@ export function TargetsView({ tick }: { tick: number }) {
         </InputGroup>
 
         <Box flex="1" />
-        <Button
-          size="sm"
-          variant={mode === 'import' ? 'outline' : 'subtle'}
-          onClick={() => setMode((m) => (m === 'import' ? null : 'import'))}
-        >
-          Import list
-        </Button>
-        <Button
-          size="sm"
-          colorPalette="brand"
-          variant={mode === 'add' ? 'outline' : 'solid'}
-          onClick={() => setMode((m) => (m === 'add' ? null : 'add'))}
-        >
-          {mode === 'add' ? 'Close' : <><PlusIcon /> Add target</>}
-        </Button>
+        {!isManager && (
+          <>
+            <Button
+              size="sm"
+              variant={mode === 'import' ? 'outline' : 'subtle'}
+              onClick={() => setMode((m) => (m === 'import' ? null : 'import'))}
+            >
+              Import list
+            </Button>
+            <Button
+              size="sm"
+              colorPalette="brand"
+              variant={mode === 'add' ? 'outline' : 'solid'}
+              onClick={() => setMode((m) => (m === 'add' ? null : 'add'))}
+            >
+              {mode === 'add' ? 'Close' : <><PlusIcon /> Add target</>}
+            </Button>
+          </>
+        )}
       </Flex>
 
-      {mode === 'add' && <AddTargetForm onClose={() => setMode(null)} onCreated={load} />}
-      {mode === 'import' && <BulkImportForm onClose={() => setMode(null)} onCreated={load} />}
+      {mode === 'add' && !isManager && <AddTargetForm onClose={() => setMode(null)} onCreated={load} />}
+      {mode === 'import' && !isManager && <BulkImportForm onClose={() => setMode(null)} onCreated={load} />}
       {threadTarget && <ThreadPanel target={threadTarget} onClose={() => setThreadTarget(null)} />}
 
       {error && <Text color="red.fg" fontSize="sm" mb={3}>{error}</Text>}
@@ -389,7 +399,7 @@ export function TargetsView({ tick }: { tick: number }) {
           }
         >
           {!statusFilter && !q && (
-            <Button size="sm" colorPalette="brand" mt={2} onClick={() => setMode('add')}>
+            <Button size="sm" colorPalette="brand" mt={2} hidden={isManager} onClick={() => setMode('add')}>
               <PlusIcon /> Add target
             </Button>
           )}

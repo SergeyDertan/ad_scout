@@ -24,11 +24,17 @@ import type {
   TargetStatus,
   ThreadReply,
 } from './types';
+import { apiUrl, authHeaders } from './apiBase';
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch('/api' + path, {
+  const auth = await authHeaders();
+  const res = await fetch(apiUrl(path), {
     ...init,
-    headers: init?.body ? { 'Content-Type': 'application/json', ...init.headers } : init?.headers,
+    headers: {
+      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+      ...auth,
+      ...init?.headers,
+    },
   });
   const text = await res.text();
   const data = text ? JSON.parse(text) : undefined;
@@ -170,9 +176,10 @@ export interface RunPassOpts {
 }
 
 async function runPass(path: string, opts?: RunPassOpts): Promise<unknown> {
-  const res = await fetch('/api' + path, {
+  const res = await fetch(apiUrl(path), {
     method: 'POST',
     signal: opts?.signal,
+    headers: await authHeaders(),
   });
   if (!res.ok) {
     const text = await res.text();

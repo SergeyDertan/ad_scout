@@ -1,6 +1,7 @@
 import { Badge, Box, Button, HStack, Input, NativeSelect, Table, Text } from '@chakra-ui/react';
 import { useCallback, useState } from 'react';
 import { api } from '../api';
+import { useIsManager } from '../role';
 import { DataPanel } from './DataPanel';
 import { Empty } from './Empty';
 import { useResource } from '../hooks/useResource';
@@ -13,6 +14,8 @@ function fmtDate(iso: string): string {
 }
 
 export function IgnoreView({ tick }: { tick: number }) {
+  // POST/DELETE /api/ignore are operator routes — a manager reads the list only.
+  const isManager = useIsManager();
   const { rows, loading, error, reload } = useResource(useCallback(() => api.listIgnore(), []), tick);
   const [kind, setKind] = useState<'domain' | 'email'>('domain');
   const [value, setValue] = useState('');
@@ -50,7 +53,7 @@ export function IgnoreView({ tick }: { tick: number }) {
         or a whole sender-address domain. Common platforms (Google, Facebook, …) are always ignored.
       </Text>
 
-      <HStack gap={2} mb={4} flexWrap="wrap" align="end">
+      <HStack gap={2} mb={4} flexWrap="wrap" align="end" hidden={isManager}>
         <Box>
           <Text fontSize="xs" color="fg.muted" mb={1}>Kind</Text>
           <NativeSelect.Root size="sm" width="32">
@@ -96,7 +99,7 @@ export function IgnoreView({ tick }: { tick: number }) {
                 <Table.Cell color="fg.muted">{e.reason}</Table.Cell>
                 <Table.Cell color="fg.muted">{fmtDate(e.at)}</Table.Cell>
                 <Table.Cell textAlign="end">
-                  <Button size="xs" variant="ghost" colorPalette="red" onClick={() => remove(e.id)} aria-label="Remove">
+                  <Button size="xs" variant="ghost" colorPalette="red" hidden={isManager} onClick={() => remove(e.id)} aria-label="Remove">
                     <TrashIcon />
                   </Button>
                 </Table.Cell>

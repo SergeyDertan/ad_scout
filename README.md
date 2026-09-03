@@ -10,9 +10,12 @@ Local AI outreach agent.
   Gmail accounts, queue targets, and operate the outreach loop.
 - [**docs/ARCHITECTURE.md**](./docs/ARCHITECTURE.md) — code structure, the logic
   in each layer, data model, and key flows.
+- [**docs/VPS-DEPLOY.md**](./docs/VPS-DEPLOY.md) — moving the agent off the
+  laptop onto a VPS: the dump/load data migration, systemd + Caddy, the
+  timezone trap, and the one-account-first cutover.
 - [**docs/REMOTE-ADMIN-PLAN.md**](./docs/REMOTE-ADMIN-PLAN.md) — giving a
   second person write access to deals: the code survey, the options weighed,
-  and the agreed shape (Firebase auth + a VPS host). Design, not yet built.
+  and the agreed shape (Firebase auth + a VPS host).
 - [`overview.md`](./overview.md) — the original design document.
 
 ## Quick start
@@ -34,7 +37,10 @@ pnpm serve             # boot the HTTP/SSE server + drip scheduler, open localho
 reply, runs a poll-pass, and prints the extracted result — all in-memory.
 
 `serve` does lock → reconcile → HTTP server (default port `8787`, set `PORT`) →
-drip scheduler. It serves the built dashboard from `web/dist` — run
+drip scheduler → extraction hub (port `8788`, needs `REMOTE_TOKEN`; `REMOTE_HUB=off`
+disables). The hub lets a worker on another machine run extraction against a
+`claude` subscription the server itself cannot hold — see
+[docs/VPS-DEPLOY.md](./docs/VPS-DEPLOY.md). It serves the built dashboard from `web/dist` — run
 `pnpm build` once first (or `WEB_DIR=...` to point elsewhere).
 
 ### Front-end (separate module)

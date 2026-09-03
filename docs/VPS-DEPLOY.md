@@ -92,8 +92,10 @@ Hestia already manages nginx, TLS and the firewall. **Do not install Caddy or
 hand-edit `/etc/nginx`** — Hestia owns ports 80/443 and will overwrite you.
 
 ```bash
-# Node 26 + pnpm 11 — match .nvmrc and package.json "engines"
-corepack enable && corepack prepare pnpm@11.11.0 --activate
+# Node 26 (see .nvmrc). corepack reads package.json's "packageManager" field,
+# so it installs the exact pnpm this repo pins — do not name a version here and
+# risk it drifting from the lockfile.
+corepack enable
 node -v && pnpm -v
 
 # Service account and install directory
@@ -148,7 +150,81 @@ left skeleton files there, clone to `/tmp/adscout` and move the contents in.)*
 
 ---
 
+## 3b. Automated deploys
+
+Set this up **now**, before any data moves. Every later step — secrets, systemd,
+nginx, the OAuth registration — is a code deploy away from being re-testable, and
+you want that loop working while the store is still empty and mistakes are free.
+
+`deploy/deploy.sh` runs on the box and does the whole cycle:
+
+```bash
+ssh adscout@adscout.dva-lymona.biz.ua '/opt/adscout/deploy/deploy.sh'
+```
+
+fetch → `pnpm install --frozen-lockfile` → typecheck → **test** → `web:build` →
+restart → health-check → **roll back if it does not answer**.
+
+Three things it does that `git pull && systemctl restart` does not, each for a
+reason specific to this app:
+
+- **Builds before restarting.** `web/dist` is gitignored and served from disk, so
+  a restart without a build serves the previous build — or nothing at all.
+- **Gates on the suite.** A bad revision here does not break a website, it stops
+  outreach and reply polling.
+- **Rolls back on a failed health check.** It polls `/api/auth`, the one endpoint
+  that answers without a token, and puts the previous revision back if the new
+  one never responds. A deploy that leaves the mailer down is worse than no
+  deploy.
+
+It refuses to run on a dirty working tree — on a server that is usually a hotfix
+somebody made in place and has not pushed.
+
+It needs exactly two privileged actions, so grant those rather than blanket sudo:
+
+```
+# /etc/sudoers.d/adscout
+adscout ALL=(root) NOPASSWD: /bin/systemctl restart adscout, \
+                             /bin/systemctl is-active adscout
+```
+
+### Push-to-deploy
+
+`.github/workflows/deploy.yml` runs the same gate in CI on every push and PR, and
+on `main` it SSHes in and runs the script. Four repository secrets:
+
+| Secret | Value |
+|---|---|
+| `DEPLOY_HOST` | `adscout.dva-lymona.biz.ua` |
+| `DEPLOY_USER` | the service user owning `/opt/adscout` |
+| `DEPLOY_SSH_KEY` | private key; public half in that user's `authorized_keys` |
+| `DEPLOY_KNOWN_HOSTS` | output of `ssh-keyscan -H <host>` |
+
+The host key is pinned as a secret on purpose: running `ssh-keyscan` inside the
+job would trust whatever answers on the day, which is no verification at all.
+
+`workflow_dispatch` is enabled too, for redeploying an unchanged revision — after
+editing `.env` on the box, say.
+
+> **This deploys real code to a machine that sends real email.** The CI gate and
+> the auto-rollback are why that is reasonable, not an argument that it is
+> risk-free. If you would rather approve each one, delete the `push:` trigger and
+> keep `workflow_dispatch`.
+
+---
+
 ## 4. Move the data
+
+> ### Stand it up empty first
+>
+> Do **§5 through §10 with an empty store**, before coming back here. You get
+> TLS, sign-in, the roles, the hub and the deploy loop all proven while the only
+> thing at risk is nothing. Then the data migration is the single remaining
+> variable rather than one of eight.
+>
+> Concretely: `.env` (§5) → systemd (§6) → nginx (§7) → Google/Firebase (§8) →
+> verify (§10). Sign in, see an empty dashboard, deploy a trivial commit and
+> watch it roll. **Then** return to this section.
 
 **Do not copy `data/pouch` directly.** Two reasons, one of which is silent:
 copying a live LevelDB captures its write-ahead log mid-write, and arm64 → x86-64
@@ -612,3 +688,8 @@ On a long-running server it clears only on restart. The log line is
 | `agent already running (pid N)` but nothing is | stale `data/agent.lock` copied from the Mac | `rm /opt/adscout/data/agent.lock` |
 | Mail sends succeed but nothing arrives | `EMAIL_PROVIDER` unset ⇒ dummy provider | §5 |
 | Sending at the wrong hours | `TZ` not applied | §5; check `journalctl` timestamps and `timedatectl` |
+| `deploy.sh`: "working tree is dirty" | someone edited files on the box | commit, stash or `git checkout --` them, then redeploy |
+| `deploy.sh`: rolled back automatically | new revision never answered `/api/auth` | `journalctl -u adscout -n 80` — the previous revision is running |
+| `deploy.sh`: "needs hands" | even the rollback would not come up | the service is DOWN; check the log, fix, redeploy manually |
+| CI deploy job: host key mismatch | `DEPLOY_KNOWN_HOSTS` is stale | regenerate with `ssh-keyscan -H <host>` and update the secret |
+| backups never appear | `tar` missing, or `BACKUP=off` | the boot log says which; `journalctl -u adscout \| grep -i backup` |

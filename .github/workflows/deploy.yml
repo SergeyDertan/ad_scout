@@ -1,0 +1,71 @@
+# Check every push; deploy main to the VPS.
+#
+# The gate runs in CI, not only on the box: a broken revision should fail here
+# rather than after it has already restarted the service that sends the mail.
+# deploy/deploy.sh then re-runs the same gate on the VPS (its node_modules and
+# platform differ) and rolls back if the new revision does not answer.
+#
+# Secrets required for the deploy job:
+#   DEPLOY_HOST         adscout.dva-lymona.biz.ua
+#   DEPLOY_USER         the service user that owns /opt/adscout
+#   DEPLOY_SSH_KEY      private key whose public half is in that user's
+#                       ~/.ssh/authorized_keys  (ssh-keygen -t ed25519)
+#   DEPLOY_KNOWN_HOSTS  output of `ssh-keyscan -H <host>`, pinned deliberately.
+#                       Running ssh-keyscan inside the job instead would trust
+#                       whatever answers on the day, which defeats the point.
+
+name: check-and-deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Deploy without pushing — for redeploying an unchanged revision, or after
+  # editing .env on the box.
+  workflow_dispatch:
+
+concurrency:
+  # Never let two deploys race the same box.
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: corepack enable
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm web:typecheck
+      - run: pnpm test
+      # Proves the front end builds. It is gitignored and built on the VPS, so a
+      # build that only fails there would fail after the restart.
+      - run: pnpm web:build
+
+  deploy:
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deploy over SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          test -n "$SSH_KEY" || { echo "DEPLOY_SSH_KEY is not set"; exit 1; }
+          test -n "$KNOWN_HOSTS" || { echo "DEPLOY_KNOWN_HOSTS is not set"; exit 1; }
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes "$USER@$HOST" \
+              'APP_DIR=/opt/adscout /opt/adscout/deploy/deploy.sh'

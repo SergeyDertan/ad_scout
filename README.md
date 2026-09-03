@@ -11,8 +11,8 @@ Local AI outreach agent.
 - [**docs/ARCHITECTURE.md**](./docs/ARCHITECTURE.md) — code structure, the logic
   in each layer, data model, and key flows.
 - [**docs/VPS-DEPLOY.md**](./docs/VPS-DEPLOY.md) — moving the agent off the
-  laptop onto a VPS: the dump/load data migration, systemd + Caddy, the
-  timezone trap, and the one-account-first cutover.
+  laptop onto a VPS: automated deploys, the dump/load data migration, systemd +
+  Hestia nginx, the timezone trap, backups, and the one-account-first cutover.
 - [**docs/REMOTE-ADMIN-PLAN.md**](./docs/REMOTE-ADMIN-PLAN.md) — giving a
   second person write access to deals: the code survey, the options weighed,
   and the agreed shape (Firebase auth + a VPS host).

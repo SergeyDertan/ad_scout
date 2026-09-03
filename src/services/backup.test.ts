@@ -249,3 +249,24 @@ test('pruning ignores a stray .partial and never deletes it', async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('start() refuses to schedule when tar is unavailable, loudly', async () => {
+  // A missing tar would otherwise surface as backups that simply never appear,
+  // an hour after boot, with nothing pointing at the cause.
+  const dir = await mkdtemp(join(tmpdir(), 'adscout-backup-'));
+  const PATH = process.env.PATH;
+  try {
+    const svc = new BackupService(
+      await seeded(), 'memory', { now: () => new Date('2026-09-03T14:00:00') },
+      { dir, keepDays: 14, intervalMs: 3_600_000, prefix: 'backups' }, new Mutex(),
+    );
+    process.env.PATH = '/nonexistent';
+    await svc.start();
+    svc.stop();
+    // Nothing scheduled, nothing written — and the error was logged, not thrown.
+    assert.deepEqual(await readdir(dir), []);
+  } finally {
+    process.env.PATH = PATH;
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -227,7 +227,7 @@ async function main(): Promise<void> {
     });
     scheduler.start();
     if (backup) {
-      backup.start();
+      void backup.start();
       logger.info('hourly backup enabled', {
         dir: backupConfig.dir,
         keepDays: backupConfig.keepDays,

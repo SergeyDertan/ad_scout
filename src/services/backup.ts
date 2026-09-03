@@ -166,8 +166,26 @@ export class BackupService {
     private readonly bucketOverride?: () => Promise<BackupBucket>,
   ) {}
 
-  /** Start the hourly loop, aligned to the top of the hour. */
-  start(): void {
+  /**
+   * Start the hourly loop, aligned to the top of the hour.
+   *
+   * Checks `tar` up front. It is present on any Debian/Ubuntu box, but if it is
+   * not, every backup would fail an hour after boot with nobody watching — the
+   * exact shape of failure a backup system must not have. Loud, and not fatal:
+   * the server's job is sending mail, and it should not refuse to start over
+   * this.
+   */
+  async start(): Promise<void> {
+    try {
+      await execFileAsync('tar', ['--version']);
+    } catch {
+      logger.error(
+        'BACKUPS DISABLED: `tar` is not on PATH, so no archive can be written. ' +
+          'Install it (apt-get install tar) and restart; until then the store has ' +
+          'no scheduled copy.',
+      );
+      return;
+    }
     this.scheduleNext();
   }
 

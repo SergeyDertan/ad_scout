@@ -169,6 +169,9 @@ async function main(): Promise<void> {
         runSend: (o) => writeLock.run(() => runSendPass({ store, email, clock: systemClock, config }, o)),
         runPoll: (o) => writeLock.run(() => runPollPass(deps, o)),
         runFetch: (o) => writeLock.run(() => runFetchPass({ store, email, clock: systemClock }, o)),
+        // Same lock the hub writes under, so a hand-edit in this dashboard and an
+        // incoming worker result cannot interleave mid-sequence.
+        writeLock,
         webDir: process.env.WEB_DIR ?? './web/dist',
         providers: {
           llm: agent.llm.name,

@@ -126,6 +126,9 @@ async function main(): Promise<void> {
     runFetch: (opts) => passLock.run(() => runFetchPass(fetchDeps, opts)),
     // Built front-end (web/ is a separate Vite + React + Chakra module).
     // Run `pnpm web:build` first; in dev use `pnpm web:dev` (proxies /api).
+    // The same mutex every pass uses, so a hand-edit in the dashboard and an
+    // incoming poll/hub result serialize instead of interleaving mid-sequence.
+    writeLock: passLock,
     webDir: process.env.WEB_DIR ?? './web/dist',
     providers: { llm: agent.llm.name, email: config.dummyEmail ? 'dummy' : 'real', store: config.store },
     gmailOAuth,

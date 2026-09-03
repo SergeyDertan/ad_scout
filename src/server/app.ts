@@ -31,6 +31,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { authEnabled, createAuthenticator, loadAuthConfig, mayAccess, type AuthResult } from './auth';
+import { Mutex } from '../lib/mutex';
 import { readFile } from 'node:fs/promises';
 import { extname, normalize, join } from 'node:path';
 import type { Config } from '../config';
@@ -102,6 +103,18 @@ export interface ServerDeps {
   /** The email provider, for sending deal messages from the Deals UI. Absent in
    *  tests that never post one; those routes then answer 503. */
   email?: EmailProvider;
+  /**
+   * Serializes this server's multi-document writes. Pass the SAME Mutex the
+   * pipeline passes use (`passLock` in serve.ts): a hand-edit in the dashboard
+   * and an incoming poll/hub result otherwise interleave, and routes like
+   * `PATCH /api/replies/:id` write four documents in sequence — leaving the
+   * reply edited but its target still carrying the old result.
+   *
+   * Omitted ⇒ a private Mutex, which still serializes this server against
+   * itself. That is the right default for tests and for any embedding that has
+   * no pipeline of its own.
+   */
+  writeLock?: Mutex;
   /** Per-request Google ID-token check. Built from ADMIN_EMAILS when omitted;
    *  injected directly by tests. Absent + no ADMIN_EMAILS ⇒ the API is open,
    *  which is the local-development case. See server/auth.ts. */
@@ -256,7 +269,11 @@ export function createApiServer(deps: ServerDeps): Server {
   } else {
     logger.warn('API authentication is OFF (ADMIN_EMAILS unset) — do not expose this port publicly');
   }
-  const guarded: ServerDeps = authenticate ? { ...deps, authenticate } : deps;
+  const guarded: ResolvedDeps = {
+    ...deps,
+    ...(authenticate ? { authenticate } : {}),
+    writeLock: deps.writeLock ?? new Mutex(),
+  };
 
   const server = createServer((req, res) => {
     handle(guarded, webDir, req, res).catch((err) => {
@@ -267,8 +284,11 @@ export function createApiServer(deps: ServerDeps): Server {
   return server;
 }
 
+/** ServerDeps after createApiServer has filled in the defaults it guarantees. */
+type ResolvedDeps = ServerDeps & { writeLock: Mutex };
+
 async function handle(
-  deps: ServerDeps,
+  deps: ResolvedDeps,
   webDir: string,
   req: IncomingMessage,
   res: ServerResponse,
@@ -641,8 +661,11 @@ async function handle(
 
     // DELETE /api/replies/:id
     if (method === 'DELETE' && seg[1] === 'replies' && seg[2] && seg.length === 3) {
-      await store.deleteReply(seg[2]);
-      return sendJson(res, 200, { ok: true, id: seg[2] });
+      const id = seg[2];
+      // Under the lock: a pass holding this reply mid-sequence would otherwise
+      // re-create it by writing the copy it is still working from.
+      await deps.writeLock.run(() => store.deleteReply(id));
+      return sendJson(res, 200, { ok: true, id });
     }
 
     // PATCH /api/replies/:id — human correction of the AI extraction.
@@ -652,9 +675,8 @@ async function handle(
     // canPost summary match a normal extraction. Clears the `review` flag.
     if (method === 'PATCH' && seg[1] === 'replies' && seg[2] && seg.length === 3) {
       const id = seg[2];
-      const reply = (await store.listReplies()).find((r) => r.id === id);
-      if (!reply) return sendJson(res, 404, { error: 'reply not found' });
-
+      // Read the request body BEFORE taking the lock: it is client I/O, and a
+      // slow client must not hold the store lock while it dribbles bytes in.
       const body = (await readJsonBody(req)) as { offers?: unknown; optOut?: unknown };
       const rawOffers: RawOffer[] = Array.isArray(body.offers)
         ? body.offers.map((o) => {
@@ -681,42 +703,58 @@ async function handle(
           }).filter((o) => o.category)
         : [];
 
-      const target = reply.targetId ? await store.getTarget(reply.targetId) : undefined;
-      const niches = allNiches(await store.listNiches());
-      // Preserve the AI's prose; only the offers + optOut are edited.
-      const raw: RawExtraction = {
-        optOut: Boolean(body.optOut),
-        offers: rawOffers,
-        reasoning: reply.parsed?.reasoning ?? 'Edited by hand.',
-        ...(reply.parsed?.conditions ? { conditions: reply.parsed.conditions } : {}),
-        ...(reply.parsed?.notes ? { notes: reply.parsed.notes } : {}),
-      };
-      const requestedCategory = categorizeTopic(deps.config.pitch.topic, niches);
-      const { result, discovered } = assembleResult(raw, {
-        niches,
-        ...(requestedCategory ? { requestedCategory } : {}),
-      });
-      for (const n of discovered) {
-        await store.putNiche({ ...n, createdAt: n.createdAt ?? deps.clock.now().toISOString() });
-      }
+      // ONE critical section, under the same lock the pipeline passes and the
+      // extraction hub hold. This route writes four kinds of document — niches,
+      // the reply, its target, price records — and a poll pass or an incoming
+      // hub result landing between them would leave the reply edited while its
+      // target still carries the previous result. remote-hub.ts wraps the
+      // mirror-image operation (persist an extraction) in exactly this lock.
+      //
+      // The reply is re-read INSIDE the lock so the edit lands on whatever is
+      // current, not on a copy read before waiting for our turn.
+      const saved = await deps.writeLock.run(async () => {
+        const reply = (await store.listReplies()).find((r) => r.id === id);
+        if (!reply) return undefined;
 
-      reply.parsed = result;
-      reply.review = undefined; // corrected by a human
-      // Keep the original run's identity (which model/prompt produced the result
-      // that needed fixing) and mark that a person changed it, so an edited price
-      // is never mistaken for the model's own output.
-      reply.extraction = markEdited(reply.extraction, deps.clock);
-      reply.extractionStatus = 'done';
-      await store.putReply(reply);
-      if (target) {
-        await store.updateTarget(target.id, (t) => ({
-          ...t,
-          status: result.optOut ? 'excluded' : 'replied',
-          result,
-        }));
-        await syncPriceRecords(store, reply, target, result, deps.clock);
-      }
-      return sendJson(res, 200, reply);
+        const target = reply.targetId ? await store.getTarget(reply.targetId) : undefined;
+        const niches = allNiches(await store.listNiches());
+        // Preserve the AI's prose; only the offers + optOut are edited.
+        const raw: RawExtraction = {
+          optOut: Boolean(body.optOut),
+          offers: rawOffers,
+          reasoning: reply.parsed?.reasoning ?? 'Edited by hand.',
+          ...(reply.parsed?.conditions ? { conditions: reply.parsed.conditions } : {}),
+          ...(reply.parsed?.notes ? { notes: reply.parsed.notes } : {}),
+        };
+        const requestedCategory = categorizeTopic(deps.config.pitch.topic, niches);
+        const { result, discovered } = assembleResult(raw, {
+          niches,
+          ...(requestedCategory ? { requestedCategory } : {}),
+        });
+        for (const n of discovered) {
+          await store.putNiche({ ...n, createdAt: n.createdAt ?? deps.clock.now().toISOString() });
+        }
+
+        reply.parsed = result;
+        reply.review = undefined; // corrected by a human
+        // Keep the original run's identity (which model/prompt produced the result
+        // that needed fixing) and mark that a person changed it, so an edited price
+        // is never mistaken for the model's own output.
+        reply.extraction = markEdited(reply.extraction, deps.clock);
+        reply.extractionStatus = 'done';
+        await store.putReply(reply);
+        if (target) {
+          await store.updateTarget(target.id, (t) => ({
+            ...t,
+            status: result.optOut ? 'excluded' : 'replied',
+            result,
+          }));
+          await syncPriceRecords(store, reply, target, result, deps.clock);
+        }
+        return reply;
+      });
+      if (!saved) return sendJson(res, 404, { error: 'reply not found' });
+      return sendJson(res, 200, saved);
     }
 
     // GET /api/responses?batchId= — replies + parsed result, enriched with target
@@ -878,42 +916,57 @@ async function handle(
     // PATCH /api/deals/:id — status, note. Status moves are validated.
     if (method === 'PATCH' && seg[1] === 'deals' && seg[2] && seg.length === 3) {
       const body = (await readJsonBody(req)) as Record<string, unknown>;
-      const existing = await store.getDeal(seg[2]);
-      if (!existing) return sendJson(res, 404, { error: 'deal not found' });
+      const dealId = seg[2];
+      // A status move and a note edit are two writes derived from one read.
+      const outcome = await deps.writeLock.run(async () => {
+        const existing = await store.getDeal(dealId);
+        if (!existing) return { ok: false as const, status: 404, error: 'deal not found' };
 
-      let deal = existing;
-      const status = str(body.status);
-      if (status && status !== existing.status) {
-        try {
-          deal = await setDealStatus(
-            store, deps.clock, existing.id, status as DealStatus, str(body.closedReason),
-          );
-        } catch (err) {
-          if (err instanceof DealTransitionError) return sendJson(res, 400, { error: err.message });
-          throw err;
+        let deal = existing;
+        const status = str(body.status);
+        if (status && status !== existing.status) {
+          try {
+            deal = await setDealStatus(
+              store, deps.clock, existing.id, status as DealStatus, str(body.closedReason),
+            );
+          } catch (err) {
+            if (err instanceof DealTransitionError) {
+              return { ok: false as const, status: 400, error: err.message };
+            }
+            throw err;
+          }
         }
-      }
-      if (body.note !== undefined) {
-        const note = str(body.note);
-        const { note: _drop, ...rest } = deal;
-        deal = await store.putDeal({ ...rest, ...(note ? { note } : {}) });
-      }
-      return sendJson(res, 200, deal);
+        if (body.note !== undefined) {
+          const note = str(body.note);
+          const { note: _drop, ...rest } = deal;
+          deal = await store.putDeal({ ...rest, ...(note ? { note } : {}) });
+        }
+        return { ok: true as const, deal };
+      });
+      if (!outcome.ok) return sendJson(res, outcome.status, { error: outcome.error });
+      return sendJson(res, 200, outcome.deal);
     }
 
     // DELETE /api/deals/:id — remove the deal, its placements and its links.
     // Deleting RELEASES every thread it held; the messages themselves are kept.
     if (method === 'DELETE' && seg[1] === 'deals' && seg[2] && seg.length === 3) {
-      const deal = await store.getDeal(seg[2]);
-      if (!deal) return sendJson(res, 404, { error: 'deal not found' });
-      for (const p of await store.listPlacements({ dealId: deal.id })) {
-        await store.deletePlacement(p.id);
-      }
-      for (const l of await store.listThreadLinks({ dealId: deal.id })) {
-        await store.deleteThreadLink(l.threadId);
-      }
-      await store.deleteDeal(deal.id);
-      return sendJson(res, 200, { ok: true, id: deal.id });
+      const dealId = seg[2];
+      // Placements, thread links and the deal itself must go together — a reader
+      // must never see a deal whose placements are half-deleted.
+      const removed = await deps.writeLock.run(async () => {
+        const deal = await store.getDeal(dealId);
+        if (!deal) return undefined;
+        for (const p of await store.listPlacements({ dealId: deal.id })) {
+          await store.deletePlacement(p.id);
+        }
+        for (const l of await store.listThreadLinks({ dealId: deal.id })) {
+          await store.deleteThreadLink(l.threadId);
+        }
+        await store.deleteDeal(deal.id);
+        return deal.id;
+      });
+      if (!removed) return sendJson(res, 404, { error: 'deal not found' });
+      return sendJson(res, 200, { ok: true, id: removed });
     }
 
     // POST /api/deals/:id/threads — attach an existing conversation to the deal.
@@ -923,8 +976,13 @@ async function handle(
         ? body.threadIds.map(String)
         : [str(body.threadId) ?? ''].filter(Boolean);
       if (threadIds.length === 0) return sendJson(res, 400, { error: 'threadId(s) required' });
-      if (!(await store.getDeal(seg[2]))) return sendJson(res, 404, { error: 'deal not found' });
-      await attachThreads(store, seg[2], threadIds);
+      const dealId = seg[2];
+      const attached = await deps.writeLock.run(async () => {
+        if (!(await store.getDeal(dealId))) return false;
+        await attachThreads(store, dealId, threadIds);
+        return true;
+      });
+      if (!attached) return sendJson(res, 404, { error: 'deal not found' });
       return sendJson(res, 200, { ok: true, threadIds });
     }
 
@@ -935,11 +993,26 @@ async function handle(
         ? body.domains.map(String)
         : [str(body.domain) ?? ''].filter(Boolean);
       if (domains.length === 0) return sendJson(res, 400, { error: 'domain(s) required' });
-      if (!(await store.getDeal(seg[2]))) return sendJson(res, 404, { error: 'deal not found' });
-      return sendJson(res, 201, await addDomains(store, seg[2], domains));
+      const dealId = seg[2];
+      const added = await deps.writeLock.run(async () => {
+        if (!(await store.getDeal(dealId))) return undefined;
+        return addDomains(store, dealId, domains);
+      });
+      if (!added) return sendJson(res, 404, { error: 'deal not found' });
+      return sendJson(res, 201, added);
     }
 
     // POST /api/deals/:id/messages — write into the conversation.
+    //
+    // DELIBERATELY NOT under writeLock. sendDealMessage sends the mail and
+    // records it in one call, so holding the lock across it would hold it across
+    // an SMTP/Gmail round-trip — stalling the scheduler and every hub result
+    // behind network latency. remote-hub.ts applies its Gmail label outside the
+    // lock for exactly this reason.
+    //
+    // Safe to leave out: the documents it writes (an Outreach and a ThreadLink)
+    // are deal-scoped, and no pipeline pass writes them concurrently. Splitting
+    // the send from the write is the fix if that ever stops being true.
     if (method === 'POST' && seg[1] === 'deals' && seg[2] && seg[3] === 'messages') {
       if (!deps.email) return sendJson(res, 503, { error: 'no email provider wired' });
       const body = (await readJsonBody(req)) as Record<string, unknown>;
@@ -968,9 +1041,7 @@ async function handle(
     // PATCH /api/placements/:id — content, price, paid, published.
     if (method === 'PATCH' && seg[1] === 'placements' && seg[2] && seg.length === 3) {
       const body = (await readJsonBody(req)) as Record<string, unknown>;
-      if (!(await store.getPlacement(seg[2]))) {
-        return sendJson(res, 404, { error: 'placement not found' });
-      }
+      const placementId = seg[2];
       const patch: Record<string, unknown> = {};
       for (const field of [
         'contentText', 'contentUrl', 'publishedUrl', 'paymentMethod',
@@ -984,13 +1055,21 @@ async function handle(
         const raw = str(body.agreedPrice);
         patch.agreedPrice = raw ? parsePrice(raw) : undefined;
       }
-      return sendJson(res, 200, await updatePlacement(store, seg[2], patch));
+      // Existence check and update are one section: updatePlacement reads the
+      // placement again to merge the patch.
+      const updated = await deps.writeLock.run(async () => {
+        if (!(await store.getPlacement(placementId))) return undefined;
+        return updatePlacement(store, placementId, patch);
+      });
+      if (!updated) return sendJson(res, 404, { error: 'placement not found' });
+      return sendJson(res, 200, updated);
     }
 
     // DELETE /api/placements/:id
     if (method === 'DELETE' && seg[1] === 'placements' && seg[2] && seg.length === 3) {
-      await store.deletePlacement(seg[2]);
-      return sendJson(res, 200, { ok: true, id: seg[2] });
+      const id = seg[2];
+      await deps.writeLock.run(() => store.deletePlacement(id));
+      return sendJson(res, 200, { ok: true, id });
     }
 
     // POST /api/run/send | /api/run/poll | /api/run/fetch — SSE progress stream

@@ -1,6 +1,8 @@
 node_modules/
 data/
 logs/
+backups/
+data-dump/
 .env
 *.log
 dist/

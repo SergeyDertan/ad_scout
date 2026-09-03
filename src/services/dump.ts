@@ -15,6 +15,10 @@
 // campaign methods at all any more (the type is dead code), so it is dropped on
 // purpose — nothing reads it.
 
+import { createWriteStream } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { once } from 'node:events';
 import type { Store } from '../ports/store';
 
 export interface DocTypeSpec {
@@ -47,4 +51,66 @@ export interface DumpManifest {
   /** Docs written per type — what `data:load` verifies against after loading. */
   counts: Record<string, number>;
   source: { store: string; node: string; platform: string; tz: string };
+}
+
+/**
+ * One NDJSON line. JSON.stringify leaves U+2028 (LINE SEPARATOR) and U+2029
+ * (PARAGRAPH SEPARATOR) **raw** — they are legal inside a JSON string — but
+ * line-oriented readers treat them as line breaks, which silently splits a
+ * document in half. Real reply bodies contain them (they arrive in HTML mail),
+ * so this is not theoretical: the first round-trip of this store turned 1200
+ * replies into 1212 fragments and failed to parse.
+ */
+function encodeLine(doc: unknown): string {
+  return JSON.stringify(doc).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+}
+
+/**
+ * Write every document in `store` to `outDir` as one NDJSON file per type, plus
+ * a manifest of counts.
+ *
+ * Shared by `pnpm data:dump` and the scheduled backup service on purpose: a
+ * backup that is not byte-for-byte the format `data:load` reads is a backup with
+ * an untested restore path.
+ *
+ * The caller decides about locking. The backup service holds the pipeline's
+ * write lock across this call so the snapshot is consistent; the CLI holds the
+ * whole process instead, because the store is single-writer.
+ */
+export async function dumpStore(
+  store: Store,
+  outDir: string,
+  source: DumpManifest['source'],
+  onType?: (name: string, count: number) => void,
+): Promise<DumpManifest> {
+  await mkdir(outDir, { recursive: true });
+  const counts: Record<string, number> = {};
+
+  for (const spec of DOC_TYPES) {
+    const docs = await spec.list(store);
+    const out = createWriteStream(join(outDir, `${spec.name}.ndjson`), { encoding: 'utf8' });
+    for (const doc of docs) {
+      // Respect backpressure — the replies file is large enough that ignoring it
+      // would buffer the whole thing in memory, the very thing NDJSON avoids.
+      if (!out.write(`${encodeLine(doc)}\n`)) await once(out, 'drain');
+    }
+    out.end();
+    await once(out, 'finish');
+    counts[spec.name] = docs.length;
+    onType?.(spec.name, docs.length);
+  }
+
+  const manifest: DumpManifest = { createdAt: new Date().toISOString(), counts, source };
+  await writeFile(join(outDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  return manifest;
+}
+
+/** How this process describes itself in a dump manifest. */
+export function describeSource(storeKind: string): DumpManifest['source'] {
+  return {
+    store: storeKind,
+    node: process.version,
+    platform: `${process.platform}/${process.arch}`,
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  };
 }

@@ -20,6 +20,7 @@ import { createApiServer } from './server/app';
 import { createRemoteHub, type HubEvent } from './server/remote-hub';
 import { DripScheduler } from './scheduler/scheduler';
 import { loadPublishConfig, publishEnabled, SnapshotPublisher } from './services/publisher';
+import { backupEnabled, BackupService, loadBackupConfig } from './services/backup';
 
 /**
  * Hub progress, as log lines rather than console output: this process runs
@@ -153,6 +154,15 @@ async function main(): Promise<void> {
     email: agent.email, // deal messages are sent straight from the Deals UI
   });
 
+  // Hourly database backup, dumped under `passLock` so no pass, worker result or
+  // dashboard edit lands mid-snapshot. Retention keeps today at hourly
+  // resolution and one archive per day for BACKUP_KEEP_DAYS; the same rule is
+  // applied to the Cloud Storage mirror, when one is configured.
+  const backupConfig = loadBackupConfig();
+  const backup = backupEnabled()
+    ? new BackupService(store, config.store, clock, backupConfig, passLock)
+    : null;
+
   const scheduler = new DripScheduler({
     clock,
     window: config.sendWindow,
@@ -216,6 +226,16 @@ async function main(): Promise<void> {
       providers: { llm: agent.llm.name, email: config.dummyEmail ? 'dummy' : 'real', store: config.store },
     });
     scheduler.start();
+    if (backup) {
+      backup.start();
+      logger.info('hourly backup enabled', {
+        dir: backupConfig.dir,
+        keepDays: backupConfig.keepDays,
+        mirror: backupConfig.bucket ?? 'none (local only)',
+      });
+    } else {
+      logger.warn('backups are OFF (BACKUP=off) — the store has no scheduled copy');
+    }
     if (hub) {
       const remotePort = Number(process.env.REMOTE_PORT ?? 8788);
       hub.server.listen(listenOn(remotePort), () => {
@@ -230,6 +250,7 @@ async function main(): Promise<void> {
   const shutdown = () => {
     logger.info('shutting down');
     scheduler.stop();
+    backup?.stop();
     detachPublisher?.();
     server.close();
     hub?.server.close();

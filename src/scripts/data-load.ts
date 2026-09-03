@@ -19,9 +19,10 @@ import { createReadStream } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadConfig } from '../config';
+import { applyTimezone } from '../lib/timezone';
 import { buildStore } from '../lib/factory';
 import type { Store } from '../ports/store';
-import { DOC_TYPES, type DumpManifest } from './data-types';
+import { DOC_TYPES, type DumpManifest } from '../services/dump';
 
 function argValue(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -70,6 +71,7 @@ async function totalDocs(store: Store): Promise<number> {
 }
 
 async function main(): Promise<void> {
+  applyTimezone();
   const inDir = argValue('--in') ?? './data-dump';
   const force = process.argv.includes('--force');
   const config = loadConfig();

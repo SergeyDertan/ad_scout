@@ -63,7 +63,7 @@ ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 # Everything the process writes: the store, the daily log files, and the lock.
-ReadWritePaths=/opt/adscout/data /opt/adscout/logs
+ReadWritePaths=/opt/adscout/data /opt/adscout/logs /opt/adscout/backups
 
 [Install]
 WantedBy=multi-user.target

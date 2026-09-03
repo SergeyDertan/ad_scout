@@ -535,9 +535,57 @@ cd /opt/adscout && git pull && pnpm install && pnpm web:build
 sudo systemctl restart adscout      # deploying new code
 ```
 
-**Back up the store on a schedule.** `data:dump` is the supported way, and unlike
-copying `data/pouch` it is safe to keep and verifiable to restore. Stop the
-service first, or accept that a dump taken while running will fail on the lock.
+### Backups
+
+The server takes one **every hour**, by itself. Nothing to schedule, and no
+downtime: `pnpm data:dump` cannot run while the service is up (PouchDB is
+single-writer), so the backup runs *inside* the server, holding the same
+`passLock` the pipeline passes and the dashboard's write routes take. Nothing —
+no send, poll, worker result or hand-edit — can land mid-snapshot. It costs about
+1.7 s per hour and produces ~3.8 MB.
+
+Each archive is exactly what `data:load` reads, and is verified before it counts:
+the manifest is read back *out of* the finished `.tar.gz` and its document counts
+compared to what was written. It is renamed into place last, so a crash leaves a
+`.partial` nobody can mistake for a good backup.
+
+Retention needs no second job — one rule does it:
+
+| | |
+|---|---|
+| today | every hourly kept |
+| any earlier day | only that day's newest survives |
+| older than `BACKUP_KEEP_DAYS` (14) | deleted |
+
+The "daily backup" is simply the survivor of each past day. Steady state is ~24 +
+14 archives, about **140 MB**.
+
+Set `BACKUP_BUCKET` (or leave it to fall back to `SNAPSHOT_BUCKET`) and every
+archive is mirrored to Cloud Storage with the same rule applied there, so offsite
+matches on-box. A mirror failure is logged, never fatal — the local copy already
+succeeded, and losing the server over a Cloud Storage hiccup would be worse.
+
+> **The archives contain every mailbox's OAuth refresh token in the clear.**
+> `storage.rules` denies browser reads outside the `snapshot/` prefix, so only
+> the Admin SDK's service account can read `backups/`. Treat that JSON — and any
+> copy of these archives — as mailbox credentials.
+
+### Restoring
+
+Loads into a **new** directory and swaps, so a failed restore leaves the original
+untouched:
+
+```bash
+sudo systemctl stop adscout
+mkdir -p /tmp/restore && tar xzf backups/adscout-2026-09-03T14.tar.gz -C /tmp/restore
+STORE=pouchdb POUCH_DIR=/opt/adscout/data/pouch-new pnpm data:load --in /tmp/restore
+# ONLY if it printed "every type matches the manifest":
+mv data/pouch data/pouch-old && mv data/pouch-new data/pouch
+sudo systemctl start adscout
+```
+
+Do this once, deliberately, before you need it. A backup nobody has restored is
+not a backup.
 
 ### One known limitation
 

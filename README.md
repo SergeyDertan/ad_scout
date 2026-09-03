@@ -10,6 +10,9 @@ Local AI outreach agent.
   Gmail accounts, queue targets, and operate the outreach loop.
 - [**docs/ARCHITECTURE.md**](./docs/ARCHITECTURE.md) — code structure, the logic
   in each layer, data model, and key flows.
+- [**docs/RELEASE-SETUP.md**](./docs/RELEASE-SETUP.md) — one-time setup for
+  `just release`: the deploy key, the GitHub secrets, the sudoers rule, and what
+  to do when a deploy goes wrong.
 - [**docs/VPS-DEPLOY.md**](./docs/VPS-DEPLOY.md) — moving the agent off the
   laptop onto a VPS: automated deploys, the dump/load data migration, systemd +
   Hestia nginx, the timezone trap, backups, and the one-account-first cutover.
@@ -19,6 +22,19 @@ Local AI outreach agent.
 - [`overview.md`](./overview.md) — the original design document.
 
 ## Quick start
+
+Everything routine is a `just` recipe — `just` on its own lists them:
+
+```bash
+just install     # pnpm install, whole workspace
+just check       # typecheck + web:typecheck + test (what CI runs)
+just dev         # API on :8787 and Vite on :5173
+just release     # gate, push, watch the deploy, verify the live site
+```
+
+`release` and the VPS recipes need one-time setup — see
+[docs/RELEASE-SETUP.md](./docs/RELEASE-SETUP.md).
+
 
 This is a **pnpm workspace** (`pnpm-workspace.yaml`): the root is the server
 package `adscout`; the front-end is the `adscout-web` package under `web/`. One

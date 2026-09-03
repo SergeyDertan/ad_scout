@@ -29,6 +29,10 @@ HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8787/api/auth}"
 # reconcile that talks to Gmail, so allow for a slow one.
 HEALTH_RETRIES="${HEALTH_RETRIES:-30}"
 TARGET="${1:-origin/main}"
+# Rebuild and restart even when the revision has not changed. This is what
+# "redeploy" means: you edited .env on the box, and .env is read at boot. Without
+# it the run below would short-circuit and quietly change nothing.
+FORCE="${FORCE:-}"
 
 cd "$APP_DIR"
 
@@ -49,11 +53,15 @@ git fetch --prune origin
 git checkout --quiet --detach "$TARGET"
 NEW="$(git rev-parse HEAD)"
 
-if [ "$NEW" = "$PREVIOUS" ]; then
-  say "already at ${NEW:0:8} — nothing to deploy"
+if [ "$NEW" = "$PREVIOUS" ] && [ -z "$FORCE" ]; then
+  say "already at ${NEW:0:8} — nothing to deploy (FORCE=1 to rebuild and restart anyway)"
   exit 0
 fi
-say "deploying ${NEW:0:8}  ($(git log -1 --pretty=%s))"
+if [ "$NEW" = "$PREVIOUS" ]; then
+  say "forced redeploy of ${NEW:0:8}  ($(git log -1 --pretty=%s))"
+else
+  say "deploying ${NEW:0:8}  ($(git log -1 --pretty=%s))"
+fi
 
 # --- everything below can fail without touching the running service ----------
 build() {

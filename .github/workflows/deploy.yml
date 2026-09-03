@@ -59,6 +59,10 @@ jobs:
           KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
           HOST: ${{ secrets.DEPLOY_HOST }}
           USER: ${{ secrets.DEPLOY_USER }}
+          # A manual dispatch means "redeploy what is already there" — usually
+          # after editing .env on the box, which is only read at boot. Without
+          # this the script short-circuits on an unchanged revision.
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
         run: |
           set -euo pipefail
           test -n "$SSH_KEY" || { echo "DEPLOY_SSH_KEY is not set"; exit 1; }
@@ -68,4 +72,4 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes "$USER@$HOST" \
-              'APP_DIR=/opt/adscout /opt/adscout/deploy/deploy.sh'
+              "APP_DIR=/opt/adscout FORCE='${FORCE}' /opt/adscout/deploy/deploy.sh"

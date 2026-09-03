@@ -7,6 +7,7 @@ import { loadConfig } from './config';
 import { buildAgent } from './lib/factory';
 import { acquireLock, LockHeldError } from './lib/lock';
 import { systemClock } from './lib/clock';
+import { applyTimezone, describeTimezone } from './lib/timezone';
 import { enableFileLogging, logger } from './lib/logger';
 import { makeTcpProbe } from './lib/reachability';
 import { Mutex } from './lib/mutex';
@@ -54,6 +55,10 @@ function reportHubEvent(ev: HubEvent): void {
 }
 
 async function main(): Promise<void> {
+  // BEFORE anything reads a clock. The send window and the daily quota reset are
+  // local-clock, so this decides when the agent sends — it is not cosmetic, and
+  // an unset TZ on a server is a warning, not a default.
+  const tz = applyTimezone();
   const config = loadConfig();
   const clock = systemClock;
   const port = Number(process.env.PORT ?? 8787);
@@ -73,6 +78,19 @@ async function main(): Promise<void> {
   // (laptop asleep overnight) survive a closed terminal. LOG_DIR=off disables.
   const logDir = process.env.LOG_DIR === 'off' ? null : enableFileLogging();
   if (logDir) logger.info('file logging enabled', { dir: logDir });
+
+  // Print the window in the terms it is actually evaluated in, so a wrong zone
+  // is obvious on the first boot rather than after a month of mistimed sends.
+  const { startHour, endHour } = config.sendWindow;
+  const window = `${String(startHour).padStart(2, '0')}:00-${String(endHour).padStart(2, '0')}:00`;
+  if (tz.requested) {
+    logger.info(`clock ${describeTimezone(tz, clock.now())} — send window ${window} local`);
+  } else {
+    logger.warn(
+      `clock ${describeTimezone(tz, clock.now())} inherited from the host — send window ${window} local. ` +
+        'Set TZ in .env to pin it; the host clock should not decide when outreach goes out.',
+    );
+  }
 
   let lock;
   try {

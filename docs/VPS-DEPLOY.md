@@ -268,9 +268,26 @@ what a manager cannot use, but that is cosmetic — the server is the boundary.
 
 The send window (`scheduler/window.ts`) and the daily quota reset
 (`domain/limits.ts`) use `getHours()` / `setHours()` — **local clock, no timezone
-argument anywhere**. A box left on UTC does not fail; it silently sends at the
-wrong hours and rolls the quota at the wrong moment. `TZ` is set in three places
-on purpose: the OS (§2), `.env`, and the systemd unit (§6).
+argument anywhere**. The host OS would otherwise decide when this app sends mail.
+
+**The app pins it rather than inheriting it.** `TZ` in `.env` is authoritative,
+whatever the box's own clock zone is, and it is validated at boot: an unknown
+name or a value that did not take effect is a fatal error, and an *unset* TZ logs
+a warning rather than quietly using the host's zone. The boot line states the
+window in the terms it is actually evaluated in:
+
+```
+clock 15:52 Europe/Kiev (requested Europe/Kyiv) — send window 09:00-18:00 local
+```
+
+Read that line on the first boot. `Europe/Kiev` is not a mistake — Node's ICU
+reports `Europe/Kyiv` under its older alias, which is why the check compares
+offsets rather than names.
+
+One trap it now catches: `TZ=` left **blank** in `.env`. Node takes the empty
+string literally and resolves to `Etc/Unknown`, which is UTC in disguise — that
+would have shifted the whole send window silently. Either give TZ a real zone or
+remove the line.
 
 ---
 

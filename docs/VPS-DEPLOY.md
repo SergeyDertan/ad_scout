@@ -759,6 +759,21 @@ sudo systemctl start adscout
 
 ## 13. Day-2 operations
 
+> ### ⚠️ Never `git clean` in /opt/adscout
+>
+> The service user's home IS the checkout, so `git status` there always shows
+> `.ssh/`, `.cache/` and `.local/` as untracked. They are meant to be there.
+>
+> `git clean -fdx` would delete **`data/` (the database), `backups/`, `.ssh/`
+> (the CI deploy key) and `node_modules/`** in one go — `-x` removes ignored
+> files, which is exactly where all the state lives. There is no undo, and the
+> most recent hourly backup is inside `backups/`.
+>
+> `deploy.sh` never cleans: it uses `git fetch` and `git checkout --detach`, so
+> untracked and ignored files survive every deploy. The danger is only a human
+> reaching for it when a build looks stuck. Delete `node_modules` by name
+> instead.
+
 ```bash
 sudo systemctl restart adscout      # after an .env change
 journalctl -u adscout -f            # live

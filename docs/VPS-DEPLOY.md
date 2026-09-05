@@ -422,8 +422,7 @@ remove the line.
 
 ```bash
 sudo cp /opt/adscout/deploy/adscout.service /etc/systemd/system/
-sudoedit /etc/systemd/system/adscout.service     # check User, WorkingDirectory,
-                                                 # and the pnpm path (`which pnpm`)
+sudoedit /etc/systemd/system/adscout.service     # check User and WorkingDirectory
 sudo systemctl daemon-reload
 sudo systemctl enable --now adscout
 journalctl -u adscout -f
@@ -824,6 +823,7 @@ On a long-running server it clears only on restart. The log line is
 | Nothing is ever extracted | hub not started, or no worker connected | boot log: `REMOTE_TOKEN` unset? Is `pnpm remote:worker` running on the Mac? |
 | Worker: `413` on posting a result | `client_max_body_size` too small | hub template sets `128m` (§9 option B) |
 | `agent already running (pid N)` but nothing is | stale `data/agent.lock` copied from the Mac | `rm /opt/adscout/data/agent.lock` |
+| `status=203/EXEC`, "Failed to locate executable" | `ExecStart` points somewhere pnpm is not | `which pnpm`, then set that path in `/etc/systemd/system/adscout.service` and `daemon-reload` |
 | `status=226/NAMESPACE`, "Failed to set up mount namespacing" | one of the unit's `ReadWritePaths` does not exist | `mkdir -p /opt/adscout/{data,logs,backups}`. The message names a missing `pnpm` too — ignore that, the namespace failed first |
 | Mail sends succeed but nothing arrives | `EMAIL_PROVIDER` unset ⇒ dummy provider | §5 |
 | Sending at the wrong hours | `TZ` not applied | §5; check `journalctl` timestamps and `timedatectl` |

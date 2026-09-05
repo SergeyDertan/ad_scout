@@ -40,7 +40,11 @@ Environment=BIND_HOST=127.0.0.1
 # dotenv, which handles quoting and inline comments that systemd's parser does
 # not. One loader, one set of rules.
 
-ExecStart=/usr/local/bin/pnpm serve
+# Resolved from systemd's PATH rather than hardcoded, because pnpm lands in
+# /usr/bin from a distro package and /usr/local/bin from corepack, and the unit
+# has no way to know which. A wrong absolute path fails with status=203/EXEC.
+# To pin it instead: `which pnpm`, and put that absolute path here.
+ExecStart=/usr/bin/env pnpm serve
 
 Restart=always
 RestartSec=10

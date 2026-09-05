@@ -20,7 +20,6 @@ import { RoleContext, type Role } from './role';
 type Requirement = 'checking' | 'open' | 'required';
 
 interface FirebaseAuthModule {
-  firebaseConfigured: boolean;
   watchAuth: (cb: (user: AuthUser | null) => void) => () => void;
   signInWithGoogle: () => Promise<unknown>;
   signOutViewer: () => Promise<void>;
@@ -158,21 +157,6 @@ export function AuthGate({ children }: { children: ReactNode }) {
     return (
       <Gate>
         <Spinner />
-      </Gate>
-    );
-  }
-
-  // A build with no Firebase config cannot sign anyone in. Say so plainly —
-  // this is a deploy mistake (missing VITE_FIREBASE_* at build time), and
-  // without this it presents as a sign-in button that silently does nothing.
-  if (!fb.firebaseConfigured) {
-    return (
-      <Gate>
-        <Heading size="md">Sign-in is not configured</Heading>
-        <Text color="fg.muted" fontSize="sm">
-          This server requires a Google account, but the front end was built without a Firebase config. Rebuild with the{' '}
-          <code>VITE_FIREBASE_*</code> variables set.
-        </Text>
       </Gate>
     );
   }

@@ -544,6 +544,26 @@ final step with `redirect_uri_mismatch`.
 **Authorized domains** → add `adscout.dva-lymona.biz.ua`. Without it, Google
 sign-in is refused on the page and the console never loads past the gate.
 
+**3. App Check, if you enforce it.** The front end registers a reCAPTCHA
+Enterprise provider at startup (`web/src/viewer/firebase.ts`). Two console-side
+pieces have to agree with it, and neither is optional once enforcement is on:
+
+- Firebase Console → **App Check** → the web app → reCAPTCHA Enterprise, with
+  the same site key the code holds.
+- Google Cloud Console → Security → **reCAPTCHA Enterprise** → that key → add
+  `adscout.dva-lymona.biz.ua` to its allowed domains. A key that does not list
+  the domain silently fails attestation from it.
+
+Enforcement is **per product and off by default**, so nothing breaks the day you
+add this — turn it on for Authentication once you have watched real sign-ins
+issue App Check tokens in the console's metrics.
+
+**App Check does not protect `/api`.** It covers the Firebase surfaces —
+Authentication, and Storage/Firestore while the viewer still uses them. This
+project's own routes are gated by the ID-token allowlist in
+`src/server/auth.ts`. Extending App Check to them would mean sending the token
+as a header and verifying it with the Admin SDK, which is a separate decision.
+
 ---
 
 ## 9. The worker, on the Mac
@@ -815,6 +835,8 @@ On a long-running server it clears only on restart. The log line is
 | Symptom | Cause | Fix |
 |---|---|---|
 | `/api/status` returns **200** instead of 401 | `ADMIN_EMAILS` did not load | check `.env`; the boot log says which mode it started in |
+| Console: `auth/invalid-api-key` | a build from before the config was hardcoded, or a stale `web/dist` | `git pull && pnpm web:build`; the config lives in `web/src/viewer/firebase.ts` now, not in `web/.env.local` |
+| Sign-in works, Firebase calls rejected | App Check enforced without the domain on the reCAPTCHA key | §8, step 3 |
 | Sign-in popup: "unauthorized domain" | domain not in Firebase authorized domains | §8, step 2 |
 | Connecting a mailbox → `redirect_uri_mismatch` | callback URI not registered | §8, step 1 — must be the `https://` form, exactly |
 | Signed in, but "not authorized for this instance" | email absent from both lists, or unverified | add to `ADMIN_EMAILS`, restart; the address must be a verified Google account |

@@ -7,7 +7,6 @@ import type { DomainSummary, Niche } from '../types';
 import { setClassification, type Classification } from './classification';
 import { loadClassification, saveClassification } from './classification-store';
 import {
-  firebaseConfigured,
   isPermissionDenied,
   signInWithGoogle,
   signOutViewer,
@@ -47,15 +46,6 @@ export function ViewerApp() {
       })
       .finally(() => setSigningIn(false));
   }, []);
-
-  if (!firebaseConfigured) {
-    return (
-      <Notice eyebrow="build error" title="This build has no project to read.">
-        The viewer was built without its Firebase settings, so there is nothing for it to sign in to. Set the
-        VITE_FIREBASE_* variables and build again — web/.env.example lists them.
-      </Notice>
-    );
-  }
 
   if (user === undefined) {
     return (

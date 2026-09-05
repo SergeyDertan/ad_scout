@@ -6,11 +6,14 @@
 # platform differ) and rolls back if the new revision does not answer.
 #
 # Secrets required for the deploy job:
-#   DEPLOY_HOST         adscout.dva-lymona.biz.ua
+#   DEPLOY_HOST         the SSH target — the origin IP, or an unproxied DNS
+#                       record. NOT the public hostname if that is behind a CDN:
+#                       Cloudflare's proxy carries 80/443 only, so an SSH to it
+#                       hangs while the site itself stays up.
 #   DEPLOY_USER         the service user that owns /opt/adscout
 #   DEPLOY_SSH_KEY      private key whose public half is in that user's
 #                       ~/.ssh/authorized_keys  (ssh-keygen -t ed25519)
-#   DEPLOY_KNOWN_HOSTS  output of `ssh-keyscan -H <host>`, pinned deliberately.
+#   DEPLOY_KNOWN_HOSTS  output of `ssh-keyscan -H <DEPLOY_HOST>`, pinned deliberately.
 #                       Running ssh-keyscan inside the job instead would trust
 #                       whatever answers on the day, which defeats the point.
 

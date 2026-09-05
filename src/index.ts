@@ -11,60 +11,13 @@ import { loadConfig } from './config';
 import { DummyEmailProvider } from './adapters/email/dummy.provider';
 import { DummyLlmProvider } from './adapters/llm/dummy.provider';
 import { MemoryStore } from './adapters/store/memory.store';
-import type { Account, Batch, Target } from './domain/types';
 import { systemClock } from './lib/clock';
-import { newId } from './lib/ids';
 import { logger } from './lib/logger';
 import { runPollPass } from './pipeline/poll-pass';
 import { runReconcile } from './pipeline/reconcile';
 import { runSendPass } from './pipeline/send-pass';
 import { Extractor } from './services/extractor';
-
-async function seed(store: MemoryStore): Promise<{ target: Target }> {
-  const nowIso = new Date().toISOString();
-
-  // The advertised site + topic/format come from global config (config.pitch);
-  // an import is just a batch of target websites (optionally with its own
-  // advertised override, omitted here so the global default is used).
-  const batch: Batch = {
-    id: newId('batch'),
-    name: 'Casino outreach — demo import',
-    source: 'import',
-    createdAt: nowIso,
-  };
-  await store.putBatch(batch);
-
-  const account: Account = {
-    id: newId('account'),
-    email: 'vlad@example.com',
-    providerType: 'smtp-imap',
-    credentialRef: 'VLAD_GMAIL',
-    senderName: 'Vlad',
-    status: 'active',
-    createdAt: nowIso,
-    maxDailyLimit: 40,
-  };
-  await store.putAccount(account);
-
-  const target: Target = {
-    id: newId('target'),
-    batchId: batch.id,
-    websiteUrl: 'egamersworld.com',
-    contactEmail: 'info@egamersworld.com',
-    status: 'pending',
-    followUpCount: 0,
-    createdAt: nowIso,
-  };
-  await store.putTarget(target);
-  await store.putTarget({
-    ...target,
-    id: newId('target'),
-    websiteUrl: 'example-gaming.com',
-    contactEmail: 'editor@example-gaming.com',
-  });
-
-  return { target };
-}
+import { seedDemoStore } from './lib/seed';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -75,7 +28,8 @@ async function main(): Promise<void> {
   const clock = systemClock;
 
   logger.info('AdScout demo — dummy adapters (no external services)');
-  const { target } = await seed(store);
+  const { targets } = await seedDemoStore(store);
+  const target = targets[0]!;
 
   const rec = await runReconcile({ store, email, clock, config });
   logger.info('reconcile', rec as unknown as Record<string, unknown>);

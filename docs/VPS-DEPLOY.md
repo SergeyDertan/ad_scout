@@ -10,6 +10,20 @@ The design reasoning behind these choices is in
 > holds `data/pouch`, `.env` and `client_secret.json`. **VPS** = the new host,
 > `adscout.dva-lymona.biz.ua`, running HestiaCP. **Worker machine** = the desktop
 > logged in to the `claude` CLI. Source and worker are usually the same Mac.
+>
+> **Two users on the VPS, and they are not the same account:**
+>
+> | | | |
+> |---|---|---|
+> | **`dvalymona`** | the **Hestia** user | owns the web domain, its nginx config and its Let's Encrypt certificate. It already owns the other domains on this box, so the domain is added under it (§7). |
+> | **`adscout`** | the **service** user | login-less system account that owns `/opt/adscout` and runs the Node process (§2, §6). |
+>
+> Keeping them apart is deliberate. The CI deploy key lives in the service
+> user's `authorized_keys`, and the hourly backups hold every mailbox's OAuth
+> refresh token in the clear — neither belongs to the account that owns every
+> other site on the box. Hestia also manages its own users' home directories
+> (quotas, `v-rebuild-user` regenerating configs), and `/opt/adscout` sits
+> outside all of that.
 
 ---
 
@@ -45,7 +59,7 @@ Two things follow from that shape:
 | | |
 |---|---|
 | VPS with HestiaCP, root/sudo | ✅ you have this |
-| DNS `adscout.dva-lymona.biz.ua` → VPS IP | do this first; Let's Encrypt needs it |
+| DNS `adscout.dva-lymona.biz.ua` → VPS IP | do this first; Let's Encrypt needs it. **Behind Cloudflare? see [§7b](#7b-if-the-domain-is-behind-cloudflare)** |
 | `client_secret.json` (or `GOOGLE_CLIENT_ID`/`SECRET`) from the source machine | **see §1 — this is the one true blocker** |
 | Firebase project for sign-in (`postwormhole`) | already exists |
 | Node 26 + pnpm 11 on the VPS | §2 |
@@ -98,15 +112,36 @@ hand-edit `/etc/nginx`** — Hestia owns ports 80/443 and will overwrite you.
 corepack enable
 node -v && pnpm -v
 
-# Service account and install directory
-sudo adduser --system --group --home /opt/adscout adscout
+# The SERVICE user — not the Hestia user. dvalymona owns the domain (§7);
+# this account owns /opt/adscout and runs the Node process.
+#
+# --shell IS REQUIRED. `adduser --system` defaults to /usr/sbin/nologin, and the
+# CI deploy job SSHes in as this very user to run deploy/deploy.sh (§3b). With
+# nologin the deploy fails at the ssh, not at anything it would name — set the
+# shell now rather than debugging it later. It still has no password, so the
+# only way in is the deploy key you put in its authorized_keys.
+sudo adduser --system --group --home /opt/adscout --shell /bin/bash adscout
 ```
 
-Set the machine's clock zone. This is not cosmetic — see §5:
+### The box needs to be able to clone a private repo
+
+`git clone` in §3 is against a private repository, so give the box its own
+**read-only deploy key** — separate from the CI key, which travels the other way.
 
 ```bash
-sudo timedatectl set-timezone Europe/Kyiv
+sudo -u adscout -H ssh-keygen -t ed25519 -f /opt/adscout/.ssh/id_ed25519 -N "" -C "adscout-vps-readonly"
+sudo -u adscout -H cat /opt/adscout/.ssh/id_ed25519.pub
 ```
+
+Add that public key at **GitHub → the repo → Settings → Deploy keys**, leaving
+"Allow write access" unchecked.
+
+**You do not need to change the host's clock zone.** The app pins its own —
+`TZ` in `.env` is authoritative and validated at boot (`src/lib/timezone.ts`),
+so the send window is correct whatever the box is set to. On a shared box,
+leave it alone: `timedatectl` would move the zone for dvalymona's other sites
+and their logs too. The only cost is that `journalctl` timestamps will not match
+the app's own, and the boot line names the zone it is actually using.
 
 > ### ⚠️ Two locks on ports 8787 and 8788
 >
@@ -125,9 +160,12 @@ sudo timedatectl set-timezone Europe/Kyiv
 >
 > Check from your laptop after §6 — both must hang or refuse:
 > ```bash
-> curl --max-time 5 http://adscout.dva-lymona.biz.ua:8787/api/auth
-> curl --max-time 5 http://adscout.dva-lymona.biz.ua:8788/
+> curl --max-time 5 http://<origin-ip>:8787/api/auth
+> curl --max-time 5 http://<origin-ip>:8788/
 > ```
+> Use the **origin IP**, not a CDN-proxied hostname: the proxy does not carry
+> those ports, so it fails the same way whether or not they are exposed
+> ([§7b](#7b-if-the-domain-is-behind-cloudflare)).
 
 ---
 
@@ -159,8 +197,11 @@ you want that loop working while the store is still empty and mistakes are free.
 `deploy/deploy.sh` runs on the box and does the whole cycle:
 
 ```bash
-ssh adscout@adscout.dva-lymona.biz.ua '/opt/adscout/deploy/deploy.sh'
+ssh adscout@<vps> '/opt/adscout/deploy/deploy.sh'
 ```
+
+*(`<vps>` is the SSH address — the origin IP if the public hostname is proxied;
+see [§7b](#7b-if-the-domain-is-behind-cloudflare).)*
 
 fetch → `pnpm install --frozen-lockfile` → typecheck → **test** → `web:build` →
 restart → health-check → **roll back if it does not answer**.
@@ -195,7 +236,7 @@ on `main` it SSHes in and runs the script. Four repository secrets:
 
 | Secret | Value |
 |---|---|
-| `DEPLOY_HOST` | `adscout.dva-lymona.biz.ua` |
+| `DEPLOY_HOST` | the **SSH** address — the origin IP, or an unproxied record ([§7b](#7b-if-the-domain-is-behind-cloudflare)) |
 | `DEPLOY_USER` | the service user owning `/opt/adscout` |
 | `DEPLOY_SSH_KEY` | private key; public half in that user's `authorized_keys` |
 | `DEPLOY_KNOWN_HOSTS` | output of `ssh-keyscan -H <host>` |
@@ -398,8 +439,9 @@ replies will be fetched but never extracted.
 
 ## 7. nginx and TLS, through Hestia
 
-Add `adscout.dva-lymona.biz.ua` as a web domain in Hestia and enable Let's
-Encrypt for it. Then install the proxy templates:
+Add `adscout.dva-lymona.biz.ua` as a web domain in Hestia **under the
+`dvalymona` user** — the one that already owns the other domains here — and
+enable Let's Encrypt for it. Then install the proxy templates:
 
 ```bash
 sudo cp /opt/adscout/deploy/hestia/adscout.tpl \
@@ -411,10 +453,10 @@ sudo chmod 644 /usr/local/hestia/data/templates/web/nginx/adscout.*
 In the panel, edit the domain and set its **Proxy Template** to `adscout`, then:
 
 ```bash
-sudo v-rebuild-web-domain <hestia-user> adscout.dva-lymona.biz.ua
+sudo v-rebuild-web-domain dvalymona adscout.dva-lymona.biz.ua
 ```
 
-*(`v-rebuild-user <hestia-user>` rebuilds every domain for that user, if you
+*(`v-rebuild-user dvalymona` rebuilds every domain for that user, if you
 prefer the bigger hammer.)*
 
 These differ from Hestia's stock proxy template in three ways, all deliberate:
@@ -430,6 +472,46 @@ These differ from Hestia's stock proxy template in three ways, all deliberate:
 > Only install `adscout-hub.tpl` / `.stpl` if you choose the **public hub**
 > option in §9. The SSH-tunnel option needs no second domain and no second
 > template.
+
+---
+
+## 7b. If the domain is behind Cloudflare
+
+The rest of this document assumes DNS points straight at the box. With
+Cloudflare's proxy on (the orange cloud) four things change. None is hard; two
+fail in ways that look like something else entirely.
+
+**1. SSH does not go through it.** The proxy carries ports 80 and 443 and
+nothing else, so `ssh adscout.dva-lymona.biz.ua` times out while the site stays
+up — indistinguishable from a dead box if you do not know to expect it. SSH to
+the **origin IP**, or add an unproxied (grey cloud) record like
+`ssh.dva-lymona.biz.ua`. That address, not the public hostname, is what
+`ADSCOUT_SSH_HOST` and the `DEPLOY_HOST` secret must hold — see
+[RELEASE-SETUP.md](./RELEASE-SETUP.md).
+
+**2. Set SSL/TLS mode to Full (strict).** This is the one that actually bites.
+On **Flexible**, Cloudflare speaks plain HTTP to the origin while Hestia
+redirects HTTP→HTTPS, and the browser spins in a redirect loop. Full (strict)
+after Hestia has issued the certificate; Full while you are still getting there.
+
+**3. Let's Encrypt still works.** Cloudflare forwards
+`/.well-known/acme-challenge/` to the origin, so Hestia issues normally — this
+is *not* a reason to disable the proxy. If issuance does fail, grey-cloud the
+record, issue, and turn the proxy back on. Visitors see Cloudflare's edge
+certificate; yours secures the Cloudflare→origin hop, which is exactly what
+Full (strict) verifies.
+
+**4. Request bodies are capped at 100 MB on the free plan.** Below the hub
+template's `client_max_body_size 128m`. This only matters for the **public hub**
+(§9 option B) — the SSH tunnel in option A goes to the origin over port 22 and
+never touches the edge. One more reason option A is the recommended one.
+
+And one thing to watch rather than configure: `/api/stream` is SSE, and
+Cloudflare normally passes it through. If the Live indicator sits on
+*Reconnecting* after you have confirmed `proxy_buffering off` in the active
+nginx config, the edge is the next suspect — test with the proxy briefly off
+before rearranging nginx.
+
 
 ---
 
@@ -524,6 +606,19 @@ curl --max-time 5 http://adscout.dva-lymona.biz.ua:8787/api/auth
 curl --max-time 5 http://adscout.dva-lymona.biz.ua:8788/
 ```
 
+> **Behind Cloudflare these two curls prove nothing.** The proxy does not carry
+> 8787 or 8788, so they fail identically whether the origin has those ports wide
+> open to the internet or bound to loopback — a pass you have not earned. Run
+> them against the **origin IP** instead:
+>
+> ```bash
+> curl --max-time 5 http://<origin-ip>:8787/api/auth
+> curl --max-time 5 http://<origin-ip>:8788/
+> ```
+>
+> The `ss -ltnp` check below is authoritative either way, which is why it is
+> here and not optional.
+
 And on the VPS itself, confirm what the sockets are actually bound to — this is
 the authoritative check, not the log line:
 
@@ -570,6 +665,39 @@ the other.
 - Stop `pnpm serve` on the Mac.
 - Remove any login item, `launchd` job or cron entry that restarts it.
 - Keep the checkout and the `data/` directory — that is your rollback (§12).
+
+### Then make the mistake impossible rather than remembered
+
+"Do not run `pnpm serve` here" is not a control — the laptop keeps a full copy of
+the store precisely so rollback stays cheap, and one absent-minded `just dev` is
+all it takes. Three layers, each one line, all independent:
+
+| | | |
+|---|---|---|
+| 1 | **`STORE=memory` in the Mac's `.env`** | The store is then fresh at boot and gone at Ctrl-C. This is the one that matters: `STORE=pouchdb` is what makes a stray run dangerous. |
+| 2 | **Move the copy aside** — `mv data/pouch data/pouch-frozen-$(date +%F)` | So even flipping `STORE` back finds nothing. Rollback is the `mv` back. |
+| 3 | **Leave `EMAIL_PROVIDER` unset, keep `client_secret.json` off the Mac** | `buildAgent()` then hands out `DummyEmailProvider`, which can neither send nor poll whatever the store says. |
+
+You would have to undo all three to cause damage.
+
+### Testing locally, after all that
+
+An empty in-memory store is safe and not much use, so:
+
+```bash
+just dev-seed      # SEED=demo STORE=memory EMAIL_PROVIDER= pnpm dev:all
+```
+
+One account and two targets in a store that evaporates on Ctrl-C, with a console
+you can actually click through and a "Run now" that exercises the pipeline end
+to end against the dummy transport.
+
+It is safe by construction, not by convention — `SEED=demo` **refuses to boot**
+with `STORE=pouchdb` ("fixtures must never be written to a real store") or with a
+live `EMAIL_PROVIDER` ("the drip scheduler would send to them"). Both are fatal
+at boot. And because `dotenv` never overrides what is already in the
+environment, the recipe's settings win even while `.env` still says
+`STORE=pouchdb`.
 
 ---
 
@@ -692,4 +820,7 @@ On a long-running server it clears only on restart. The log line is
 | `deploy.sh`: rolled back automatically | new revision never answered `/api/auth` | `journalctl -u adscout -n 80` — the previous revision is running |
 | `deploy.sh`: "needs hands" | even the rollback would not come up | the service is DOWN; check the log, fix, redeploy manually |
 | CI deploy job: host key mismatch | `DEPLOY_KNOWN_HOSTS` is stale | regenerate with `ssh-keyscan -H <host>` and update the secret |
+| SSH to the hostname times out, but the site loads | Cloudflare proxy — 22 is not carried | §7b; use the origin IP or a grey-cloud record |
+| Browser: `ERR_TOO_MANY_REDIRECTS` on the dashboard | Cloudflare SSL/TLS mode is **Flexible** | set it to Full (strict) — §7b |
+| `ssh-keyscan` returns nothing for the host | scanned the proxy, not the origin | scan the address in `DEPLOY_HOST` |
 | backups never appear | `tar` missing, or `BACKUP=off` | the boot log says which; `journalctl -u adscout \| grep -i backup` |

@@ -63,10 +63,22 @@ The justfile assumes the host, user and install directory. Override per-shell if
 they differ:
 
 ```bash
-export ADSCOUT_HOST=adscout.dva-lymona.biz.ua
+export ADSCOUT_HOST=adscout.dva-lymona.biz.ua   # the public URL, for curl
+export ADSCOUT_SSH_HOST=203.0.113.10            # the SSH target — see below
 export ADSCOUT_USER=adscout
 export ADSCOUT_DIR=/opt/adscout
 ```
+
+> ### If the domain is behind a CDN, the SSH target is a different address
+>
+> Cloudflare's proxy ("orange cloud") forwards ports 80 and 443 and nothing
+> else, so `ssh adscout.dva-lymona.biz.ua` never reaches the box — it hangs and
+> times out, exactly as if the host were down. `https://` works the whole time,
+> which is what makes this confusing to diagnose.
+>
+> `ADSCOUT_SSH_HOST` is the origin IP (or an unproxied record such as
+> `ssh.dva-lymona.biz.ua`, grey cloud). It defaults to `ADSCOUT_HOST`, so a
+> domain pointed straight at the box needs neither variable.
 
 ## 2. A deploy key for CI
 
@@ -127,18 +139,18 @@ tar --version >/dev/null && echo ok
 
 | Secret | Value |
 |---|---|
-| `DEPLOY_HOST` | `adscout.dva-lymona.biz.ua` |
+| `DEPLOY_HOST` | the **SSH** target: the origin IP, or an unproxied record. Not the CDN-proxied public hostname — Actions SSHes to this, and Cloudflare will not carry port 22 |
 | `DEPLOY_USER` | `adscout` |
 | `DEPLOY_SSH_KEY` | contents of `~/.ssh/adscout-deploy` (the **private** half, including the BEGIN/END lines) |
-| `DEPLOY_KNOWN_HOSTS` | output of `ssh-keyscan -H adscout.dva-lymona.biz.ua` |
+| `DEPLOY_KNOWN_HOSTS` | output of `ssh-keyscan -H <the same address as DEPLOY_HOST>` |
 
 From the CLI, if you prefer:
 
 ```bash
-gh secret set DEPLOY_HOST        --body "adscout.dva-lymona.biz.ua"
+gh secret set DEPLOY_HOST        --body "$ADSCOUT_SSH_HOST"
 gh secret set DEPLOY_USER        --body "adscout"
 gh secret set DEPLOY_SSH_KEY     < ~/.ssh/adscout-deploy
-ssh-keyscan -H adscout.dva-lymona.biz.ua | gh secret set DEPLOY_KNOWN_HOSTS
+ssh-keyscan -H "$ADSCOUT_SSH_HOST" | gh secret set DEPLOY_KNOWN_HOSTS
 ```
 
 **Why `DEPLOY_KNOWN_HOSTS` is pinned rather than scanned in the job:** running
@@ -147,6 +159,9 @@ day, which is not verification — it just silences the warning. Pinning it mean
 changed key fails the deploy loudly, which is what you want.
 
 Re-run `ssh-keyscan` and update the secret if you ever rebuild the box.
+
+A scan that returns nothing at all is the CDN symptom above, not a missing
+key — you scanned the proxy, which does not answer on 22.
 
 ## 5. First release
 

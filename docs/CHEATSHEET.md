@@ -10,11 +10,16 @@ pnpm install            # whole workspace (server + web)
 pnpm build              # web → web/dist  (do this before serve)
 pnpm serve              # :8787  (lock → reconcile → HTTP/SSE → drip scheduler)
 pnpm demo               # one in-memory cycle, no UI/services
-pnpm typecheck && pnpm test   # 60 tests, zero external deps
+just dev-seed           # dev on a SEEDED THROWAWAY store — cannot persist or send
+pnpm typecheck && pnpm test   # 377 tests, zero external deps
 ```
 
 Dev (two terminals): `pnpm dev` (API :8787, watch) + `pnpm web:dev` (Vite :5173,
 proxies `/api`). Overrides: `PORT`, `WEB_DIR`.
+
+`just dev-seed` = `SEED=demo STORE=memory EMAIL_PROVIDER=`. Use it on any machine
+holding a copy of the live store: `SEED=demo` is fatal at boot against
+`STORE=pouchdb` or a live `EMAIL_PROVIDER`, and shell vars beat `.env`.
 
 ## Providers (`.env`, default = all dummy/in-memory)
 

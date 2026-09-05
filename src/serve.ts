@@ -8,6 +8,7 @@ import { buildAgent } from './lib/factory';
 import { acquireLock, LockHeldError } from './lib/lock';
 import { systemClock } from './lib/clock';
 import { applyTimezone, describeTimezone } from './lib/timezone';
+import { assertSeedSafe, seedDemoStore, seedRequested } from './lib/seed';
 import { enableFileLogging, logger } from './lib/logger';
 import { makeTcpProbe } from './lib/reachability';
 import { Mutex } from './lib/mutex';
@@ -106,6 +107,19 @@ async function main(): Promise<void> {
 
   const agent = buildAgent(config);
   const { store, email, extractor, gmailOAuth } = agent;
+
+  // Optional demo fixtures, for a local console that is worth opening. Both
+  // guards throw, so a mistake here stops the boot instead of surfacing as mail
+  // to a stranger or rows in a real store. See lib/seed.ts.
+  if (seedRequested()) {
+    assertSeedSafe(config);
+    const seeded = await seedDemoStore(store);
+    logger.warn('SEEDED DEMO DATA — in-memory only, discarded when this process stops', {
+      accounts: 1,
+      targets: seeded.targets.length,
+      hint: 'use "Run now" to exercise the pipeline; nothing here can send real mail',
+    });
+  }
 
   const sendDeps = { store, email, clock, config };
   const pollDeps = { store, email, extractor, clock, config };

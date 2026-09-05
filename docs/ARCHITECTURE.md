@@ -433,7 +433,7 @@ loadConfig → acquireLock → buildAgent → runReconcile
 - **Provider credential wiring** is unit-tested for the Gmail app-password path
   (`smtp-imap.provider.test.ts`), with zero external packages.
 
-Run `pnpm test` (≈60 tests) — it passes with **no external packages installed**,
+Run `pnpm test` (≈377 tests) — it passes with **no external packages installed**,
 which is the whole point of the lazy-adapter boundary.
 
 ---

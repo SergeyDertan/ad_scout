@@ -43,7 +43,7 @@ package `adscout`; the front-end is the `adscout-web` package under `web/`. One
 ```bash
 pnpm install           # installs the whole workspace (server + web)
 pnpm typecheck         # tsc --noEmit
-pnpm test              # node --test via tsx  (60 tests)
+pnpm test              # node --test via tsx  (377 tests)
 pnpm demo              # end-to-end pipeline demo (dummy adapters, in-memory)
 pnpm build             # build the web/ front-end into web/dist
 pnpm serve             # boot the HTTP/SSE server + drip scheduler, open localhost:8787

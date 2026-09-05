@@ -104,7 +104,7 @@ the backend.
 | `pnpm web:build` | Build the front-end only. |
 | `pnpm remote:hub` | Serve unextracted replies to worker machines, plus the dashboard (stop `pnpm serve` first). |
 | `pnpm remote:worker` | On a second machine: extract replies for a hub using that machine's Claude subscription. Setup: [REMOTE-QUICKSTART.md](REMOTE-QUICKSTART.md) · how it works: [REMOTE-EXTRACTION.md](REMOTE-EXTRACTION.md). |
-| `pnpm typecheck` / `pnpm test` | Type-check / run the server test suite (60 tests). |
+| `pnpm typecheck` / `pnpm test` | Type-check / run the server test suite (377 tests). |
 
 > **Port:** set `PORT` to change `8787`. **UI location:** set `WEB_DIR` to serve
 > a different built directory.

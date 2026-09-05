@@ -12,6 +12,14 @@ HOST := env_var_or_default("ADSCOUT_HOST", "adscout.dva-lymona.biz.ua")
 USER := env_var_or_default("ADSCOUT_USER", "adscout")
 APP  := env_var_or_default("ADSCOUT_DIR",  "/opt/adscout")
 
+# The public hostname and the SSH target are the same thing ONLY when DNS points
+# straight at the box. Behind a CDN (Cloudflare's orange cloud proxies 80/443 and
+# nothing else) port 22 never reaches the origin, so `ssh adscout.<domain>` hangs
+# while https:// works fine. Set ADSCOUT_SSH_HOST to the origin IP, or to an
+# unproxied record like ssh.<domain>. Defaults to HOST, so a direct setup is
+# unaffected.
+SSH_HOST := env_var_or_default("ADSCOUT_SSH_HOST", HOST)
+
 # List the recipes
 default:
     @just --list --unsorted
@@ -35,6 +43,18 @@ build:
 # API on :8787 and Vite on :5173, together
 dev:
     pnpm dev:all
+
+# Same, but on a throwaway in-memory store seeded with demo data. Nothing
+# persists past Ctrl-C and the transport is the dummy one, so this cannot touch
+# a real store or a real mailbox — the safe way to poke at the console on a
+# machine that also holds a copy of the live database.
+#
+# Set here rather than in .env on purpose: dotenv does not override what is
+# already in the environment, so these win even when .env says STORE=pouchdb.
+
+# Dev, on a seeded throwaway store — cannot persist or send
+dev-seed:
+    SEED=demo STORE=memory EMAIL_PROVIDER= pnpm dev:all
 
 # Dump the local store to ./data-dump (stop the server first — single writer)
 dump out="./data-dump":
@@ -114,13 +134,13 @@ redeploy:
 
 # Deploy straight over SSH, bypassing CI (for when Actions is down)
 deploy-ssh:
-    ssh -t {{USER}}@{{HOST}} 'APP_DIR={{APP}} {{APP}}/deploy/deploy.sh'
+    ssh -t {{USER}}@{{SSH_HOST}} 'APP_DIR={{APP}} {{APP}}/deploy/deploy.sh'
 
 # Restart only — the right tool after editing .env on the box (read at boot)
 restart:
     #!/usr/bin/env bash
     set -euo pipefail
-    ssh {{USER}}@{{HOST}} 'sudo systemctl restart adscout'
+    ssh {{USER}}@{{SSH_HOST}} 'sudo systemctl restart adscout'
     echo "==> restarted; waiting for it to answer"
     for _ in $(seq 1 30); do
       if curl -fsS --max-time 3 "https://{{HOST}}/api/auth" >/dev/null; then
@@ -140,9 +160,9 @@ ci:
 status:
     #!/usr/bin/env bash
     set -uo pipefail
-    ssh {{USER}}@{{HOST}} 'systemctl is-active adscout; systemctl show adscout -p ActiveEnterTimestamp --value'
+    ssh {{USER}}@{{SSH_HOST}} 'systemctl is-active adscout; systemctl show adscout -p ActiveEnterTimestamp --value'
     echo "--- what the ports are bound to (want 127.0.0.1, not 0.0.0.0) ---"
-    ssh {{USER}}@{{HOST}} "ss -ltn | grep -E '8787|8788' || echo '  (ss unavailable)'"
+    ssh {{USER}}@{{SSH_HOST}} "ss -ltn | grep -E '8787|8788' || echo '  (ss unavailable)'"
     echo "--- public endpoints ---"
     printf '  /api/auth   -> %s\n' "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://{{HOST}}/api/auth)"
     printf '  /api/status -> %s  (401 is CORRECT — it means auth is on)\n' \
@@ -150,20 +170,20 @@ status:
 
 # Follow the live log
 logs:
-    ssh -t {{USER}}@{{HOST}} 'journalctl -u adscout -f -n 100'
+    ssh -t {{USER}}@{{SSH_HOST}} 'journalctl -u adscout -f -n 100'
 
 # The boot lines that tell you the box is configured correctly
 boot-log:
-    ssh {{USER}}@{{HOST}} "journalctl -u adscout -n 400 --no-pager | grep -E 'clock |authentication|backup|hub|reconcile' | tail -15"
+    ssh {{USER}}@{{SSH_HOST}} "journalctl -u adscout -n 400 --no-pager | grep -E 'clock |authentication|backup|hub|reconcile' | tail -15"
 
 # What backups exist on the box, newest last
 backups:
-    ssh {{USER}}@{{HOST}} 'ls -lh {{APP}}/backups/ | tail -20'
+    ssh {{USER}}@{{SSH_HOST}} 'ls -lh {{APP}}/backups/ | tail -20'
 
 # Copy the newest backup here, for a local restore drill
 fetch-backup dest="./":
     #!/usr/bin/env bash
     set -euo pipefail
-    NEWEST="$(ssh {{USER}}@{{HOST}} 'ls -1 {{APP}}/backups/*.tar.gz | tail -1')"
+    NEWEST="$(ssh {{USER}}@{{SSH_HOST}} 'ls -1 {{APP}}/backups/*.tar.gz | tail -1')"
     echo "==> $NEWEST"
-    scp {{USER}}@{{HOST}}:"$NEWEST" {{dest}}
+    scp {{USER}}@{{SSH_HOST}}:"$NEWEST" {{dest}}

@@ -37,6 +37,38 @@ server {
 
     include %home%/%user%/conf/web/%domain%/nginx.hsts.conf*;
 
+    # --- Extraction hub (port 8788) ------------------------------------------
+    # Mounted here rather than on its own hostname: one DNS record, one
+    # certificate, one Hestia domain. The stock Hestia flow cannot vary the
+    # backend port, which is why adscout-hub.tpl exists as the separate-hostname
+    # alternative — but we write this template, so a second location is simpler.
+    #
+    # THE TRAILING SLASH ON proxy_pass IS LOAD-BEARING: it strips the /hub
+    # prefix, so the hub receives /work/claim and /work/<id>/result, which is
+    # what it routes on. Without it the hub sees /hub/work/claim and 404s.
+    #
+    # The worker is configured with REMOTE_HUB_URL=https://<domain>/hub — https,
+    # not http: a 301 from the force-SSL redirect would turn its POSTs into GETs.
+    location /hub/ {
+        proxy_pass http://127.0.0.1:8788/;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Extraction results carry attachments inline as base64, up to 96 MB.
+        client_max_body_size 128m;
+
+        # /work/claim is a 20-second long-poll and a lease lasts 20 minutes.
+        proxy_buffering    off;
+        proxy_cache        off;
+        proxy_read_timeout 30m;
+        proxy_send_timeout 30m;
+
+        access_log /var/log/%web_system%/domains/%domain%.log combined;
+    }
+
     location / {
         proxy_pass http://127.0.0.1:8787;
 

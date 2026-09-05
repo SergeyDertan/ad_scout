@@ -496,9 +496,20 @@ These differ from Hestia's stock proxy template in three ways, all deliberate:
 - **`client_max_body_size`.** A deal reply can carry an attachment; nginx's 1 MB
   default would 413 it.
 
-> Only install `adscout-hub.tpl` / `.stpl` if you choose the **public hub**
-> option in §9. The SSH-tunnel option needs no second domain and no second
-> template.
+> ### The hub rides on this domain, at `/hub`
+>
+> `adscout.tpl`/`.stpl` proxy `/hub/` to port 8788 alongside the app on 8787, so
+> the extraction hub needs **no second hostname, no second certificate and no
+> second Hestia domain**. Point the worker at
+> `REMOTE_HUB_URL=https://adscout.dva-lymona.biz.ua/hub`.
+>
+> The trailing slash on that block's `proxy_pass` is what strips the prefix, so
+> the hub receives the `/work/claim` paths it routes on. Use the `https://` form
+> in the worker: with Enforce SSL on, an `http://` URL earns a 301, and a
+> redirected POST becomes a GET.
+>
+> `adscout-hub.tpl`/`.stpl` remain for the separate-hostname variant (§9 option
+> B) and are not needed for this.
 
 ---
 

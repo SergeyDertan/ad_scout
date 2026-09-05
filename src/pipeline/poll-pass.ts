@@ -43,6 +43,7 @@ import type { Extractor } from '../services/extractor';
 import type { Config } from '../config';
 import { advanceCursor, rewindCursor } from './cursor';
 import { heldDeal, openDealThreadIds } from './deal-hold';
+import { syncDealThreads } from './deal-thread-sync';
 import { extractReplyCore, type ExtractedReply } from './extract-core';
 
 // The model half lives in extract-core.ts so a remote worker can run the exact
@@ -72,6 +73,8 @@ export interface PollReport {
   ignored: number;
   /** Stored untouched because their thread belongs to an open deal. */
   held: number;
+  /** Messages a person sent from their own mail client, adopted onto a deal. */
+  dealMessages: number;
 }
 
 function emptyReport(): PollReport {
@@ -86,6 +89,7 @@ function emptyReport(): PollReport {
     skipped: 0,
     ignored: 0,
     held: 0,
+    dealMessages: 0,
   };
 }
 
@@ -167,6 +171,10 @@ export async function runPollPass(deps: PollDeps, opts: PollOpts = {}): Promise<
 
     await advanceCursor(store, account.id, clock);
   }
+
+  // After the inbox, never instead of it: this reads deal threads by id and can
+  // only add our own sent mail to a negotiation's timeline.
+  report.dealMessages += (await syncDealThreads({ store, email }, opts)).dealMessages;
 
   await retryFailedExtractions(deps, report, opts, processed);
 

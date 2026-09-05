@@ -366,6 +366,45 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
     return this.hydrate(account, (list.messages ?? []).map((m) => m.id));
   }
 
+  /**
+   * One whole conversation, our own SENT messages included — see the port. Read
+   * by thread id rather than by query: Gmail has no `threadId:` search operator,
+   * and sweeping `in:sent` to filter afterwards would cost far more and pull in
+   * every mailbox the deals never touch.
+   *
+   * No attachments: an Outreach has nowhere to keep them, and a publisher's
+   * attachments already arrive through fetchReplies.
+   */
+  async fetchThread(account: Account, threadId: string): Promise<IncomingEmail[]> {
+    let thread: GmailThreadResponse;
+    try {
+      thread = await this.gmailFetch<GmailThreadResponse>(
+        account,
+        `/threads/${threadId}?format=full`,
+      );
+    } catch (err) {
+      // A thread this mailbox no longer has — deleted, or an id belonging to
+      // another account — contributes nothing. It is not a reason to fail the
+      // pass that called us.
+      if (err instanceof GmailHttpError && (err.status === 404 || err.status === 403)) {
+        logger.warn('deal thread unavailable', {
+          account: account.id,
+          threadId,
+          status: err.status,
+        });
+        return [];
+      }
+      throw err;
+    }
+
+    const out: IncomingEmail[] = [];
+    for (const msg of thread.messages ?? []) {
+      const parsed = await parseGmailMessage(msg);
+      if (parsed) out.push(parsed);
+    }
+    return out;
+  }
+
   /** messages.get + parse + attachments for each id; skips malformed ones. */
   private async hydrate(account: Account, ids: string[]): Promise<IncomingEmail[]> {
     const out: IncomingEmail[] = [];
@@ -497,6 +536,10 @@ function encodeQP(text: string): string {
 }
 
 // ----- Gmail message parser -------------------------------------------------
+
+interface GmailThreadResponse {
+  messages?: GmailMessage[];
+}
 
 interface GmailMessage {
   id: string;

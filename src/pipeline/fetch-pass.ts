@@ -19,6 +19,7 @@ import type { EmailProvider, IncomingEmail } from '../ports/email-provider';
 import type { Store } from '../ports/store';
 import { advanceCursor, rewindCursor } from './cursor';
 import { heldDeal } from './deal-hold';
+import { syncDealThreads } from './deal-thread-sync';
 
 export interface FetchDeps {
   store: Store;
@@ -38,6 +39,8 @@ export interface FetchReport {
   ignored: number;
   /** Stored untouched because their thread belongs to an open deal. */
   held: number;
+  /** Messages a person sent from their own mail client, adopted onto a deal. */
+  dealMessages: number;
 }
 
 export interface FetchOpts {
@@ -58,6 +61,7 @@ export async function runFetchPass(deps: FetchDeps, opts: FetchOpts = {}): Promi
     skipped: 0,
     ignored: 0,
     held: 0,
+    dealMessages: 0,
   };
 
   // `o.targetId` guard: a 'manual' deal message can have none, and a ref with no
@@ -124,6 +128,10 @@ export async function runFetchPass(deps: FetchDeps, opts: FetchOpts = {}): Promi
 
     await advanceCursor(store, account.id, clock);
   }
+
+  // After the inbox, never instead of it: this reads deal threads by id and can
+  // only add our own sent mail to a negotiation's timeline.
+  report.dealMessages += (await syncDealThreads({ store, email }, opts)).dealMessages;
 
   return report;
 }

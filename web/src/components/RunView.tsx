@@ -44,6 +44,7 @@ const METRIC_PALETTE: Record<string, string> = {
   unmatched: 'orange',
   extractionFailed: 'red',
   held: 'teal', // on a deal thread — a human has it (matches the AS/Deal label)
+  dealMessages: 'teal', // written by hand in a mail client, adopted onto a deal
   skipped: 'gray',
   deduped: 'gray',
   fetched: 'gray',

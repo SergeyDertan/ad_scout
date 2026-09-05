@@ -74,17 +74,25 @@ reputation, authentication (SPF/DKIM/DMARC), volume ramp, and recipient engageme
 
 ## 4. Email provider abstraction
 
-Two methods cover the job. Reply-matching does **not** live in the provider — it uses fields the
-provider surfaces in a normalized way.
+A handful of methods cover the job. Reply-matching does **not** live in the provider — it uses
+fields the provider surfaces in a normalized way.
 
 ```ts
 interface EmailProvider {
   send(msg: OutgoingEmail): Promise<SendResult>;
-  fetchReplies(account: Account, since?: Date): Promise<IncomingEmail[]>;
+  fetchReplies(account: Account, since?: Date): Promise<IncomingEmail[]>; // INBOX + Spam; never SENT
+  fetchThread(account: Account, threadId: string): Promise<IncomingEmail[]>; // deals only; ours included
   resolveThreadId(account: Account, rfcMessageId: string): Promise<string | undefined>; // exact self-lookup in All Mail
   supportsThreadId: boolean; // Gmail (X-GM-THRID) / RFC 8474 OBJECTID THREADID → true
 }
+```
 
+`fetchReplies` excludes our own sent mail so a pitch can never be read back as a publisher's
+price. `fetchThread` is the one exception, and it is deliberately narrow: called only for threads
+already under an **open deal**, by id, so a person answering from the Gmail app still appears in
+the negotiation's timeline. See `pipeline/deal-thread-sync.ts`.
+
+```ts
 interface OutgoingEmail {
   to: string;
   subject: string;

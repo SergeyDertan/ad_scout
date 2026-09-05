@@ -38,6 +38,10 @@ export class RoutingEmailProvider implements EmailProvider {
     return this.pick(account).fetchReplies(account, since);
   }
 
+  fetchThread(account: Account, threadId: string): Promise<IncomingEmail[]> {
+    return this.pick(account).fetchThread(account, threadId);
+  }
+
   resolveThreadId(account: Account, rfcMessageId: string): Promise<string | undefined> {
     return this.pick(account).resolveThreadId(account, rfcMessageId);
   }

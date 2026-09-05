@@ -117,6 +117,15 @@ export class SmtpImapProvider implements EmailProvider {
     });
   }
 
+  // Reading a whole conversation needs a thread id the server assigns, which is
+  // Gmail (X-GM-THRID) or an RFC 8474 server; plain IMAP has neither reliably.
+  // A deal on an smtp-imap mailbox therefore keeps the timeline it always had —
+  // what AdScout itself sent, plus their replies. Deliberate no-op, like the two
+  // below.
+  async fetchThread(_account: Account, _threadId: string): Promise<IncomingEmail[]> {
+    return [];
+  }
+
   // No Gmail-style labels over plain IMAP; the label+mark-read feature is
   // Gmail-only, so this is a deliberate no-op for smtp-imap accounts.
   async markRead(_account: Account, _emailId: string): Promise<void> {}

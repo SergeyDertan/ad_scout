@@ -53,6 +53,7 @@ function stubFetch(routes: {
   history?: () => { status: number; body: unknown };
   list?: () => { status: number; body: unknown };
   get?: (id: string) => { status: number; body: unknown };
+  thread?: (id: string) => { status: number; body: unknown };
 }): { restore: () => void; calls: string[] } {
   const calls: string[] = [];
   const original = globalThis.fetch;
@@ -61,7 +62,10 @@ function stubFetch(routes: {
     calls.push(url);
     let r: { status: number; body: unknown };
     if (url.includes('/profile')) r = routes.profile!();
-    else if (url.includes('/history')) r = routes.history!();
+    else if (/\/threads\/[^?]+/.test(url)) {
+      const id = url.match(/\/threads\/([^?]+)/)![1];
+      r = routes.thread!(id);
+    } else if (url.includes('/history')) r = routes.history!();
     else if (/\/messages\/[^?]+/.test(url)) {
       const id = url.match(/\/messages\/([^?]+)/)![1];
       r = routes.get!(id);
@@ -199,4 +203,94 @@ test('fetchReplies: first pass with no cursor bootstraps via search and seeds th
   assert.ok(!calls.some((u) => u.includes('/history')));
   const after = await store.getAccount('a1');
   assert.equal(after!.pollCursor!.historyId, '10');
+});
+
+// --- fetchThread: the deal-only read path that DOES include our own sent mail --
+
+/** One message as Gmail returns it inside a thread. */
+function threadMessage(id: string, from: string, text: string): unknown {
+  return {
+    id,
+    threadId: 'thr1',
+    internalDate: '1700000000000',
+    payload: {
+      mimeType: 'text/plain',
+      headers: [
+        { name: 'From', value: from },
+        { name: 'Subject', value: 'Re: guest post' },
+        { name: 'Message-ID', value: `<${id}@mail>` },
+      ],
+      body: { data: Buffer.from(text).toString('base64url') },
+    },
+  };
+}
+
+test('fetchThread: returns the whole conversation, our own sent messages included', async () => {
+  const store = new MemoryStore();
+  await store.putAccount(account());
+  const provider = new GmailApiProvider(store, 'cid', 'secret');
+
+  const { restore, calls } = stubFetch({
+    thread: () => ({
+      status: 200,
+      body: {
+        messages: [
+          threadMessage('m1', 'Vlad <outreach@gmail.com>', 'our pitch'),
+          threadMessage('m2', 'Anna <anna@site.com>', 'our rate is 180'),
+          // Typed in the Gmail app — the message fetchReplies can never see.
+          threadMessage('m3', 'Vlad <outreach@gmail.com>', 'we can do 140'),
+        ],
+      },
+    }),
+  });
+
+  try {
+    const msgs = await provider.fetchThread(account(), 'thr1');
+    assert.equal(msgs.length, 3);
+    assert.deepEqual(
+      msgs.map((m) => m.fromAddress),
+      ['outreach@gmail.com', 'anna@site.com', 'outreach@gmail.com'],
+      'ours is not filtered out here — that is the whole point',
+    );
+    assert.equal(msgs[2]!.text.trim(), 'we can do 140');
+    assert.equal(msgs[2]!.rfcMessageId, '<m3@mail>', 'the id the caller dedupes on');
+    assert.ok(
+      calls.every((u) => !u.includes('q=')),
+      'read by thread id, never by a mailbox query',
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('fetchThread: a thread this mailbox no longer has yields nothing, not a throw', async () => {
+  const store = new MemoryStore();
+  await store.putAccount(account());
+  const provider = new GmailApiProvider(store, 'cid', 'secret');
+
+  const { restore } = stubFetch({
+    thread: () => ({ status: 404, body: { error: { message: 'Not Found' } } }),
+  });
+
+  try {
+    assert.deepEqual(await provider.fetchThread(account(), 'gone'), []);
+  } finally {
+    restore();
+  }
+});
+
+test('fetchThread: a real transport failure still propagates', async () => {
+  const store = new MemoryStore();
+  await store.putAccount(account());
+  const provider = new GmailApiProvider(store, 'cid', 'secret');
+
+  const { restore } = stubFetch({
+    thread: () => ({ status: 500, body: { error: { message: 'backend error' } } }),
+  });
+
+  try {
+    await assert.rejects(() => provider.fetchThread(account(), 'thr1'));
+  } finally {
+    restore();
+  }
 });

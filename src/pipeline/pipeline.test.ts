@@ -863,6 +863,9 @@ class CursorAdvancingProvider implements EmailProvider {
     return fresh;
   }
 
+  async fetchThread(): Promise<IncomingEmail[]> {
+    return [];
+  }
   async send(): Promise<SendResult> {
     throw new Error('not used');
   }

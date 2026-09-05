@@ -52,6 +52,22 @@ export interface EmailProvider {
   readonly supportsThreadId: boolean;
   send(msg: OutgoingEmail): Promise<SendResult>;
   fetchReplies(account: Account, since?: Date): Promise<IncomingEmail[]>;
+  /**
+   * Every message on ONE conversation, ours included — the only read path that
+   * returns our own sent mail.
+   *
+   * It exists for deals. `fetchReplies` reads INBOX (+ Spam) and deliberately
+   * excludes SENT, which is right for the extractor — our own pitch must never
+   * be mistaken for a publisher's price. But it means a person answering from
+   * the Gmail app leaves a hole in the negotiation's timeline, and the deal view
+   * is the one place that half of the conversation matters.
+   *
+   * Kept OFF the polling path on purpose: callers ask for a thread already under
+   * an open deal, by id, so nothing we wrote can reach the extractor by widening
+   * a mailbox query. Providers with no way to read a thread return [] — the
+   * feature degrades to what it was rather than failing a pass.
+   */
+  fetchThread(account: Account, threadId: string): Promise<IncomingEmail[]>;
   /** Exact self-lookup of our just-sent copy in All Mail to read its threadId. */
   resolveThreadId(account: Account, rfcMessageId: string): Promise<string | undefined>;
   /**

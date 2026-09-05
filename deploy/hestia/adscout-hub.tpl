@@ -26,6 +26,19 @@ server {
     server_name %domain_idn% %alias_idn%;
     error_log   /var/log/%web_system%/domains/%domain%.error.log error;
 
+    # Hestia's own force-SSL switch. Toggling "Enforce SSL" for the domain in the
+    # panel writes this file; the stock template includes it and ours must too,
+    # or the switch silently does nothing and the whole API stays answerable over
+    # plain HTTP — which means an Authorization: Bearer <Firebase ID token>
+    # crossing the wire in the clear, valid for an hour, with full admin access.
+    #
+    # Using Hestia's file rather than a hand-written `return 301` is deliberate:
+    # Let's Encrypt renews over HTTP-01 and must keep reaching
+    # /.well-known/acme-challenge/. Hestia's redirect already accounts for that;
+    # a hand-rolled one that forgets it fails silently, 60-90 days later, when
+    # the certificate expires.
+    include %home%/%user%/conf/web/%domain%/nginx.forcessl.conf*;
+
     location / {
         proxy_pass http://127.0.0.1:8788;
 

@@ -468,6 +468,24 @@ sudo v-rebuild-web-domain dvalymona adscout.dva-lymona.biz.ua
 *(`v-rebuild-user dvalymona` rebuilds every domain for that user, if you
 prefer the bigger hammer.)*
 
+Then, in the panel, turn on **Enforce SSL** and **HSTS** for the domain.
+
+Both are Hestia switches that write `nginx.forcessl.conf` and `nginx.hsts.conf`,
+which these templates include — so the panel controls them and nothing here is
+hand-rolled. That matters for the redirect in particular: Let's Encrypt renews
+over HTTP-01 and has to keep reaching `/.well-known/acme-challenge/`, which
+Hestia's own redirect already accounts for and a hand-written `return 301` would
+quietly break 60-90 days later.
+
+Without Enforce SSL the **entire API answers over plain HTTP** — `/api/auth`
+returns 200, and a request from a signed-in admin carries
+`Authorization: Bearer <Firebase ID token>` in the clear, valid for an hour,
+with full admin access. Check it after the rebuild:
+
+```bash
+curl -sI http://adscout.dva-lymona.biz.ua/api/auth | head -1   # want 301, not 200
+```
+
 These differ from Hestia's stock proxy template in three ways, all deliberate:
 
 - **No static-file shortcut.** Stock serves `js`/`css` from the domain docroot
@@ -855,6 +873,7 @@ On a long-running server it clears only on restart. The log line is
 | Sign-in popup: "unauthorized domain" | domain not in Firebase authorized domains | §8, step 2 |
 | Connecting a mailbox → `redirect_uri_mismatch` | callback URI not registered | §8, step 1 — must be the `https://` form, exactly |
 | Signed in, but "not authorized for this instance" | email absent from both lists, or unverified | add to `ADMIN_EMAILS`, restart; the address must be a verified Google account |
+| `curl -I http://<domain>/api/auth` returns 200 | Enforce SSL is off, or the template predates the `nginx.forcessl.conf` include | turn on Enforce SSL in the panel, confirm the template has the include, rebuild |
 | Dashboard loads but assets 404 | stock Hestia proxy template is serving the docroot | set the Proxy Template to `adscout` and rebuild (§7) |
 | Live indicator stuck on **Reconnecting** | nginx buffering SSE | confirm `proxy_buffering off` is in the active config (§7) |
 | Nothing is ever extracted | hub not started, or no worker connected | boot log: `REMOTE_TOKEN` unset? Is `pnpm remote:worker` running on the Mac? |

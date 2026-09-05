@@ -49,6 +49,9 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [role, setRole] = useState<Role>(null);
+  // Whether apiBase is holding a token provider yet. Children must not mount
+  // before it is — see the effect below and the gate at the bottom.
+  const [tokenReady, setTokenReady] = useState(false);
 
   // 1. Does this server want a token at all?
   useEffect(() => {
@@ -93,10 +96,15 @@ export function AuthGate({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (requirement !== 'required' || !user) {
       if (requirement === 'required') setTokenProvider(null);
+      setTokenReady(false);
       return;
     }
     setTokenProvider(() => user.getIdToken());
-    return () => setTokenProvider(null);
+    setTokenReady(true);
+    return () => {
+      setTokenProvider(null);
+      setTokenReady(false);
+    };
   }, [requirement, user]);
 
   // 4. Ask again, now signed in, for the role. The first call was anonymous and
@@ -176,6 +184,26 @@ export function AuthGate({ children }: { children: ReactNode }) {
             {error}
           </Text>
         )}
+      </Gate>
+    );
+  }
+
+  // DO NOT MOUNT CHILDREN UNTIL THE TOKEN PROVIDER EXISTS.
+  //
+  // React runs child effects BEFORE parent effects, so rendering {children} in
+  // the same commit that sets `user` means every panel fires its first fetch
+  // before the effect above has installed the provider. authHeaders() finds
+  // none, sends no Authorization header, and the whole dashboard 401s on load
+  // while the sign-in itself looks perfectly fine. Effect 4 was already written
+  // to dodge this by passing its header explicitly; children cannot, because
+  // they do not know about tokens at all.
+  //
+  // One extra render is the entire cost, and it makes the ordering explicit
+  // rather than something the next person has to know about React to see.
+  if (!tokenReady) {
+    return (
+      <Gate>
+        <Spinner />
       </Gate>
     );
   }

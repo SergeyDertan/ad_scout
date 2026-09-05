@@ -18,14 +18,13 @@
 //
 // A niche is always quoted at its CHEAPEST placement term — see priceLabel.
 //
-// Inference is per TIER, and the tier is the viewer's own classification. Which
-// means an UNCLASSIFIED niche cannot be inferred for at all: without knowing
-// whether it is grey or regular there is no defensible peer group, and pooling
-// everything would answer a casino query with a $40 regular price — the exact
-// mistake tiering exists to prevent. Unclassified niches therefore return only
-// what publishers actually quoted, and inference switches on once the niche is
-// classified. (The operator console classifies everything, so this never
-// applies there.)
+// INFERENCE IS PER TIER, so a niche whose tier we cannot establish cannot be
+// inferred for at all: without knowing whether it is grey or regular there is no
+// defensible peer group, and pooling everything would answer a casino query with
+// a $40 regular price — the exact mistake tiering exists to prevent. Such a
+// niche returns only what publishers actually quoted. Our registry classifies
+// everything, so in practice this is the narrow window where a refetch drops a
+// category that is still selected in the filter.
 
 import { tierOf, type DomainCell, type PriceValue, type Tier } from './types';
 
@@ -55,8 +54,8 @@ const refused = (from: DomainCell[], inferred: boolean): NicheAnswer =>
   ({ verdict: 'no', inferred, from, price: '—' });
 
 /** Does this cell speak for `tier`? The umbrella key counts as sensitive
- *  whatever the viewer has (or hasn't) classified 'sensitive' itself as —
- *  "no grey niches" is a statement about the tier by definition. */
+ *  however 'sensitive' itself is classified — "no grey niches" is a statement
+ *  about the tier by definition. */
 function speaksFor(cell: DomainCell, tier: Tier): boolean {
   return tierOf(cell) === tier || (cell.category === SENSITIVE_KEY && tier === 'sens');
 }
@@ -67,9 +66,14 @@ function speaksFor(cell: DomainCell, tier: Tier): boolean {
  *
  * `tier` is the filtered niche's tier — it has to be passed in because the
  * interesting case is precisely the one where this domain has no cell for that
- * niche to read it from.
+ * niche to read it from. Pass `undefined` when it could not be established:
+ * that is a real state, and it is not a third tier.
  */
-export function answerForNiche(cells: DomainCell[], niche: string, tier: Tier): NicheAnswer {
+export function answerForNiche(
+  cells: DomainCell[],
+  niche: string,
+  tier: Tier | undefined,
+): NicheAnswer {
   // 1. Did they name this niche? Their own words win over anything inferred.
   const named = cells.filter((c) => c.category === niche);
   if (named.length > 0) {
@@ -90,7 +94,7 @@ export function answerForNiche(cells: DomainCell[], niche: string, tier: Tier): 
   if (tier === 'sens' && umbrella.length > 0 && umbrella.every((c) => c.canPost === 'no'))
     return refused(umbrella, true);
 
-  if (tier === 'unknown') return UNKNOWN; // no tier ⇒ no peer group ⇒ no honest read
+  if (!tier) return UNKNOWN; // no tier ⇒ no peer group ⇒ no honest read
 
   // 3. Infer from what they DID price in the same tier. Only cells they said yes
   //    to: a 'maybe' priced elsewhere is too weak to extrapolate from, and a 'no'

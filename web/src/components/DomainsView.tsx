@@ -436,9 +436,8 @@ function matchesAnswer(verdict: NicheVerdict, filter: AnswerFilter): boolean {
 // A cell counts as "on offer" only when the publisher said yes.
 const canOffer = (c: DomainCell) => c.canPost === 'yes';
 
-/** Regular → sensitive → unknown. Unclassified last: it is a to-do pile, not a
- *  tier that sits between the other two. (Unreachable now — see Tier.) */
-const TIER_ORDER: Tier[] = ['reg', 'sens', 'unknown'];
+/** Regular first: it is the default case and the bulk of the list. */
+const TIER_ORDER: Tier[] = ['reg', 'sens'];
 function tierRank(value: string): number {
   const i = TIER_ORDER.indexOf(value as Tier);
   return i < 0 ? TIER_ORDER.length : i;
@@ -627,7 +626,11 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const filterTier = categoryFilter ? tierByCategory.get(categoryFilter) ?? 'unknown' : 'unknown';
+    // undefined = we could not establish a tier for the filtered niche, which
+    // makes inference impossible rather than merely unhelpful. Only reachable
+    // in the gap after `rows`/`niches` refetch and drop a category that is
+    // still selected; answerForNiche then reports quotes and infers nothing.
+    const filterTier = categoryFilter ? tierByCategory.get(categoryFilter) : undefined;
     const filtered: DomainRowView[] = [];
     for (const d of rows as DomainSummary[]) {
       if (q && !d.domain.toLowerCase().includes(q)) continue;
@@ -754,16 +757,6 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
           {visible.length} of {rows.length} domain{rows.length === 1 ? '' : 's'}
         </Text>
       </HStack>
-
-      {categoryFilter && (tierByCategory.get(categoryFilter) ?? 'unknown') === 'unknown' && (
-        <Text fontSize="xs" color="fg.muted" mb={3}>
-          <Text as="span" fontWeight="semibold">
-            {categoryOptions.find((o) => o.value === categoryFilter)?.label ?? categoryFilter}
-          </Text>{' '}
-          isn’t classified yet, so this shows only sites that quoted it by name. Mark it sensitive or regular under
-          Niches to also see what comparable sites charge.
-        </Text>
-      )}
 
       <DataPanel
         loading={loading}

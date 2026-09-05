@@ -141,7 +141,7 @@ function OffersTable({ offers, contactedSite }: { offers?: PostOffer[]; contacte
                   <Table.Row key={offerCellKey(o)} bg={flagged ? 'red.subtle' : undefined}>
                     <Table.Cell fontWeight="medium">{o.label}</Table.Cell>
                     <Table.Cell>
-                      {o.sensitive || o.tier === 'unknown' ? (
+                      {o.sensitive ? (
                         <TierBadge of={o} />
                       ) : (
                         <Text color="fg.subtle">—</Text>

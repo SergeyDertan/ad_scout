@@ -4,31 +4,27 @@
 export type CanPost = 'yes' | 'no' | 'maybe';
 
 /**
- * The sensitivity tier a niche falls in.
+ * The sensitivity tier a niche falls in. Our registry classifies every niche,
+ * so this is always one of two and always derives from the `sensitive` boolean.
  *
- * The console only ever has two: our registry classifies every niche, so
- * `sensitive` is a boolean and the tier derives from it.
- *
- * 'unknown' IS CURRENTLY UNREACHABLE. It existed for the shared read-only
- * viewer, whose owner classified niches himself and needed "not yet ruled on"
- * to read as unknown rather than quietly defaulting to regular. That build is
- * gone, and nothing else has ever set `tier`. The three-state machinery is kept
- * because the inference in niche-answer.ts is written around it and rewriting
- * that to two states is a change to how prices are read, not a deletion — but
- * if no third consumer appears, this is dead weight worth removing.
+ * There was a third state, 'unknown', for the read-only viewer: it received the
+ * snapshot with every price flattened to `sensitive: false` and its owner
+ * classified niches himself, so "he hasn't ruled on this yet" had to be
+ * distinguishable from "regular". That build is gone. Not knowing a niche's
+ * tier is now modelled where it actually occurs — as an absent tier at the one
+ * call site that can fail to resolve one (see answerForNiche) — rather than as
+ * a member of this type that no classified niche can ever hold.
  */
-export type Tier = 'sens' | 'reg' | 'unknown';
+export type Tier = 'sens' | 'reg';
 
 export const TIER_LABEL: Record<Tier, string> = {
   sens: 'Sensitive posts',
   reg: 'Regular posts',
-  unknown: 'Unknown niche',
 };
 
-/** A priced thing's tier. Nothing sets `tier` any more, so in practice this
- *  always derives from the boolean — see the note on Tier. */
-export function tierOf(x: { sensitive: boolean; tier?: Tier }): Tier {
-  return x.tier ?? (x.sensitive ? 'sens' : 'reg');
+/** A priced thing's tier. */
+export function tierOf(x: { sensitive: boolean }): Tier {
+  return x.sensitive ? 'sens' : 'reg';
 }
 
 export interface PriceValue {
@@ -57,8 +53,6 @@ export interface PostOffer {
   category: string;
   label: string;
   sensitive: boolean;
-  /** Never set now — see the note on Tier. */
-  tier?: Tier;
   canPost: CanPost;
   price?: PriceValue;
   /** Absent only on records written before terms existed — read as "unstated". */
@@ -132,8 +126,6 @@ export interface Niche {
   key: string;
   label: string;
   sensitive: boolean;
-  /** Never set now — see the note on Tier. */
-  tier?: Tier;
   aliases: string[];
   createdAt?: string;
 }
@@ -483,8 +475,6 @@ export interface DomainCell {
   category: string;
   label: string;
   sensitive: boolean;
-  /** Never set now — see the note on Tier. */
-  tier?: Tier;
   canPost: CanPost;
   price?: PriceValue;
   /** The duration this price buys — part of the cell identity, so one niche can
@@ -512,8 +502,6 @@ export interface PriceCell {
   category: string;
   label: string;
   sensitive: boolean;
-  /** Never set now — see the note on Tier. */
-  tier?: Tier;
   canPost: CanPost;
   price?: PriceValue;
   term?: PlacementTerm;

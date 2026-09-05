@@ -3,14 +3,13 @@ import assert from 'node:assert/strict';
 import { answerForNiche, priceLabel } from './niche-answer';
 import type { CanPost, DomainCell, Tier } from './types';
 
-/** A standing cell. `tier` is the three-state niche classification;
- *  `sensitive` tracks it so the two can't disagree here. */
+/** A standing cell. Written in terms of the tier because that is what each test
+ *  is actually about; `sensitive` is what the cell carries. */
 function cell(category: string, tier: Tier, canPost: CanPost, amount?: number, currency = 'USD'): DomainCell {
   return {
     category,
     label: category,
     sensitive: tier === 'sens',
-    tier,
     canPost,
     ...(amount === undefined ? {} : { price: { amount, currency, raw: `$${amount}` } }),
     term: { key: 'none', raw: '' },
@@ -160,21 +159,21 @@ test('a hedged tier is unknown, not a no', () => {
   assert.equal(answerForNiche(cells, 'vpn', 'sens').verdict, 'unknown');
 });
 
-test('an unclassified niche is never inferred for — only quoted', () => {
+test('a niche with no tier is never inferred for — only quoted', () => {
   const cells = [
     cell('regular', 'reg', 'yes', 40),
     cell('casino', 'sens', 'yes', 900),
-    cell('crypto', 'unknown', 'yes', 300),
+    cell('crypto', 'reg', 'yes', 300),
   ];
 
-  // He hasn't ruled on 'nft', so there is no peer group: answering $40 (regular)
-  // or $900 (casino) would both be guesses dressed as estimates.
-  assert.equal(answerForNiche(cells, 'nft', 'unknown').verdict, 'unknown');
+  // No tier for 'nft' means no peer group: answering $40 (regular) or $900
+  // (casino) would both be guesses dressed as estimates.
+  assert.equal(answerForNiche(cells, 'nft', undefined).verdict, 'unknown');
 
-  // A quote for the unclassified niche itself still shows — that is their word,
-  // not our extrapolation.
-  assert.equal(answerForNiche(cells, 'crypto', 'unknown')?.price, '300 USD');
-  assert.equal(answerForNiche(cells, 'crypto', 'unknown')?.inferred, false);
+  // A quote for the niche itself still shows — that is their word, not our
+  // extrapolation, so it does not need a peer group.
+  assert.equal(answerForNiche(cells, 'crypto', undefined)?.price, '300 USD');
+  assert.equal(answerForNiche(cells, 'crypto', undefined)?.inferred, false);
 });
 
 test('mixed currencies are listed side by side, never averaged into one range', () => {
@@ -226,7 +225,6 @@ test('priceLabel copes with cells that carry no usable amount', () => {
     category: 'casino',
     label: 'casino',
     sensitive: true,
-    tier: 'sens',
     canPost: 'yes',
     price: { raw: 'depends on the topic' },
     term: { key: 'none', raw: '' },

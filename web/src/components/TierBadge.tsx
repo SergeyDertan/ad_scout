@@ -5,9 +5,8 @@ import { tierOf, type Tier } from '../types';
  * The sensitivity marker next to a niche.
  *
  * Regular posts get no badge — they are the default and badging them would be
- * noise. 'unknown' only ever appears in the shared viewer, where it means "its
- * owner hasn't classified this niche yet", NOT "we don't know": it's a prompt to
- * go and rule on it, so it is deliberately visible rather than silent.
+ * noise. The 'unknown' arm is unreachable in this build (see the note on Tier in
+ * types.ts) and kept only so the type stays exhaustive.
  */
 export function TierBadge({ of }: { of: { sensitive: boolean; tier?: Tier } }) {
   const tier = tierOf(of);

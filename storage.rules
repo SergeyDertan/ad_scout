@@ -1,41 +1,26 @@
 rules_version = '2';
 
-// The published snapshot: domains, prices, and the emails behind them.
+// Deny every browser client, everywhere in the bucket.
 //
-// This is the ONLY thing protecting that data. Firebase Hosting serves the app
-// shell publicly (it has no per-user auth), so the page itself is reachable by
-// anyone with the URL — but it contains no data. Every byte comes from here,
-// and here requires a signed-in account on the allowlist below.
+// Nothing in the front end reads Cloud Storage any more. The read-only viewer
+// that used to — signed in, allowlisted, served the published price snapshot —
+// is gone; the console reads this project's own /api instead, gated by the
+// ID-token allowlist in src/server/auth.ts. A read rule kept "just in case"
+// would be an opening with nothing on the other side of it.
 //
-// Writes are denied to EVERYONE. The publisher runs on the operator's machine
-// with a service account, and the Admin SDK bypasses these rules entirely; no
-// browser session can ever write, whatever the UI tries.
+// What DOES live in this bucket is the offsite mirror of the hourly database
+// backups (src/services/backup.ts), and those archives carry
+// `Account.oauthTokens.refreshToken` for every mailbox — unencrypted. This file
+// is the only thing standing between them and anyone who guesses an object
+// path. Do not add a read rule here for a debugging session.
 //
-// To grant access: add the person's Google account email to viewers() and
-// deploy with `firebase deploy --only storage`.
+// The backup writer is unaffected: it runs server-side with a service-account
+// key, and the Admin SDK bypasses these rules entirely. That account holds
+// `roles/storage.objectAdmin` on this one bucket and nothing else — see
+// deploy/provision-backup-sa.sh.
 
 service firebase.storage {
   match /b/{bucket}/o {
-
-    function viewers() {
-      return [
-        'themars0719@gmail.com',
-        'superator2018@gmail.com'
-      ];
-    }
-
-    function allowed() {
-      return request.auth != null
-        && request.auth.token.email_verified == true
-        && request.auth.token.email.lower() in viewers();
-    }
-
-    match /snapshot/{allPaths=**} {
-      allow read: if allowed();
-      allow write: if false;
-    }
-
-    // Anything outside the snapshot prefix is off limits, signed in or not.
     match /{allPaths=**} {
       allow read, write: if false;
     }

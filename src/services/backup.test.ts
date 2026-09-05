@@ -79,10 +79,11 @@ test('config defaults, and gs:// on the bucket is tolerated', () => {
   assert.equal(c.bucket, 'my-bucket');
   assert.equal(c.keepDays, 14);
   assert.equal(c.prefix, 'backups');
-  // Falls back to the snapshot publisher's bucket and credentials.
-  const d = loadBackupConfig({ SNAPSHOT_BUCKET: 'shared', SNAPSHOT_CREDENTIALS: '/x.json' } as NodeJS.ProcessEnv);
-  assert.equal(d.bucket, 'shared');
-  assert.equal(d.credentialsPath, '/x.json');
+  // No bucket ⇒ local backups only, and no half-configured mirror: a bucket
+  // without a credential must not look configured to the caller.
+  const d = loadBackupConfig({} as NodeJS.ProcessEnv);
+  assert.equal(d.bucket, undefined);
+  assert.equal(d.credentialsPath, undefined);
 });
 
 /* ---------------- an actual backup, end to end ---------------- */

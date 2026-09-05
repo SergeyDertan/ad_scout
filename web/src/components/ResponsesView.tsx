@@ -161,7 +161,7 @@ function VirtualRow({ index, style, rows, onShow, onEdit, readOnly }: RowCompone
 
 export function ResponsesView({ tick, readOnly: readOnlyProp }: { tick: number; readOnly?: boolean }) {
   // PATCH /api/replies/:id is an operator route, so a manager sees this page
-  // exactly as the read-only viewer build does. Hook called unconditionally.
+  // read-only. Hook called unconditionally.
   const isManager = useIsManager();
   const readOnly = readOnlyProp || isManager;
   const [batchFilter, setBatchFilter] = useState('');

@@ -9,10 +9,15 @@ are, without handing over the mailboxes.
 > [VPS-DEPLOY.md](./VPS-DEPLOY.md). This document remains the survey and the
 > decisions taken, so the next session starts from the conclusion rather than
 > re-deriving it.
+>
+> **Read this as a record, not a description of the code.** The read-only price
+> viewer it repeatedly refers to — the `VITE_TARGET=viewer` build, the published
+> Cloud Storage snapshot, `firestore.rules`, `docs/VIEWER.md` — has since been
+> deleted: this plan replaced it. The one piece that survived is
+> `web/src/firebase.ts` (Google sign-in), which the console now imports directly.
 
-The read-only sibling already exists — see [VIEWER.md](./VIEWER.md), which shares
-*prices* one-way. This is the opposite problem: few people, full write access,
-on one part of the app.
+The read-only sibling shared *prices* one-way. This was the opposite problem:
+few people, full write access, on one part of the app.
 
 ---
 

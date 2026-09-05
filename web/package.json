@@ -7,8 +7,6 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "build:viewer": "VITE_TARGET=viewer vite build",
-    "dev:viewer": "VITE_TARGET=viewer vite --port 5174 --open /viewer.html",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"
   },

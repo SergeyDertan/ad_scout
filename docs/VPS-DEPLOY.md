@@ -76,7 +76,6 @@ cd <adscout checkout on the source machine>
 
 ls -la .env client_secret.json          # both required to send mail
 du -sh data/pouch                       # the database
-ls firebase-service-account.json 2>/dev/null   # only if you publish viewer snapshots
 grep -E '^(LLM_PROVIDER|EMAIL_PROVIDER|STORE|CLAUDE_CODE_MODEL)=' .env
 ```
 
@@ -324,8 +323,6 @@ Copy by hand — none of these are in git:
 ```bash
 scp .env               adscout@<vps>:/opt/adscout/
 scp client_secret.json adscout@<vps>:/opt/adscout/
-# only if you publish viewer snapshots:
-scp firebase-service-account.json adscout@<vps>:/opt/adscout/
 ```
 
 **Do not copy `data/agent.lock`.** It is PID-based with a liveness check
@@ -577,7 +574,7 @@ final step with `redirect_uri_mismatch`.
 sign-in is refused on the page and the console never loads past the gate.
 
 **3. App Check, if you enforce it.** The front end registers a reCAPTCHA
-Enterprise provider at startup (`web/src/viewer/firebase.ts`). Two console-side
+Enterprise provider at startup (`web/src/firebase.ts`). Two console-side
 pieces have to agree with it, and neither is optional once enforcement is on:
 
 - Firebase Console → **App Check** → the web app → reCAPTCHA Enterprise, with
@@ -590,8 +587,8 @@ Enforcement is **per product and off by default**, so nothing breaks the day you
 add this — turn it on for Authentication once you have watched real sign-ins
 issue App Check tokens in the console's metrics.
 
-**App Check does not protect `/api`.** It covers the Firebase surfaces —
-Authentication, and Storage/Firestore while the viewer still uses them. This
+**App Check does not protect `/api`.** The only Firebase surface left to cover
+is Authentication — the browser reads no Cloud Storage and no Firestore. This
 project's own routes are gated by the ID-token allowlist in
 `src/server/auth.ts`. Extending App Check to them would mean sending the token
 as a header and verifying it with the Admin SDK, which is a separate decision.
@@ -840,7 +837,7 @@ Retention needs no second job — one rule does it:
 The "daily backup" is simply the survivor of each past day. Steady state is ~24 +
 14 archives, about **140 MB**.
 
-Set `BACKUP_BUCKET` (or leave it to fall back to `SNAPSHOT_BUCKET`) and every
+Set `BACKUP_BUCKET` and `BACKUP_CREDENTIALS` and every
 archive is mirrored to Cloud Storage with the same rule applied there, so offsite
 matches on-box. A mirror failure is logged, never fatal — the local copy already
 succeeded, and losing the server over a Cloud Storage hiccup would be worse.
@@ -865,8 +862,8 @@ by design, and a lock would make every prune fail while the local copy quietly
 diverged from the remote.
 
 > **The archives contain every mailbox's OAuth refresh token in the clear.**
-> `storage.rules` denies browser reads outside the `snapshot/` prefix, so only
-> the Admin SDK's service account can read `backups/`. Treat that JSON — and any
+> `storage.rules` denies browser reads across the whole bucket, so only the
+> Admin SDK's service account can read them. Treat that JSON — and any
 > copy of these archives — as mailbox credentials.
 
 ### Restoring
@@ -901,7 +898,7 @@ On a long-running server it clears only on restart. The log line is
 | Symptom | Cause | Fix |
 |---|---|---|
 | `/api/status` returns **200** instead of 401 | `ADMIN_EMAILS` did not load | check `.env`; the boot log says which mode it started in |
-| Console: `auth/invalid-api-key` | a build from before the config was hardcoded, or a stale `web/dist` | `git pull && pnpm web:build`; the config lives in `web/src/viewer/firebase.ts` now, not in `web/.env.local` |
+| Console: `auth/invalid-api-key` | a build from before the config was hardcoded, or a stale `web/dist` | `git pull && pnpm web:build`; the config lives in `web/src/firebase.ts` now, not in `web/.env.local` |
 | Sign-in works, Firebase calls rejected | App Check enforced without the domain on the reCAPTCHA key | §8, step 3 |
 | Sign-in popup: "unauthorized domain" | domain not in Firebase authorized domains | §8, step 2 |
 | Connecting a mailbox → `redirect_uri_mismatch` | callback URI not registered | §8, step 1 — must be the `https://` form, exactly |

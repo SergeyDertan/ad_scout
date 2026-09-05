@@ -46,10 +46,9 @@ AdScout is built around a few deliberate choices that explain almost every file:
 ├── package.json            # server package (name: adscout) — runs via tsx, no build
 ├── tsconfig.json           # includes src + scripts
 ├── overview.md             # design document
-├── docs/                   # ← you are here (USAGE.md, ARCHITECTURE.md, VIEWER.md)
-├── firebase.json           # shared read-only viewer: hosting + rules (docs/VIEWER.md)
-├── storage.rules           #   who may READ the published snapshot (the allowlist)
-├── firestore.rules         #   each viewer's own niche settings, private per account
+├── docs/                   # ← you are here (USAGE.md, ARCHITECTURE.md, VPS-DEPLOY.md)
+├── firebase.json           # Firebase project config — storage rules, nothing else
+├── storage.rules           #   deny-all: the backup mirror's bucket is Admin-SDK-only
 ├── web/                    # SEPARATE front-end package (name: adscout-web)
 │   ├── package.json        #   Vite + React + Chakra UI, own deps & build
 │   └── src/                #   built to web/dist, served by the server
@@ -230,14 +229,7 @@ Pure orchestration helpers between the domain and the pipeline.
   Leftover items are dropped and picked up next pass.
 - **`read-models.ts`** — the denormalized payloads the UI reads (domain rows,
   domain detail, response rows, one extraction explained). Assembled here rather
-  than in the HTTP handlers because there are two readers: the local console
-  over HTTP, and the published snapshot. A join written twice drifts.
-- **`snapshot.ts`** — builds the flat JSON file set the shared viewer reads, off
-  the read models. Deliberately strips OUR niche-sensitivity calls: the viewer's
-  owner classifies niches himself. See docs/VIEWER.md.
-- **`publisher.ts`** — uploads that snapshot to Cloud Storage, one-way, diffing
-  against the remote hash index so only changed files move. Driven by the store's
-  change feed and debounced; a failure logs and never touches the pipeline.
+  than in the HTTP handlers so a join is written once, not per route.
 
 ---
 
@@ -352,12 +344,10 @@ and server evolve independently.
   in `src/theme.ts` — an indigo `brand` palette on a gray canvas with white
   panels).
 - **`src/api.ts`** — typed client over the JSON API (relative `/api`).
-- **`src/api.snapshot.ts` + `src/viewer/`** — the SECOND build of this same UI:
-  the shared read-only viewer, which reads a published snapshot from Firebase
-  instead of a server. `VITE_TARGET=viewer` makes a resolver plugin swap
-  `api.ts` for `api.snapshot.ts`, so the views, the modals and the export
-  pipeline are shared code rather than a second implementation; components take
-  a `readOnly` prop that hides everything that writes. See docs/VIEWER.md.
+- **`src/firebase.ts`** — Google sign-in, and only that. Dynamic-imported by
+  `AuthGate.tsx` when the server says auth is on, so a local console never
+  downloads it. Firebase is an identity provider here, not a database: the
+  browser reads no Cloud Storage and no Firestore.
 - **`src/hooks/useStream.ts`** — subscribes to `/api/stream`; debounced
   `onChange` drives a `tick` counter that re-fetches the active view; reports
   `connecting`/`live`/`reconnecting`.

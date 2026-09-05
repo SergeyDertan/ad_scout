@@ -22,7 +22,7 @@ test('an allowlisted, verified email is admitted', () => {
   assert.deepEqual(r.ok && r.identity, { uid: 'u1', email: 'boss@example.com', role: 'admin' });
 });
 
-test('the compare is case-insensitive, as firestore.rules email.lower() is', () => {
+test('the compare is case-insensitive — an allowlist is not a password', () => {
   const r = evaluateClaims({ email: 'Boss@Example.COM', email_verified: true, uid: 'u1' }, ALLOW);
   assert.equal(r.ok, true);
 });

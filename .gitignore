@@ -7,16 +7,20 @@ data-dump/
 *.log
 dist/
 web/dist/
-web/dist-viewer/
 .DS_Store
 
-# Credentials — never committed. The Firebase service account can write the
-# viewer's bucket; client_secret.json is the Gmail OAuth client;
-# adscout-backup.json is where provision-backup-sa.sh drops the mirror's key,
-# and the archives it unlocks hold every mailbox's OAuth refresh token.
-firebase-service-account.json
-client_secret.json
+# Credentials — never committed.
+#   adscout-backup.json          where provision-backup-sa.sh drops the mirror's
+#                                key; the archives it unlocks hold every
+#                                mailbox's OAuth refresh token
+#   client_secret.json           the Gmail OAuth client
+#   firebase-service-account.json  the older, project-wide key it replaced
+# The wildcard is the safety net: a key downloaded under whatever name the
+# console gave it is the likeliest way one of these gets staged by accident.
 adscout-backup.json
+client_secret.json
+firebase-service-account.json
+*-service-account*.json
 web/.env.local
 
 # IDE / editor
@@ -26,7 +30,8 @@ web/.env.local
 # Local agent settings
 .claude/settings.local.json
 
-# Firebase deploy cache — regenerated on every deploy
+# Firebase deploy cache — regenerated on every deploy (`firebase deploy --only
+# storage`, now the only thing this project deploys to Firebase)
 .firebase/
 
 # Archives

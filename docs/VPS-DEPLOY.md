@@ -336,7 +336,7 @@ copy it rather than retyping this block:
 
 ```bash
 sudo -u adscout -H cp /opt/adscout/deploy/env.vps.example /opt/adscout/.env
-sudo -u adscout -H nano /opt/adscout/.env      # three PLACEHOLDERs to fill
+sudo -u adscout -H nano /opt/adscout/.env      # two PLACEHOLDERs to fill
 sudo chmod 600 /opt/adscout/.env
 ```
 

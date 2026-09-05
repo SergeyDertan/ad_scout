@@ -6,12 +6,16 @@ export type CanPost = 'yes' | 'no' | 'maybe';
 /**
  * The sensitivity tier a niche falls in.
  *
- * The operator console only ever has two: our own registry classifies every
- * niche, so `sensitive` is a boolean and 'unknown' never occurs. The shared
- * viewer is the third case — its owner classifies niches himself, and until he
- * has ruled on one it must read as UNKNOWN rather than quietly defaulting to
- * regular. A niche he hasn't seen before therefore shows up as "unknown niche"
- * no matter what our registry says about it.
+ * The console only ever has two: our registry classifies every niche, so
+ * `sensitive` is a boolean and the tier derives from it.
+ *
+ * 'unknown' IS CURRENTLY UNREACHABLE. It existed for the shared read-only
+ * viewer, whose owner classified niches himself and needed "not yet ruled on"
+ * to read as unknown rather than quietly defaulting to regular. That build is
+ * gone, and nothing else has ever set `tier`. The three-state machinery is kept
+ * because the inference in niche-answer.ts is written around it and rewriting
+ * that to two states is a change to how prices are read, not a deletion — but
+ * if no third consumer appears, this is dead weight worth removing.
  */
 export type Tier = 'sens' | 'reg' | 'unknown';
 
@@ -21,8 +25,8 @@ export const TIER_LABEL: Record<Tier, string> = {
   unknown: 'Unknown niche',
 };
 
-/** A priced thing's tier. `tier` is set only where a three-state answer exists
- *  (the viewer); everywhere else it derives from the boolean. */
+/** A priced thing's tier. Nothing sets `tier` any more, so in practice this
+ *  always derives from the boolean — see the note on Tier. */
 export function tierOf(x: { sensitive: boolean; tier?: Tier }): Tier {
   return x.tier ?? (x.sensitive ? 'sens' : 'reg');
 }
@@ -53,7 +57,7 @@ export interface PostOffer {
   category: string;
   label: string;
   sensitive: boolean;
-  /** Set only by the shared viewer, where a niche can be unclassified. */
+  /** Never set now — see the note on Tier. */
   tier?: Tier;
   canPost: CanPost;
   price?: PriceValue;
@@ -128,7 +132,7 @@ export interface Niche {
   key: string;
   label: string;
   sensitive: boolean;
-  /** Set only by the shared viewer, where a niche can be unclassified. */
+  /** Never set now — see the note on Tier. */
   tier?: Tier;
   aliases: string[];
   createdAt?: string;
@@ -479,7 +483,7 @@ export interface DomainCell {
   category: string;
   label: string;
   sensitive: boolean;
-  /** Set only by the shared viewer, where a niche can be unclassified. */
+  /** Never set now — see the note on Tier. */
   tier?: Tier;
   canPost: CanPost;
   price?: PriceValue;
@@ -508,7 +512,7 @@ export interface PriceCell {
   category: string;
   label: string;
   sensitive: boolean;
-  /** Set only by the shared viewer, where a niche can be unclassified. */
+  /** Never set now — see the note on Tier. */
   tier?: Tier;
   canPost: CanPost;
   price?: PriceValue;

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { answerForNiche, priceLabel } from './niche-answer';
 import type { CanPost, DomainCell, Tier } from './types';
 
-/** A standing cell. `tier` is the viewer's classification, as api.snapshot.ts
- *  stamps it on; `sensitive` tracks it so the two can't disagree here. */
+/** A standing cell. `tier` is the three-state niche classification;
+ *  `sensitive` tracks it so the two can't disagree here. */
 function cell(category: string, tier: Tier, canPost: CanPost, amount?: number, currency = 'USD'): DomainCell {
   return {
     category,

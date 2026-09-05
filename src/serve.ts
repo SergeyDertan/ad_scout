@@ -20,7 +20,6 @@ import { totalRemainingToday } from './pipeline/quota';
 import { createApiServer } from './server/app';
 import { createRemoteHub, type HubEvent } from './server/remote-hub';
 import { DripScheduler } from './scheduler/scheduler';
-import { loadPublishConfig, publishEnabled, SnapshotPublisher } from './services/publisher';
 import { backupEnabled, BackupService, loadBackupConfig } from './services/backup';
 
 /**
@@ -131,24 +130,6 @@ async function main(): Promise<void> {
 
   const rec = await runReconcile({ store, email, clock, config });
   logger.info('reconcile', rec as unknown as Record<string, unknown>);
-
-  // Read-only snapshot for the shared viewer (Firebase). Driven off the store's
-  // change feed rather than any one pass, so a poll cycle, an extraction and a
-  // hand-edit all trigger it; debounced, so a burst publishes once at the end.
-  // Unconfigured (no SNAPSHOT_BUCKET) is the normal local case — a no-op.
-  const publishConfig = publishEnabled() ? loadPublishConfig() : null;
-  const publisher = publishConfig ? new SnapshotPublisher(store, clock, publishConfig) : null;
-  const detachPublisher = publisher?.attach();
-  if (publisher) {
-    logger.info('snapshot publishing enabled', {
-      bucket: publishConfig!.bucket,
-      prefix: publishConfig!.prefix,
-      debounceMs: publishConfig!.debounceMs,
-    });
-    // Publish once at boot so the viewer reflects anything that changed while
-    // the server was down (scripts, hand-edits, a restore from backup).
-    publisher.schedule();
-  }
 
   const server = createApiServer({
     store,
@@ -265,7 +246,6 @@ async function main(): Promise<void> {
     logger.info('shutting down');
     scheduler.stop();
     backup?.stop();
-    detachPublisher?.();
     server.close();
     hub?.server.close();
     void store.close?.();

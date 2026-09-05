@@ -16,10 +16,10 @@
 // uses. A backup in a bespoke format is a backup with an untested restore path.
 //
 // NOT ENCRYPTED. The archive contains `Account.oauthTokens.refreshToken` for
-// every mailbox. Bucket-side, storage.rules denies reads to every browser client
-// outside the `snapshot/` prefix, so the object is reachable only by the Admin
-// SDK's service account. Treat that service-account JSON, and any local copy of
-// these files, as mailbox credentials.
+// every mailbox. Bucket-side, storage.rules denies reads to every browser
+// client everywhere, so the object is reachable only by the Admin SDK's service
+// account. Treat that service-account JSON, and any local copy of these files,
+// as mailbox credentials.
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -57,7 +57,7 @@ export function loadBackupConfig(env: NodeJS.ProcessEnv = process.env): BackupCo
     const n = v == null ? NaN : Number(v);
     return Number.isFinite(n) && n > 0 ? n : fallback;
   };
-  let bucket = (env.BACKUP_BUCKET ?? env.SNAPSHOT_BUCKET)?.trim();
+  let bucket = env.BACKUP_BUCKET?.trim();
   if (bucket?.startsWith('gs://')) bucket = bucket.slice(5);
   if (bucket?.endsWith('/')) bucket = bucket.slice(0, -1);
   return {
@@ -66,9 +66,7 @@ export function loadBackupConfig(env: NodeJS.ProcessEnv = process.env): BackupCo
     intervalMs: num(env.BACKUP_INTERVAL_MS, 60 * 60_000),
     ...(bucket ? { bucket } : {}),
     prefix: env.BACKUP_PREFIX?.trim() || 'backups',
-    ...(env.BACKUP_CREDENTIALS?.trim() || env.SNAPSHOT_CREDENTIALS?.trim()
-      ? { credentialsPath: (env.BACKUP_CREDENTIALS ?? env.SNAPSHOT_CREDENTIALS)!.trim() }
-      : {}),
+    ...(env.BACKUP_CREDENTIALS?.trim() ? { credentialsPath: env.BACKUP_CREDENTIALS.trim() } : {}),
   };
 }
 

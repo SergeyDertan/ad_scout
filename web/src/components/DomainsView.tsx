@@ -288,9 +288,9 @@ function DomainDetailModal({
   onChanged: () => void;
   readOnly?: boolean;
 }) {
-  // The viewer build already passes readOnly; a manager is read-only here for
-  // the same reason — POST/DELETE /api/exclusions is an operator route. Folding
-  // it into the existing flag keeps one notion of "cannot edit this panel".
+  // A manager is read-only here: POST/DELETE /api/exclusions is an operator
+  // route. Folding that into the caller's `readOnly` keeps one notion of
+  // "cannot edit this panel".
   //
   // The hook is called unconditionally and combined after: `readOnlyProp ||
   // useIsManager()` would skip the call whenever the prop is true, which is a
@@ -436,8 +436,8 @@ function matchesAnswer(verdict: NicheVerdict, filter: AnswerFilter): boolean {
 // A cell counts as "on offer" only when the publisher said yes.
 const canOffer = (c: DomainCell) => c.canPost === 'yes';
 
-/** Regular → sensitive → unknown. Unclassified last: in the viewer it is a
- *  to-do pile, not a tier that sits between the other two. */
+/** Regular → sensitive → unknown. Unclassified last: it is a to-do pile, not a
+ *  tier that sits between the other two. (Unreachable now — see Tier.) */
 const TIER_ORDER: Tier[] = ['reg', 'sens', 'unknown'];
 function tierRank(value: string): number {
   const i = TIER_ORDER.indexOf(value as Tier);
@@ -600,8 +600,7 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
 
   // Every niche's tier, read off the cells that DO carry it. Needed because the
   // interesting case is a domain with no cell for the filtered niche at all —
-  // there is nothing local to read the tier from. In the viewer these tiers are
-  // his classification, so a re-classification flows straight through here.
+  // there is nothing local to read the tier from.
   const tierByCategory = useMemo(() => {
     const map = new Map<string, Tier>();
     for (const n of niches as Niche[]) map.set(n.key, tierOf(n));

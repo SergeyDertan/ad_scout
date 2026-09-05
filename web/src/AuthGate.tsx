@@ -13,16 +13,14 @@ import { RoleContext, type Role } from './role';
 // bundle it downloads and no sign-in in the way.
 //
 // Firebase is loaded with a dynamic import for that reason: it is ~100 KB the
-// local console must never pay for. The module imported is the viewer's — the
-// Google sign-in there is not viewer-specific, and a second copy would be a
-// second thing to keep in step with the allowlist.
+// local console must never pay for.
 
 type Requirement = 'checking' | 'open' | 'required';
 
 interface FirebaseAuthModule {
   watchAuth: (cb: (user: AuthUser | null) => void) => () => void;
   signInWithGoogle: () => Promise<unknown>;
-  signOutViewer: () => Promise<void>;
+  signOutUser: () => Promise<void>;
 }
 
 interface AuthUser {
@@ -79,7 +77,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     let cancelled = false;
     let unwatch: (() => void) | undefined;
     void (async () => {
-      const mod = (await import('./viewer/firebase')) as unknown as FirebaseAuthModule;
+      const mod = (await import('./firebase')) as unknown as FirebaseAuthModule;
       if (cancelled) return;
       setFb(mod);
       unwatch = mod.watchAuth((u) => setUser(u));
@@ -211,7 +209,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   return (
     <RoleContext.Provider value={role}>
       <Box>
-        <SignedInBar email={user.email} role={role} onSignOut={() => void fb.signOutViewer()} />
+        <SignedInBar email={user.email} role={role} onSignOut={() => void fb.signOutUser()} />
         {children}
       </Box>
     </RoleContext.Provider>

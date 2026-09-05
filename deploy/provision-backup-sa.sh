@@ -8,7 +8,7 @@
 #
 # WHY NOT THE FIREBASE KEY: Firebase Console → Service accounts → "Generate new
 # private key" hands you the Admin SDK account, which normally carries Editor on
-# the whole project — Firestore, Auth, every bucket. The mirror calls exactly
+# the whole project — Auth, every bucket, everything. The mirror calls exactly
 # three verbs (upload, list, delete objects), so it gets exactly those, on one
 # bucket. See src/services/backup.ts:297-312.
 #
@@ -86,8 +86,8 @@ else
     warn ""
     warn "    BUCKET=${PROJECT}.firebasestorage.app $0"
     warn ""
-    warn "That works, but shares a bucket with the viewer snapshots and leans on"
-    warn "storage.rules' deny-all for browser access instead of separation."
+    warn "That works — storage.rules denies browser reads across the whole"
+    warn "bucket — but the archives then sit beside whatever else uses it."
     die "bucket creation failed"
   fi
 

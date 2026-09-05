@@ -5,14 +5,15 @@
 // anyone who finds the host send mail from the Gmail accounts, delete accounts,
 // trigger send passes and read every reply. This is the gate.
 //
-// The predicate is deliberately the SAME three conditions firestore.rules already
-// enforces for the read-only viewer (`allowed()`): a signed-in user, a verified
-// email, and that email on an allowlist. One rule, two runtimes.
+// THE PREDICATE: a signed-in user, a verified email, and that email on an
+// allowlist. It was written to match the `allowed()` rule the read-only viewer's
+// firestore.rules enforced, so one rule covered two runtimes; that viewer is
+// gone and this is now the only place the rule lives.
 //
-// GATED, NOT UNCONDITIONAL — exactly how publishEnabled() gates publishing:
-// auth is required only once ADMIN_EMAILS is set. An unset ADMIN_EMAILS is the
-// normal local case (`pnpm serve` on a laptop, `pnpm web:dev`'s proxy) and stays
-// open, so turning this on is a deploy decision rather than a local-dev tax.
+// GATED, NOT UNCONDITIONAL — auth is required only once ADMIN_EMAILS is set. An
+// unset ADMIN_EMAILS is the normal local case (`pnpm serve` on a laptop,
+// `pnpm web:dev`'s proxy) and stays open, so turning this on is a deploy
+// decision rather than a local-dev tax.
 //
 // NO LOOPBACK EXEMPTION, ON PURPOSE. "Skip auth for 127.0.0.1" is the obvious
 // convenience and it is a trap here: behind nginx/Caddy every proxied request
@@ -21,8 +22,8 @@
 //
 // Verification needs a project id, not a service account: the signature is
 // checked against Google's public certs, and the project id only fixes the
-// expected `aud`. So this works on a box that has no firebase-service-account.json
-// — the credential the snapshot publisher needs is not needed here.
+// expected `aud`. So this works on a box holding no service-account key at all
+// — the one the backup mirror uses is not needed here.
 
 import type { IncomingMessage } from 'node:http';
 import { logger } from '../lib/logger';
@@ -50,7 +51,7 @@ export interface AdminIdentity {
 
 export interface AuthConfig {
   projectId: string;
-  /** Lower-cased, for the same case-insensitive compare firestore.rules does. */
+  /** Lower-cased: an allowlist that is case-sensitive refuses the right person. */
   adminEmails: Set<string>;
   managerEmails: Set<string>;
 }
@@ -62,7 +63,7 @@ export type AuthFailure =
 
 export type AuthResult = { ok: true; identity: AdminIdentity } | AuthFailure;
 
-/** True once either allowlist is configured. Mirrors publishEnabled()'s shape. */
+/** True once either allowlist is configured. */
 export function authEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return parseEmails(env.ADMIN_EMAILS).size > 0 || parseEmails(env.MANAGER_EMAILS).size > 0;
 }
@@ -142,8 +143,8 @@ export function createAuthenticator(config: AuthConfig): (req: IncomingMessage) 
  * The authorization rule, separated from the token plumbing so it can be tested
  * without Firebase — this is the part that actually decides who gets in.
  *
- * The same three conditions as firestore.rules `allowed()`: signed in, email
- * verified, email on the allowlist. `email_verified` is not ceremony: without
+ * Three conditions: signed in, email verified, email on the allowlist.
+ * `email_verified` is not ceremony: without
  * it, anyone can register an unverified account claiming an allowlisted address.
  */
 export function evaluateClaims(

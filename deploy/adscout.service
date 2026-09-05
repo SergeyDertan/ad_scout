@@ -63,6 +63,12 @@ ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 # Everything the process writes: the store, the daily log files, and the lock.
+#
+# EVERY PATH HERE MUST EXIST BEFORE THE UNIT STARTS. ProtectSystem=strict makes
+# systemd bind-mount each one, and a missing directory fails the whole start with
+# status=226/NAMESPACE — whose message blames the ExecStart binary rather than the
+# directory, which sends you looking in the wrong place. So:
+#     mkdir -p /opt/adscout/{data,logs,backups}
 ReadWritePaths=/opt/adscout/data /opt/adscout/logs /opt/adscout/backups
 
 [Install]

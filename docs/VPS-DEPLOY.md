@@ -179,7 +179,8 @@ sudo -u adscout -H bash -c '
   cd /opt/adscout
   pnpm install
   pnpm web:build          # web/dist is gitignored — the server serves it from disk
-  mkdir -p data logs
+  mkdir -p data logs backups   # ALL THREE — the unit's ReadWritePaths bind-mounts
+                               # each one and refuses to start if any is missing
 '
 ```
 
@@ -823,6 +824,7 @@ On a long-running server it clears only on restart. The log line is
 | Nothing is ever extracted | hub not started, or no worker connected | boot log: `REMOTE_TOKEN` unset? Is `pnpm remote:worker` running on the Mac? |
 | Worker: `413` on posting a result | `client_max_body_size` too small | hub template sets `128m` (§9 option B) |
 | `agent already running (pid N)` but nothing is | stale `data/agent.lock` copied from the Mac | `rm /opt/adscout/data/agent.lock` |
+| `status=226/NAMESPACE`, "Failed to set up mount namespacing" | one of the unit's `ReadWritePaths` does not exist | `mkdir -p /opt/adscout/{data,logs,backups}`. The message names a missing `pnpm` too — ignore that, the namespace failed first |
 | Mail sends succeed but nothing arrives | `EMAIL_PROVIDER` unset ⇒ dummy provider | §5 |
 | Sending at the wrong hours | `TZ` not applied | §5; check `journalctl` timestamps and `timedatectl` |
 | `deploy.sh`: "working tree is dirty" | someone edited files on the box | commit, stash or `git checkout --` them, then redeploy |

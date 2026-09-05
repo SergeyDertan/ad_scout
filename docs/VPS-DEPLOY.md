@@ -462,10 +462,13 @@ sudo chmod 644 /usr/local/hestia/data/templates/web/nginx/adscout.*
 In the panel, edit the domain and set its **Proxy Template** to `adscout`, then:
 
 ```bash
-sudo v-rebuild-web-domain dvalymona adscout.dva-lymona.biz.ua
+sudo /usr/local/hestia/bin/v-rebuild-web-domain dvalymona adscout.dva-lymona.biz.ua
 ```
 
-*(`v-rebuild-user dvalymona` rebuilds every domain for that user, if you
+*(Hestia's CLI is not on root's PATH — hence the absolute path. The panel's
+"save" on the domain triggers the same rebuild if you prefer.)*
+
+*(`/usr/local/hestia/bin/v-rebuild-user dvalymona` rebuilds every domain for that user, if you
 prefer the bigger hammer.)*
 
 Then, in the panel, turn on **Enforce SSL** and **HSTS** for the domain.

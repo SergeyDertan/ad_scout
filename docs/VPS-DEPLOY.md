@@ -331,7 +331,16 @@ scp firebase-service-account.json adscout@<vps>:/opt/adscout/
 (`lib/lock.ts`); a stale Mac PID colliding with a live Linux PID produces
 `agent already running (pid N)` with nothing actually running.
 
-Then edit `/opt/adscout/.env`. A server needs these:
+Then write `/opt/adscout/.env`. There is a filled-in template in the repo —
+copy it rather than retyping this block:
+
+```bash
+sudo -u adscout -H cp /opt/adscout/deploy/env.vps.example /opt/adscout/.env
+sudo -u adscout -H nano /opt/adscout/.env      # three PLACEHOLDERs to fill
+sudo chmod 600 /opt/adscout/.env
+```
+
+What it sets, and why:
 
 ```ini
 STORE=pouchdb

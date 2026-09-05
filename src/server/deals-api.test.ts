@@ -108,10 +108,12 @@ test('posting a message sends it, threads it, and holds the conversation', async
       counterpartyEmail: 'admin@site1.com', accountId: 'a1', threadIds: [h.threadId], domains: ['site1.com'],
     }));
 
+    // No subject: the operator is answering a thread, and the line comes from it.
     const sent = await J(`${h.base}/api/deals/${deal.id}/messages`, post('', {
-      subject: 'Re: guest post', body: 'Here is the draft.',
+      body: 'Here is the draft.',
     }));
     assert.equal(sent.outreach.kind, 'manual');
+    assert.match(sent.outreach.subject, /^Re: /, 'answered under the thread\'s own subject');
     assert.equal(sent.threadId, h.threadId);
 
     const wire = h.email.sent[h.email.sent.length - 1]!;
@@ -119,6 +121,28 @@ test('posting a message sends it, threads it, and holds the conversation', async
     assert.equal(wire.threadId, h.threadId);
 
     assert.equal((await h.store.getThreadLink(h.threadId))?.dealId, deal.id, 'thread held');
+  } finally {
+    await h.close();
+  }
+});
+
+test('a first message with no thread and no subject is refused, not attempted', async () => {
+  const h = await start();
+  try {
+    const deal = await J(`${h.base}/api/deals`, post('', {
+      counterpartyEmail: 'stranger@elsewhere.com', accountId: 'a1', domains: ['elsewhere.com'],
+    }));
+    const before = h.email.sent.length;
+
+    const res = await fetch(`${h.base}/api/deals/${deal.id}/messages`, post('', { body: 'hello' }));
+    assert.equal(res.status, 400, 'a client-input problem, not a send failure');
+    assert.match((await res.json()).error, /subject is required/);
+    assert.equal(h.email.sent.length, before, 'nothing left the mailbox');
+
+    const ok = await J(`${h.base}/api/deals/${deal.id}/messages`, post('', {
+      subject: 'Guest post on elsewhere.com', body: 'hello',
+    }));
+    assert.equal(ok.outreach.subject, 'Guest post on elsewhere.com');
   } finally {
     await h.close();
   }

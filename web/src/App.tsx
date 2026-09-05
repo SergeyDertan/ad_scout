@@ -385,8 +385,11 @@ export function App() {
             <DomainsView tick={ticks.reply + ticks.target} />
           </Tabs.Content>
           <Tabs.Content value="deals">
+            {/* A publisher's answer arrives as a `reply`, not a `deal` — without
+                it in the tick the open conversation would sit stale until
+                something else touched the deal. */}
             <DealsView
-              tick={ticks.deal}
+              tick={ticks.deal + ticks.reply}
               dealId={route.tab === 'deals' ? route.id : undefined}
               onSelect={(id) => navigate('deals', id)}
             />

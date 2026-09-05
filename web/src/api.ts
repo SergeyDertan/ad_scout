@@ -152,7 +152,9 @@ export const api = {
     req<Placement[]>(`/deals/${id}/placements`, { method: 'POST', body: JSON.stringify({ domains }) }),
   attachDealThreads: (id: string, threadIds: string[]) =>
     req<{ ok: boolean }>(`/deals/${id}/threads`, { method: 'POST', body: JSON.stringify({ threadIds }) }),
-  sendDealMessage: (id: string, body: { subject: string; body: string; threadId?: string }) =>
+  // `subject` is derived server-side from the thread being answered; pass one
+  // only for the first message on a deal that has no conversation yet.
+  sendDealMessage: (id: string, body: { body: string; subject?: string; threadId?: string }) =>
     req<{ outreach: Outreach; threadId?: string }>(`/deals/${id}/messages`, {
       method: 'POST',
       body: JSON.stringify(body),

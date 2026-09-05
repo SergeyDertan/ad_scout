@@ -31,7 +31,13 @@ export interface DealSendDeps {
 
 export interface DealSendInput {
   dealId: ID;
-  subject: string;
+  /**
+   * The subject line. Omit it for the normal case — a reply into an existing
+   * conversation — and the thread's own subject is used, prefixed `Re:`. It is
+   * only required for the first message on a deal that has no thread yet, since
+   * an email cannot be sent without one.
+   */
+  subject?: string;
   body: string;
   /**
    * Which conversation to continue. Omit to reply on the deal's most recent
@@ -46,10 +52,13 @@ export interface DealSendResult {
   threadId?: string;
 }
 
-/** One message in a thread, outbound or inbound, reduced to what threading needs. */
+/** One message in a thread, outbound or inbound, reduced to what a reply needs:
+ *  the id to chain onto, and the subject to answer under. Either can be missing —
+ *  a stored message predating a field simply drops out of that calculation. */
 interface ThreadMessage {
   at: string;
-  rfcMessageId: string;
+  rfcMessageId?: string;
+  subject?: string;
 }
 
 /**
@@ -67,8 +76,10 @@ export function threadingHeaders(messages: ThreadMessage[]): {
   inReplyTo?: string;
   references?: string[];
 } {
-  if (messages.length === 0) return {};
-  const chain = [...messages].sort((a, b) => a.at.localeCompare(b.at));
+  const chain = messages
+    .filter((m): m is ThreadMessage & { rfcMessageId: string } => Boolean(m.rfcMessageId))
+    .sort((a, b) => a.at.localeCompare(b.at));
+  if (chain.length === 0) return {};
   const parent = chain[chain.length - 1]!;
   return {
     inReplyTo: parent.rfcMessageId,
@@ -76,17 +87,48 @@ export function threadingHeaders(messages: ThreadMessage[]): {
   };
 }
 
-/** Everything we have sent or received on one thread, for the header chain. */
+/**
+ * The subject to answer a thread under: the newest message's, prefixed `Re:`.
+ *
+ * A person negotiating should never have to retype this, and letting them edit
+ * it is worse than pointless — the RFC headers keep the message threaded either
+ * way, but Gmail groups the conversation it SHOWS the publisher by subject too,
+ * so a changed line splits the thread on their side for no gain. Undefined only
+ * when the thread has no subject to inherit, which means a brand-new one.
+ */
+export function replySubject(messages: ThreadMessage[]): string | undefined {
+  const newest = [...messages]
+    .filter((m) => m.subject?.trim())
+    .sort((a, b) => b.at.localeCompare(a.at))[0];
+  const subject = newest?.subject?.trim();
+  if (!subject) return undefined;
+  return /^re:/i.test(subject) ? subject : `Re: ${subject}`;
+}
+
+/** No subject given, and no thread to inherit one from — a client-input error,
+ *  not a send failure, so the API can answer 400 rather than 502. */
+export class MissingSubjectError extends Error {}
+
+/** Everything we have sent or received on one thread — the header chain, and the
+ *  subject to reply under. Messages missing an id still count for the subject. */
 async function threadHistory(store: Store, threadId: string): Promise<ThreadMessage[]> {
   const out: ThreadMessage[] = [];
   for (const o of await store.listOutreaches()) {
-    if (o.threadId === threadId && o.rfcMessageId) {
-      out.push({ at: o.sentAt ?? o.reservedAt, rfcMessageId: o.rfcMessageId });
+    if (o.threadId === threadId) {
+      out.push({
+        at: o.sentAt ?? o.reservedAt,
+        ...(o.rfcMessageId ? { rfcMessageId: o.rfcMessageId } : {}),
+        subject: o.subject,
+      });
     }
   }
   for (const r of await store.listReplies()) {
-    if (r.threadId === threadId && r.rfcMessageId) {
-      out.push({ at: r.receivedAt, rfcMessageId: r.rfcMessageId });
+    if (r.threadId === threadId) {
+      out.push({
+        at: r.receivedAt,
+        ...(r.rfcMessageId ? { rfcMessageId: r.rfcMessageId } : {}),
+        ...(r.subject ? { subject: r.subject } : {}),
+      });
     }
   }
   return out;
@@ -146,7 +188,17 @@ export async function sendDealMessage(
   if (!account) throw new Error(`deal ${deal.id} references a missing account: ${deal.accountId}`);
 
   const threadId = input.threadId ?? (await newestThread(store, deal.id));
-  const headers = threadId ? threadingHeaders(await threadHistory(store, threadId)) : {};
+  const history = threadId ? await threadHistory(store, threadId) : [];
+  const headers = threadingHeaders(history);
+
+  // Given only for the first message on a deal with no conversation yet; every
+  // reply inherits the thread's own line.
+  const subject = input.subject?.trim() || replySubject(history);
+  if (!subject) {
+    throw new MissingSubjectError(
+      'this deal has no thread to reply into — a subject is required for the first message',
+    );
+  }
 
   const now = clock.now();
   const rfcMessageId = newMessageId();
@@ -162,7 +214,7 @@ export async function sendDealMessage(
     status: 'reserved',
     rfcMessageId,
     ...(threadId ? { threadId } : {}),
-    subject: input.subject,
+    subject,
     body: input.body,
     reservedAt: now.toISOString(),
     attempts: 0,
@@ -172,7 +224,7 @@ export async function sendDealMessage(
   try {
     const result = await email.send({
       to: deal.counterpartyEmail,
-      subject: input.subject,
+      subject,
       body: input.body,
       rfcMessageId,
       account,

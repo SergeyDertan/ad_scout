@@ -22,7 +22,8 @@
 //   DELETE /api/deals/:id                (releases its threads; keeps the messages)
 //   POST   /api/deals/:id/threads        { threadId | threadIds }
 //   POST   /api/deals/:id/placements     { domain | domains }
-//   POST   /api/deals/:id/messages       { subject, body, threadId? } → sends, holds the thread
+//   POST   /api/deals/:id/messages       { body, subject?, threadId? } → sends, holds the thread
+//                                        (subject defaults to Re: the thread's own)
 //   PATCH  /api/placements/:id           { contentText?, contentUrl?, agreedPrice?, paidAt?, ... }
 //   DELETE /api/placements/:id
 //   POST   /api/run/send | /api/run/poll | /api/run/fetch
@@ -72,7 +73,7 @@ import { draftEmail } from '../services/drafter';
 import { logger } from '../lib/logger';
 import type { EmailProvider } from '../ports/email-provider';
 import type { Store } from '../ports/store';
-import { dealTimeline, sendDealMessage } from '../pipeline/deal-send';
+import { dealTimeline, MissingSubjectError, sendDealMessage } from '../pipeline/deal-send';
 import {
   addDomains,
   attachThreads,
@@ -1016,9 +1017,11 @@ async function handle(
     if (method === 'POST' && seg[1] === 'deals' && seg[2] && seg[3] === 'messages') {
       if (!deps.email) return sendJson(res, 503, { error: 'no email provider wired' });
       const body = (await readJsonBody(req)) as Record<string, unknown>;
+      // The subject is derived from the thread being answered, not sent by the
+      // client — see replySubject. It is only accepted (and only needed) for the
+      // first message on a deal that has no conversation yet.
       const subject = str(body.subject);
       const text = str(body.body);
-      if (!subject) return sendJson(res, 400, { error: 'subject is required' });
       if (!text) return sendJson(res, 400, { error: 'body is required' });
       if (!(await store.getDeal(seg[2]))) return sendJson(res, 404, { error: 'deal not found' });
       try {
@@ -1026,13 +1029,15 @@ async function handle(
           { store, email: deps.email, clock: deps.clock },
           {
             dealId: seg[2],
-            subject,
+            ...(subject ? { subject } : {}),
             body: text,
             ...(str(body.threadId) ? { threadId: str(body.threadId)! } : {}),
           },
         );
         return sendJson(res, 201, sent);
       } catch (err) {
+        // Nothing was sent and nothing recorded — the caller must name a subject.
+        if (err instanceof MissingSubjectError) return sendJson(res, 400, { error: err.message });
         // The Outreach is already recorded as 'failed' — report, don't swallow.
         return sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
       }

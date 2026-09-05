@@ -8,7 +8,13 @@ import { sentToday } from '../domain/limits';
 import type { Account, Target } from '../domain/types';
 import { fixedClock } from '../lib/clock';
 import { openDeal, setDealStatus, addDomains, updatePlacement, DealTransitionError } from './deal-ops';
-import { dealTimeline, sendDealMessage, threadingHeaders } from './deal-send';
+import {
+  dealTimeline,
+  MissingSubjectError,
+  replySubject,
+  sendDealMessage,
+  threadingHeaders,
+} from './deal-send';
 import { runSendPass } from './send-pass';
 
 const config = loadConfig({} as NodeJS.ProcessEnv);
@@ -52,6 +58,32 @@ test('a thread with no history yields no headers — the message opens a new one
   assert.deepEqual(threadingHeaders([]), {});
 });
 
+test('a message stored without an rfc id still counts for the subject, not the chain', () => {
+  const history = [
+    { at: '2026-08-01T00:00:00Z', rfcMessageId: '<a@x>', subject: 'Guest post on t1.com' },
+    { at: '2026-08-02T00:00:00Z', subject: 'Re: Guest post on t1.com' },
+  ];
+  assert.equal(threadingHeaders(history).inReplyTo, '<a@x>', 'the idless message cannot be replied to');
+  assert.equal(replySubject(history), 'Re: Guest post on t1.com');
+});
+
+test('the reply subject is the newest one, prefixed Re: exactly once', () => {
+  assert.equal(
+    replySubject([
+      { at: '2026-08-01T00:00:00Z', subject: 'Old thread' },
+      { at: '2026-08-03T00:00:00Z', subject: 'Guest post on t1.com' },
+    ]),
+    'Re: Guest post on t1.com',
+  );
+  assert.equal(
+    replySubject([{ at: '2026-08-03T00:00:00Z', subject: 'RE: Guest post' }]),
+    'RE: Guest post',
+    'an answer to an answer does not stack prefixes',
+  );
+  assert.equal(replySubject([{ at: '2026-08-03T00:00:00Z' }]), undefined);
+  assert.equal(replySubject([]), undefined);
+});
+
 test('a deal message replies into the existing thread with proper headers', async () => {
   const { store, email, threadId, initial } = await withThread();
   const deal = await openDeal(store, clock, {
@@ -75,6 +107,44 @@ test('a deal message replies into the existing thread with proper headers', asyn
   assert.equal(outreach.dealId, deal.id);
   assert.equal(outreach.threadId, threadId, 'stayed in the same thread');
   assert.equal(outreach.targetId, 't1', 'linked to the target we already had for that address');
+});
+
+test('a reply with no subject given inherits the thread\'s', async () => {
+  const { store, email, threadId, initial } = await withThread();
+  const deal = await openDeal(store, clock, {
+    counterpartyEmail: 'admin@t1.com', accountId: 'acc1', threadIds: [threadId], domains: ['t1.com'],
+  });
+
+  const { outreach } = await sendDealMessage({ store, email, clock }, {
+    dealId: deal.id,
+    body: 'Great — here is the draft.',
+  });
+
+  const expected = `Re: ${initial.subject}`;
+  assert.equal(outreach.subject, expected, 'the operator never retypes the line');
+  assert.equal(email.sent[email.sent.length - 1]!.subject, expected);
+});
+
+test('the first message on a deal with no thread must carry a subject', async () => {
+  const { store, email } = await withThread();
+  const deal = await openDeal(store, clock, {
+    counterpartyEmail: 'stranger@new-site.com', accountId: 'acc1', domains: ['new-site.com'],
+  });
+
+  await assert.rejects(
+    () => sendDealMessage({ store, email, clock }, { dealId: deal.id, body: 'hello' }),
+    MissingSubjectError,
+  );
+  assert.equal(
+    (await store.listOutreaches()).filter((o) => o.dealId === deal.id).length,
+    0,
+    'rejected before anything was reserved — nothing to clean up',
+  );
+
+  const { outreach } = await sendDealMessage({ store, email, clock }, {
+    dealId: deal.id, subject: 'Guest post on new-site.com', body: 'hello',
+  });
+  assert.equal(outreach.subject, 'Guest post on new-site.com');
 });
 
 test('the cold sequence still sends NO threading headers', async () => {

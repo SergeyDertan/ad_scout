@@ -2,31 +2,51 @@
 // the posts being bought. Nothing here is inferred — every field is one a person
 // typed, and the agreed price is deliberately never fed back into the price
 // history (a negotiated figure is not the publisher's standing rate).
+//
+// The detail view is a messenger, not a form: the conversation is the page, and
+// what we know about the deal sits in a rail beside it. That is not decoration.
+// Negotiating means reading the last message and answering it, and the previous
+// layout put a screen and a half of post-editing fields above the chat box.
 
 import {
   Badge,
   Box,
   Button,
+  CloseButton,
+  Dialog,
   Field,
+  Flex,
   HStack,
   Heading,
   Input,
+  Link,
   NativeSelect,
+  Portal,
   Table,
   Text,
   Textarea,
   VStack,
+  Wrap,
 } from '@chakra-ui/react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
-import type { Account, DealDetail, DealRow, DealStatus, Placement } from '../types';
+import { splitQuoted } from '../quoted-text';
+import type {
+  Account,
+  DealDetail,
+  DealRow,
+  DealStatus,
+  DealTimelineItem,
+  EmailAttachment,
+  Placement,
+} from '../types';
 import { DataPanel } from './DataPanel';
 import { Empty } from './Empty';
 import { Panel } from './Panel';
 import { useConfirm } from './Confirm';
 import { useResource } from '../hooks/useResource';
 import { toaster, toastError } from './Toaster';
-import { MegaphoneIcon, SendIcon, TrashIcon } from './icons';
+import { AlertTriangleIcon, CheckIcon, MegaphoneIcon, PlusIcon, SendIcon, TrashIcon } from './icons';
 
 const STATUS_META: Record<DealStatus, { label: string; palette: string }> = {
   negotiation: { label: 'Negotiation', palette: 'orange' },
@@ -40,6 +60,36 @@ function fmtDate(iso?: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+/** Just the clock, for the line under a bubble — the day is on its own divider. */
+function fmtTime(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+
+function fmtShortDate(iso?: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+/** The label on a day divider: relative for the two days you actually work in. */
+function fmtDay(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const today = new Date();
+  const dayKey = (x: Date) => x.toDateString();
+  if (dayKey(d) === dayKey(today)) return 'Today';
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (dayKey(d) === dayKey(yesterday)) return 'Yesterday';
+  return d.toLocaleDateString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    ...(d.getFullYear() === today.getFullYear() ? {} : { year: 'numeric' }),
+  });
 }
 
 /** A date input wants `yyyy-mm-dd`; the store holds a full ISO timestamp. */
@@ -258,6 +308,37 @@ function NewDealForm({
   );
 }
 
+// ---------------------------------------------------------------------------
+// The workspace: conversation centre, deal facts in the rail.
+// ---------------------------------------------------------------------------
+
+/**
+ * How tall the two panes can be: everything left under them, measured.
+ *
+ * A `calc(100vh - <constant>)` is wrong the moment anything above changes — the
+ * tab strip wraps to two rows on a narrow window, and the stats bar folds away.
+ * Measuring the row's own top is the only version that stays right. Undefined
+ * below `lg`, where the panes stack and each takes its natural height.
+ */
+function useAvailableHeight(ref: React.RefObject<HTMLDivElement | null>): number | undefined {
+  const [height, setHeight] = useState<number | undefined>(undefined);
+
+  useLayoutEffect(() => {
+    const measure = () => {
+      const el = ref.current;
+      if (!el) return;
+      if (window.innerWidth < 992) return setHeight(undefined);
+      const top = el.getBoundingClientRect().top + window.scrollY;
+      setHeight(Math.max(420, window.innerHeight - top - 24));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  });
+
+  return height;
+}
+
 function DealDetailView({
   dealId,
   tick,
@@ -267,6 +348,8 @@ function DealDetailView({
   tick: number;
   onBack: () => void;
 }) {
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const workspaceHeight = useAvailableHeight(workspaceRef);
   const [detail, setDetail] = useState<DealDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const confirm = useConfirm();
@@ -296,7 +379,7 @@ function DealDetailView({
     );
   if (!detail) return null;
 
-  const { deal, accountEmail, placements, timeline } = detail;
+  const { deal, accountEmail, placements, threadIds, timeline } = detail;
 
   const setStatus = async (status: DealStatus) => {
     let closedReason: string | undefined;
@@ -319,8 +402,12 @@ function DealDetailView({
   };
 
   return (
-    <Box pt={4}>
-      <HStack justify="space-between" mb={4} wrap="wrap" gap={3}>
+    // One column that owns the viewport: the header never scrolls away, and the
+    // two panes below it scroll independently. The old layout stacked a tall
+    // form above a 26rem chat box inside the page scroll — three scrollbars,
+    // and the conversation always the smallest thing on screen.
+    <Flex direction="column" pt={4} gap={3}>
+      <HStack justify="space-between" wrap="wrap" gap={3} flexShrink={0}>
         <HStack gap={3}>
           <Button size="xs" variant="subtle" onClick={onBack}>
             ← All deals
@@ -359,338 +446,152 @@ function DealDetailView({
         </HStack>
       </HStack>
 
-      {(deal.status === 'done' || deal.status === 'closed') && (
-        <Box mb={4} px={3} py={2} bg="bg.muted" rounded="md">
-          <Text fontSize="xs" color="fg.muted">
-            This deal is finished, so its threads are no longer held — a new reply from{' '}
-            {deal.counterpartyEmail} will be extracted as a normal price message again.
-          </Text>
-        </Box>
-      )}
-
-      <VStack align="stretch" gap={4}>
-        <PlacementsPanel dealId={deal.id} placements={placements} onChange={load} />
-        <ConversationPanel
+      <Flex
+        ref={workspaceRef}
+        direction={{ base: 'column', lg: 'row' }}
+        gap={4}
+        h={workspaceHeight ? `${workspaceHeight}px` : 'auto'}
+        minH="0"
+        align="stretch"
+      >
+        <Conversation
           dealId={deal.id}
           timeline={timeline}
+          hasThread={threadIds.length > 0}
           fromEmail={accountEmail}
+          toEmail={deal.counterpartyEmail}
           onSent={load}
         />
-      </VStack>
-    </Box>
+        <DealRail
+          dealId={deal.id}
+          note={deal.note}
+          closedNotice={
+            deal.status === 'done' || deal.status === 'closed'
+              ? `This deal is finished, so its threads are no longer held — a new reply from ${deal.counterpartyEmail} will be extracted as a normal price message again.`
+              : undefined
+          }
+          placements={placements}
+          onChange={load}
+        />
+      </Flex>
+    </Flex>
   );
 }
 
-function PlacementsPanel({
-  dealId,
-  placements,
-  onChange,
-}: {
-  dealId: string;
-  placements: Placement[];
-  onChange: () => void;
-}) {
-  const [newDomain, setNewDomain] = useState('');
-  const confirm = useConfirm();
+// ---------------------------------------------------------------------------
+// Conversation
+// ---------------------------------------------------------------------------
 
-  const add = async () => {
-    if (!newDomain.trim()) return;
-    try {
-      await api.addDealDomains(dealId, [newDomain.trim()]);
-      setNewDomain('');
-      onChange();
-    } catch (e) {
-      toastError('Could not add the site', e);
+type Side = 'ours' | 'theirs';
+
+/** Consecutive messages from one side, shown as one run of bubbles with a single
+ *  caption above and a single timestamp below — the messenger convention. */
+interface Run {
+  kind: 'run';
+  key: string;
+  side: Side;
+  caption?: string;
+  items: DealTimelineItem[];
+}
+type Row = Run | { kind: 'day'; key: string; at: string };
+
+function itemId(item: DealTimelineItem): string {
+  return item.kind === 'sent' ? item.outreach.id : item.reply.id;
+}
+
+/** What to write above a run. Ours is captioned only when it was NOT written by
+ *  hand — an automated pitch in the middle of a negotiation is worth flagging;
+ *  your own replies need no label, the side and colour say it. */
+function captionOf(item: DealTimelineItem): string | undefined {
+  if (item.kind === 'received') return item.reply.fromAddress;
+  if (item.outreach.kind === 'manual') return undefined;
+  return item.outreach.kind === 'followup'
+    ? `Follow-up #${item.outreach.sequenceNo}`
+    : 'Initial pitch';
+}
+
+function buildRows(timeline: DealTimelineItem[]): Row[] {
+  const rows: Row[] = [];
+  let day = '';
+  let run: Run | undefined;
+  for (const item of timeline) {
+    const key = new Date(item.at).toDateString();
+    if (key !== day) {
+      day = key;
+      rows.push({ kind: 'day', key: `day-${key}-${itemId(item)}`, at: item.at });
+      run = undefined;
     }
-  };
-
-  const remove = async (p: Placement) => {
-    const ok = await confirm({
-      title: `Remove ${p.domain}?`,
-      description: 'The post text and any links recorded for this site are deleted.',
-      confirmLabel: 'Remove',
-      destructive: true,
-    });
-    if (!ok) return;
-    try {
-      await api.deletePlacement(p.id);
-      onChange();
-    } catch (e) {
-      toastError('Could not remove the site', e);
+    const side: Side = item.kind === 'sent' ? 'ours' : 'theirs';
+    const caption = captionOf(item);
+    if (!run || run.side !== side || run.caption !== caption) {
+      run = { kind: 'run', key: `run-${itemId(item)}`, side, caption, items: [] };
+      rows.push(run);
     }
-  };
-
-  return (
-    <Panel p={4}>
-      <HStack justify="space-between" mb={3}>
-        <Heading size="sm">Posts</Heading>
-        <HStack gap={2}>
-          <Input
-            size="xs"
-            w="12rem"
-            placeholder="add a site…"
-            value={newDomain}
-            onChange={(e) => setNewDomain(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && add()}
-          />
-          <Button size="xs" variant="subtle" onClick={add} disabled={!newDomain.trim()}>
-            Add
-          </Button>
-        </HStack>
-      </HStack>
-
-      {placements.length === 0 ? (
-        <Text fontSize="sm" color="fg.subtle">
-          No site on this deal yet. Add the domain you're buying a post on.
-        </Text>
-      ) : (
-        <VStack align="stretch" gap={4}>
-          {placements.map((p) => (
-            <PlacementCard key={p.id} placement={p} onChange={onChange} onRemove={() => remove(p)} />
-          ))}
-        </VStack>
-      )}
-    </Panel>
-  );
+    run.items.push(item);
+  }
+  return rows;
 }
 
-function PlacementCard({
-  placement,
-  onChange,
-  onRemove,
-}: {
-  placement: Placement;
-  onChange: () => void;
-  onRemove: () => void;
-}) {
-  const [draft, setDraft] = useState(placement);
-  const [dirty, setDirty] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    setDraft(placement);
-    setDirty(false);
-  }, [placement]);
-
-  const set = <K extends keyof Placement>(key: K, value: Placement[K]) => {
-    setDraft((d) => ({ ...d, [key]: value }));
-    setDirty(true);
-  };
-
-  const save = async () => {
-    setBusy(true);
-    try {
-      await api.patchPlacement(placement.id, {
-        contentText: draft.contentText ?? '',
-        contentUrl: draft.contentUrl ?? '',
-        publishedUrl: draft.publishedUrl ?? '',
-        paymentMethod: draft.paymentMethod ?? '',
-        note: draft.note ?? '',
-        paidAt: draft.paidAt ?? '',
-        liveAt: draft.liveAt ?? '',
-        agreedPrice: draft.agreedPrice?.raw ?? '',
-      });
-      setDirty(false);
-      onChange();
-    } catch (e) {
-      toastError('Could not save', e);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Box borderWidth="1px" borderColor="border" rounded="lg" p={3}>
-      <HStack justify="space-between" mb={3}>
-        <HStack gap={2}>
-          <Text fontWeight="semibold">{placement.domain}</Text>
-          {placement.paidAt && (
-            <Badge size="sm" colorPalette="green" variant="subtle">
-              paid
-            </Badge>
-          )}
-          {(placement.liveAt || placement.publishedUrl) && (
-            <Badge size="sm" colorPalette="blue" variant="subtle">
-              live
-            </Badge>
-          )}
-        </HStack>
-        <HStack gap={2}>
-          {dirty && (
-            <Button size="xs" colorPalette="brand" loading={busy} onClick={save}>
-              Save
-            </Button>
-          )}
-          <Button size="xs" variant="ghost" colorPalette="red" onClick={onRemove}>
-            <TrashIcon boxSize={3.5} />
-          </Button>
-        </HStack>
-      </HStack>
-
-      <VStack align="stretch" gap={3}>
-        <Field.Root>
-          <Field.Label fontSize="xs">Post text</Field.Label>
-          <Textarea
-            size="sm"
-            rows={4}
-            placeholder="Paste the post here, or leave blank and use a link below."
-            value={draft.contentText ?? ''}
-            onChange={(e) => set('contentText', e.target.value)}
-          />
-        </Field.Root>
-
-        <HStack gap={3} wrap="wrap" align="end">
-          <Field.Root flex="1" minW="16rem">
-            <Field.Label fontSize="xs">…or a link to the text</Field.Label>
-            <Input
-              size="sm"
-              placeholder="https://docs.google.com/…"
-              value={draft.contentUrl ?? ''}
-              onChange={(e) => set('contentUrl', e.target.value)}
-            />
-          </Field.Root>
-          <Field.Root flex="1" minW="16rem">
-            <Field.Label fontSize="xs">Published post</Field.Label>
-            <Input
-              size="sm"
-              placeholder="https://site.com/the-post"
-              value={draft.publishedUrl ?? ''}
-              onChange={(e) => set('publishedUrl', e.target.value)}
-            />
-          </Field.Root>
-        </HStack>
-
-        <HStack gap={3} wrap="wrap" align="end">
-          <Field.Root w="10rem">
-            <Field.Label fontSize="xs">Agreed price</Field.Label>
-            <Input
-              size="sm"
-              placeholder="120 EUR"
-              value={draft.agreedPrice?.raw ?? ''}
-              onChange={(e) => set('agreedPrice', { raw: e.target.value })}
-            />
-          </Field.Root>
-          <Field.Root w="10rem">
-            <Field.Label fontSize="xs">Paid via</Field.Label>
-            <Input
-              size="sm"
-              placeholder="wise / paypal"
-              value={draft.paymentMethod ?? ''}
-              onChange={(e) => set('paymentMethod', e.target.value)}
-            />
-          </Field.Root>
-          <Field.Root w="10rem">
-            <Field.Label fontSize="xs">Paid on</Field.Label>
-            <Input
-              size="sm"
-              type="date"
-              value={toDateInput(draft.paidAt)}
-              onChange={(e) => set('paidAt', fromDateInput(e.target.value))}
-            />
-          </Field.Root>
-          <Field.Root w="10rem">
-            <Field.Label fontSize="xs">Live on</Field.Label>
-            <Input
-              size="sm"
-              type="date"
-              value={toDateInput(draft.liveAt)}
-              onChange={(e) => set('liveAt', fromDateInput(e.target.value))}
-            />
-          </Field.Root>
-        </HStack>
-
-        <Field.Root>
-          <Field.Label fontSize="xs">Note</Field.Label>
-          <Input
-            size="sm"
-            placeholder="anything worth remembering about this one"
-            value={draft.note ?? ''}
-            onChange={(e) => set('note', e.target.value)}
-          />
-        </Field.Root>
-      </VStack>
-
-      <Text fontSize="xs" color="fg.subtle" mt={2}>
-        Paid and live are independent — set them in whichever order they happen. The agreed price
-        stays here and never touches the price history.
-      </Text>
-    </Box>
-  );
-}
-
-/**
- * One message's text, clamped when it is long.
- *
- * Publishers answer with whole rate cards — the imediaone reply is a table of 18
- * sites — and a single one of those fills the entire conversation window, which
- * defeats the point of pinning it to the newest message. Long bodies start
- * collapsed; short ones render whole with no control to click.
- */
-function MessageBody({ text, muted }: { text: string; muted?: boolean }) {
-  const [open, setOpen] = useState(false);
-  const long = text.length > 600;
-  return (
-    <Box>
-      <Box maxH={long && !open ? '8rem' : undefined} overflow="hidden">
-        <Text fontSize="sm" whiteSpace="pre-wrap" color={muted ? 'fg.muted' : undefined}>
-          {text}
-        </Text>
-      </Box>
-      {long && (
-        <Button
-          size="xs"
-          variant="plain"
-          px={0}
-          h="auto"
-          mt={1}
-          colorPalette="brand"
-          onClick={() => setOpen((v) => !v)}
-        >
-          {open ? 'Show less' : 'Show more'}
-        </Button>
-      )}
-    </Box>
-  );
-}
-
-function ConversationPanel({
+function Conversation({
   dealId,
   timeline,
+  hasThread,
   fromEmail,
+  toEmail,
   onSent,
 }: {
   dealId: string;
-  timeline: DealDetail['timeline'];
+  timeline: DealTimelineItem[];
+  /** Whether a thread exists to reply into. Without one there is no subject to
+   *  inherit, and the composer asks for one. */
+  hasThread: boolean;
   fromEmail?: string;
+  toEmail: string;
   onSent: () => void;
 }) {
-  const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
+  const [subject, setSubject] = useState('');
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
 
-  // Pin the window to the newest message — the one you are replying to. Jumping
-  // to the bottom on every change also covers the case that matters most: you
-  // send, the timeline reloads, and your own message should be what you see.
+  const rows = useMemo(() => buildRows(timeline), [timeline]);
+
+  // Follow the conversation down, but only while you are actually at the bottom
+  // — scrolling up to re-read the rate card must not be yanked away when a new
+  // reply lands or a placement edit reloads the deal.
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [timeline]);
+    if (el && pinned.current) el.scrollTop = el.scrollHeight;
+  }, [rows]);
 
-  // Default the subject to a reply on the newest message in the conversation.
-  useEffect(() => {
-    if (subject) return;
-    const last = [...timeline].reverse()[0];
-    const prior =
-      last?.kind === 'sent' ? last.outreach.subject : last?.kind === 'received' ? last.reply.subject : '';
-    if (prior) setSubject(prior.startsWith('Re: ') ? prior : `Re: ${prior}`);
-  }, [timeline, subject]);
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (el) pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  };
+
+  // What the reply will actually go out as — derived exactly as the server does
+  // it, and shown rather than offered for editing.
+  const replyingUnder = useMemo(() => {
+    for (let i = timeline.length - 1; i >= 0; i--) {
+      const item = timeline[i]!;
+      const s = item.kind === 'sent' ? item.outreach.subject : item.reply.subject;
+      if (s?.trim()) return /^re:/i.test(s.trim()) ? s.trim() : `Re: ${s.trim()}`;
+    }
+    return undefined;
+  }, [timeline]);
 
   const send = async () => {
     setBusy(true);
     try {
-      await api.sendDealMessage(dealId, { subject: subject.trim(), body });
+      await api.sendDealMessage(dealId, {
+        body,
+        // Only ever sent for the first message on a deal with no conversation.
+        ...(hasThread || !subject.trim() ? {} : { subject: subject.trim() }),
+      });
+      // Cleared only on success — a failed send must not eat what you wrote.
       setBody('');
+      pinned.current = true;
       toaster.create({ type: 'success', title: 'Message sent' });
       onSent();
     } catch (e) {
@@ -700,110 +601,754 @@ function ConversationPanel({
     }
   };
 
-  return (
-    <Panel p={4}>
-      <Heading size="sm" mb={3}>
-        Conversation
-      </Heading>
+  const canSend = Boolean(body.trim()) && (hasThread || Boolean(subject.trim()));
 
-      <VStack
-        ref={scrollRef}
-        align="stretch"
-        gap={3}
-        mb={4}
-        h="26rem"
-        overflowY="auto"
-        bg="bg.subtle"
-        borderWidth="1px"
-        borderColor="border"
-        rounded="lg"
-        p={3}
-      >
-        {timeline.length === 0 && (
-          <Text fontSize="sm" color="fg.subtle">
+  return (
+    <Panel
+      display="flex"
+      flexDirection="column"
+      flex="1"
+      minW="0"
+      minH="0"
+      h={{ base: '34rem', lg: 'auto' }}
+    >
+      <Box ref={scrollRef} onScroll={onScroll} flex="1" minH="0" overflowY="auto" bg="bg.subtle" px={4} py={4}>
+        {rows.length === 0 ? (
+          <Text fontSize="sm" color="fg.subtle" textAlign="center" pt={8}>
             Nothing yet — your first message will start the thread.
           </Text>
+        ) : (
+          <VStack align="stretch" gap={3}>
+            {rows.map((row) =>
+              row.kind === 'day' ? (
+                <DayDivider key={row.key} at={row.at} />
+              ) : (
+                <MessageRun key={row.key} run={row} onRetry={setBody} />
+              ),
+            )}
+          </VStack>
         )}
-        {timeline.map((item) =>
-          item.kind === 'sent' ? (
-            <Box
-              key={item.outreach.id}
-              bg="brand.subtle"
-              borderWidth="1px"
-              borderColor="brand.muted"
-              rounded="lg"
-              p={3}
-              ml={8}
-            >
-              <HStack mb={1} justify="space-between" gap={2} wrap="wrap">
-                <Badge size="sm" colorPalette="brand" variant="subtle">
-                  {item.outreach.kind === 'manual'
-                    ? 'You'
-                    : item.outreach.kind === 'followup'
-                      ? `Follow-up #${item.outreach.sequenceNo}`
-                      : 'Initial pitch'}
-                </Badge>
-                <Text fontSize="xs" color="fg.muted">
-                  {fmtDate(item.at)}
-                </Text>
-              </HStack>
-              <Text fontSize="sm" fontWeight="medium">
-                {item.outreach.subject}
-              </Text>
-              <Text fontSize="xs" color="fg.muted" mb={1}>
-                from {fromEmail ?? 'an unknown mailbox'}
-              </Text>
-              <MessageBody text={item.outreach.body} muted />
-              {item.outreach.status === 'failed' && (
-                <Text fontSize="xs" color="red.fg" mt={1}>
-                  Failed to send: {item.outreach.error}
-                </Text>
-              )}
-            </Box>
-          ) : (
-            <Box key={item.reply.id} borderWidth="1px" borderColor="border" rounded="lg" p={3} mr={8}>
-              <HStack mb={1} justify="space-between" gap={2} wrap="wrap">
-                <Badge size="sm" variant="subtle">
-                  {item.reply.fromAddress}
-                </Badge>
-                <Text fontSize="xs" color="fg.muted">
-                  {fmtDate(item.at)}
-                </Text>
-              </HStack>
-              <MessageBody text={item.reply.text} />
-            </Box>
-          ),
-        )}
-      </VStack>
+      </Box>
 
-      <VStack align="stretch" gap={2} borderTopWidth="1px" borderColor="border" pt={3}>
-        <Field.Root>
-          <Field.Label fontSize="xs">Subject</Field.Label>
-          <Input size="sm" value={subject} onChange={(e) => setSubject(e.target.value)} />
-        </Field.Root>
-        <Textarea
-          size="sm"
-          rows={5}
-          placeholder="Write your message…"
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
+      <Composer
+        body={body}
+        setBody={setBody}
+        subject={subject}
+        setSubject={setSubject}
+        needsSubject={!hasThread}
+        replyingUnder={replyingUnder}
+        fromEmail={fromEmail}
+        toEmail={toEmail}
+        busy={busy}
+        canSend={canSend}
+        onSend={send}
+      />
+    </Panel>
+  );
+}
+
+function DayDivider({ at }: { at: string }) {
+  return (
+    <HStack justify="center" py={1}>
+      <Text
+        fontSize="2xs"
+        color="fg.muted"
+        bg="bg.panel"
+        borderWidth="1px"
+        borderColor="border"
+        rounded="full"
+        px={2.5}
+        py={0.5}
+        fontWeight="medium"
+      >
+        {fmtDay(at)}
+      </Text>
+    </HStack>
+  );
+}
+
+function MessageRun({ run, onRetry }: { run: Run; onRetry: (body: string) => void }) {
+  const ours = run.side === 'ours';
+  const last = run.items[run.items.length - 1]!;
+  const align = ours ? 'flex-end' : 'flex-start';
+
+  return (
+    <VStack align={align} gap={0.5} w="full">
+      {run.caption && (
+        <Text fontSize="2xs" color="fg.muted" px={2} mb={0.5}>
+          {run.caption}
+        </Text>
+      )}
+      {run.items.map((item, i) => (
+        <Bubble
+          key={itemId(item)}
+          item={item}
+          side={run.side}
+          tail={i === run.items.length - 1}
+          onRetry={onRetry}
         />
-        <HStack justify="space-between">
-          <Text fontSize="xs" color="fg.subtle">
-            Sends from {fromEmail ?? 'this deal\u2019s mailbox'} as a reply in the existing thread,
-            and keeps the conversation held.
+      ))}
+      <HStack gap={1.5} px={2} pt={0.5}>
+        <Text fontSize="2xs" color="fg.subtle">
+          {fmtTime(last.at)}
+        </Text>
+        {last.kind === 'sent' && <SendState status={last.outreach.status} />}
+      </HStack>
+    </VStack>
+  );
+}
+
+/** The delivery tick under our own last bubble. Nothing at all for a plain sent
+ *  message would be quieter, but a reserved-and-never-sent outreach is exactly
+ *  the state worth seeing. */
+function SendState({ status }: { status: string }) {
+  if (status === 'sent')
+    return <CheckIcon boxSize={3} color="fg.subtle" aria-label="sent" />;
+  if (status === 'failed')
+    return (
+      <Text fontSize="2xs" color="red.fg" fontWeight="medium">
+        not sent
+      </Text>
+    );
+  return (
+    <Text fontSize="2xs" color="fg.subtle">
+      sending…
+    </Text>
+  );
+}
+
+function Bubble({
+  item,
+  side,
+  tail,
+  onRetry,
+}: {
+  item: DealTimelineItem;
+  side: Side;
+  /** The last bubble of a run gets the squared corner, so a run reads as one
+   *  block with a single point of origin. */
+  tail: boolean;
+  onRetry: (body: string) => void;
+}) {
+  const ours = side === 'ours';
+  const failed = item.kind === 'sent' && item.outreach.status === 'failed';
+  const text = item.kind === 'sent' ? item.outreach.body : item.reply.text;
+
+  return (
+    <Box
+      maxW={{ base: '88%', md: '76%' }}
+      alignSelf={ours ? 'flex-end' : 'flex-start'}
+      bg={failed ? 'red.subtle' : ours ? 'brand.solid' : 'bg.panel'}
+      color={failed ? 'red.fg' : ours ? 'white' : 'fg'}
+      borderWidth="1px"
+      borderColor={failed ? 'red.muted' : ours ? 'brand.solid' : 'border'}
+      rounded="2xl"
+      borderBottomRightRadius={tail && ours ? 'sm' : undefined}
+      borderBottomLeftRadius={tail && !ours ? 'sm' : undefined}
+      px={3.5}
+      py={2.5}
+      boxShadow="xs"
+    >
+      <MessageBody text={text} inverted={ours && !failed} />
+      {item.kind === 'received' && <Attachments attachments={item.reply.attachments} />}
+      {failed && item.kind === 'sent' && (
+        <HStack mt={2} gap={2} align="center" wrap="wrap">
+          <AlertTriangleIcon boxSize={3.5} />
+          <Text fontSize="xs" flex="1" minW="8rem">
+            {item.outreach.error ?? 'the send failed'}
           </Text>
-          <Button
-            size="sm"
-            colorPalette="brand"
-            loading={busy}
-            disabled={!subject.trim() || !body.trim()}
-            onClick={send}
-          >
-            <SendIcon boxSize={3.5} /> Send
+          <Button size="2xs" variant="subtle" colorPalette="red" onClick={() => onRetry(item.outreach.body)}>
+            Put back in the composer
           </Button>
         </HStack>
+      )}
+    </Box>
+  );
+}
+
+/**
+ * One message's text: the part they wrote, with the thread they quoted back
+ * folded away, and a long body clamped.
+ *
+ * Both matter for the same reason. Publishers answer with the whole rate card
+ * (the imediaone reply is a table of 18 sites) under four rounds of quoted
+ * history, and one such message used to fill the entire window.
+ */
+function MessageBody({ text, inverted }: { text: string; inverted?: boolean }) {
+  const { body, quoted } = useMemo(() => splitQuoted(text), [text]);
+  const [expanded, setExpanded] = useState(false);
+  const [showQuote, setShowQuote] = useState(false);
+  const long = body.length > 700;
+  const clamped = long && !expanded;
+
+  const linkProps = {
+    size: '2xs' as const,
+    variant: 'plain' as const,
+    px: 0,
+    h: 'auto',
+    minW: 0,
+    color: inverted ? 'whiteAlpha.900' : 'brand.fg',
+    _hover: { textDecoration: 'underline' },
+  };
+
+  return (
+    <Box>
+      <Box
+        // A mask fades the text itself, so it works on the brand bubble and the
+        // white one without either knowing the other's background colour.
+        maxH={clamped ? '11rem' : undefined}
+        overflow="hidden"
+        css={
+          clamped
+            ? {
+                maskImage: 'linear-gradient(to bottom, #000 65%, transparent 100%)',
+                WebkitMaskImage: 'linear-gradient(to bottom, #000 65%, transparent 100%)',
+              }
+            : undefined
+        }
+      >
+        <Text fontSize="sm" whiteSpace="pre-wrap" wordBreak="break-word" lineHeight="1.55">
+          {body}
+        </Text>
+      </Box>
+
+      <HStack gap={3} mt={long || quoted ? 1.5 : 0}>
+        {long && (
+          <Button {...linkProps} onClick={() => setExpanded((v) => !v)}>
+            {expanded ? 'Show less' : 'Show full message'}
+          </Button>
+        )}
+        {quoted && (
+          <Button {...linkProps} onClick={() => setShowQuote((v) => !v)} title="Quoted thread">
+            {showQuote ? 'Hide quoted' : '··· quoted thread'}
+          </Button>
+        )}
+      </HStack>
+
+      {quoted && showQuote && (
+        <Box
+          mt={2}
+          pl={2.5}
+          borderLeftWidth="2px"
+          borderColor={inverted ? 'whiteAlpha.500' : 'border'}
+          opacity={0.75}
+        >
+          <Text fontSize="xs" whiteSpace="pre-wrap" wordBreak="break-word">
+            {quoted}
+          </Text>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+function Attachments({ attachments }: { attachments?: EmailAttachment[] }) {
+  if (!attachments || attachments.length === 0) return null;
+  return (
+    <Wrap gap={1.5} mt={2}>
+      {attachments.map((a, i) => (
+        <Link
+          key={`${a.filename}-${i}`}
+          href={`data:${a.mimeType};base64,${a.contentBase64}`}
+          download={a.filename}
+          fontSize="2xs"
+          bg="bg.muted"
+          color="fg"
+          rounded="md"
+          px={2}
+          py={1}
+          _hover={{ bg: 'bg.subtle', textDecoration: 'none' }}
+        >
+          <Text as="span" fontWeight="medium">
+            {a.filename}
+          </Text>
+          <Text as="span" color="fg.subtle" ml={1.5}>
+            {(a.size / 1024).toFixed(0)} KB
+          </Text>
+        </Link>
+      ))}
+    </Wrap>
+  );
+}
+
+function Composer({
+  body,
+  setBody,
+  subject,
+  setSubject,
+  needsSubject,
+  replyingUnder,
+  fromEmail,
+  toEmail,
+  busy,
+  canSend,
+  onSend,
+}: {
+  body: string;
+  setBody: (v: string) => void;
+  subject: string;
+  setSubject: (v: string) => void;
+  needsSubject: boolean;
+  replyingUnder?: string;
+  fromEmail?: string;
+  toEmail: string;
+  busy: boolean;
+  canSend: boolean;
+  onSend: () => void;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  // Grow with the message, up to a point — a composer that eats the whole pane
+  // is as bad as one you can only see three lines of.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
+  }, [body]);
+
+  return (
+    <VStack align="stretch" gap={2} borderTopWidth="1px" borderColor="border" p={3} flexShrink={0}>
+      <HStack fontSize="2xs" color="fg.subtle" gap={1.5} wrap="wrap">
+        <Text>{fromEmail ?? 'this deal’s mailbox'}</Text>
+        <Text>→</Text>
+        <Text>{toEmail}</Text>
+        {replyingUnder && !needsSubject && (
+          <>
+            <Text>·</Text>
+            {/* Shown, not editable: the headers thread the message either way,
+                but changing the line splits the conversation Gmail shows them. */}
+            <Text truncate maxW="20rem" title={replyingUnder}>
+              {replyingUnder}
+            </Text>
+          </>
+        )}
+      </HStack>
+
+      {needsSubject && (
+        <Input
+          size="sm"
+          placeholder="Subject — this deal has no thread yet, so the first message needs one"
+          value={subject}
+          onChange={(e) => setSubject(e.target.value)}
+        />
+      )}
+
+      <HStack align="end" gap={2}>
+        <Textarea
+          ref={ref}
+          size="sm"
+          rows={2}
+          resize="none"
+          overflowY="auto"
+          placeholder="Write a reply…"
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && canSend && !busy) {
+              e.preventDefault();
+              onSend();
+            }
+          }}
+        />
+        <Button size="sm" colorPalette="brand" loading={busy} disabled={!canSend} onClick={onSend}>
+          <SendIcon boxSize={3.5} /> Send
+        </Button>
+      </HStack>
+      <Text fontSize="2xs" color="fg.subtle">
+        ⌘↵ to send.{' '}
+        {needsSubject
+          ? 'Opens the conversation, and holds it from the first message.'
+          : 'Goes out as a reply in the existing thread, and keeps the conversation held.'}
+      </Text>
+    </VStack>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The rail: what we know about the deal, at a glance
+// ---------------------------------------------------------------------------
+
+function DealRail({
+  dealId,
+  note,
+  closedNotice,
+  placements,
+  onChange,
+}: {
+  dealId: string;
+  note?: string;
+  closedNotice?: string;
+  placements: Placement[];
+  onChange: () => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [newDomain, setNewDomain] = useState('');
+  const [editing, setEditing] = useState<Placement | null>(null);
+  const [draftNote, setDraftNote] = useState(note ?? '');
+
+  useEffect(() => setDraftNote(note ?? ''), [note]);
+
+  const add = async () => {
+    if (!newDomain.trim()) return;
+    try {
+      await api.addDealDomains(dealId, [newDomain.trim()]);
+      setNewDomain('');
+      setAdding(false);
+      onChange();
+    } catch (e) {
+      toastError('Could not add the site', e);
+    }
+  };
+
+  const saveNote = async () => {
+    if (draftNote === (note ?? '')) return;
+    try {
+      await api.patchDeal(dealId, { note: draftNote });
+      onChange();
+    } catch (e) {
+      toastError('Could not save the note', e);
+    }
+  };
+
+  // The open editor must follow the deal as it reloads, or saving one field and
+  // then reloading would leave the dialog showing a stale object.
+  const open = editing ? (placements.find((p) => p.id === editing.id) ?? null) : null;
+
+  return (
+    <Box
+      w={{ base: 'full', lg: '20rem' }}
+      flexShrink={0}
+      overflowY={{ base: 'visible', lg: 'auto' }}
+      minH="0"
+    >
+      <VStack align="stretch" gap={3}>
+        {closedNotice && (
+          <Box bg="bg.muted" rounded="md" px={3} py={2}>
+            <Text fontSize="2xs" color="fg.muted">
+              {closedNotice}
+            </Text>
+          </Box>
+        )}
+
+        <Panel p={3}>
+          <HStack justify="space-between" mb={placements.length || adding ? 3 : 0}>
+            <Heading size="xs" color="fg.muted" textTransform="uppercase" letterSpacing="wider">
+              Posts
+            </Heading>
+            <Button size="2xs" variant="ghost" onClick={() => setAdding((v) => !v)} aria-label="Add a site">
+              <PlusIcon boxSize={3.5} />
+            </Button>
+          </HStack>
+
+          {adding && (
+            <HStack gap={2} mb={3}>
+              <Input
+                size="xs"
+                autoFocus
+                placeholder="site.com"
+                value={newDomain}
+                onChange={(e) => setNewDomain(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && add()}
+              />
+              <Button size="xs" variant="subtle" onClick={add} disabled={!newDomain.trim()}>
+                Add
+              </Button>
+            </HStack>
+          )}
+
+          {placements.length === 0 ? (
+            <Text fontSize="xs" color="fg.subtle" pt={2}>
+              No site on this deal yet. Add the domain you're buying a post on.
+            </Text>
+          ) : (
+            <VStack align="stretch" gap={2}>
+              {placements.map((p) => (
+                <PlacementSummary key={p.id} placement={p} onOpen={() => setEditing(p)} />
+              ))}
+            </VStack>
+          )}
+        </Panel>
+
+        <Panel p={3}>
+          <Heading size="xs" color="fg.muted" textTransform="uppercase" letterSpacing="wider" mb={2}>
+            Note
+          </Heading>
+          <Textarea
+            size="sm"
+            rows={3}
+            placeholder="Anything about this negotiation worth remembering."
+            value={draftNote}
+            onChange={(e) => setDraftNote(e.target.value)}
+            onBlur={saveNote}
+          />
+        </Panel>
       </VStack>
-    </Panel>
+
+      {open && (
+        <PlacementEditor
+          key={open.id}
+          placement={open}
+          onChanged={onChange}
+          onClose={() => setEditing(null)}
+        />
+      )}
+    </Box>
+  );
+}
+
+/** What a post looks like when you are not editing it: the four facts you check
+ *  mid-negotiation, and nothing else. */
+function PlacementSummary({ placement: p, onOpen }: { placement: Placement; onOpen: () => void }) {
+  const paid = Boolean(p.paidAt);
+  const live = Boolean(p.liveAt || p.publishedUrl);
+  const price = p.agreedPrice?.raw?.trim();
+  const content = p.contentText?.trim()
+    ? `text · ${p.contentText.trim().length.toLocaleString()} chars`
+    : p.contentUrl?.trim()
+      ? 'linked doc'
+      : 'no text yet';
+
+  return (
+    <Box
+      as="button"
+      textAlign="left"
+      w="full"
+      borderWidth="1px"
+      borderColor="border"
+      rounded="lg"
+      p={2.5}
+      cursor="pointer"
+      _hover={{ bg: 'bg.subtle', borderColor: 'brand.emphasized' }}
+      onClick={onOpen}
+    >
+      <HStack justify="space-between" gap={2} mb={1}>
+        <Text fontWeight="semibold" fontSize="sm" truncate>
+          {p.domain}
+        </Text>
+        <HStack gap={1} flexShrink={0}>
+          {paid && (
+            <Badge size="xs" colorPalette="green" variant="subtle">
+              paid
+            </Badge>
+          )}
+          {live && (
+            <Badge size="xs" colorPalette="blue" variant="subtle">
+              live
+            </Badge>
+          )}
+          {!paid && !live && (
+            <Badge size="xs" colorPalette="gray" variant="subtle">
+              draft
+            </Badge>
+          )}
+        </HStack>
+      </HStack>
+      <Text fontSize="xs" color={price ? 'fg' : 'fg.subtle'}>
+        {price ? `${price}${p.paymentMethod ? ` · ${p.paymentMethod}` : ''}` : 'no price agreed yet'}
+      </Text>
+      <Text fontSize="2xs" color="fg.muted">
+        {content}
+        {paid && ` · paid ${fmtShortDate(p.paidAt)}`}
+        {p.liveAt && ` · live ${fmtShortDate(p.liveAt)}`}
+      </Text>
+    </Box>
+  );
+}
+
+/**
+ * The full post record, opened on demand.
+ *
+ * Every field saves itself when you leave it — there is no Save button to forget,
+ * and nothing here is a multi-field transaction. The draft is seeded once and
+ * never re-synced from the server while the dialog is open, so a reload provoked
+ * by saving one field cannot wipe what you are typing into the next.
+ */
+function PlacementEditor({
+  placement,
+  onChanged,
+  onClose,
+}: {
+  placement: Placement;
+  onChanged: () => void;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState(placement);
+  const saved = useRef<Placement>(placement);
+  const [flash, setFlash] = useState(false);
+  const confirm = useConfirm();
+
+  const set = <K extends keyof Placement>(key: K, value: Placement[K]) =>
+    setDraft((d) => ({ ...d, [key]: value }));
+
+  const commit = async (key: keyof Placement) => {
+    const next = draft[key];
+    const before = saved.current[key];
+    const same =
+      key === 'agreedPrice'
+        ? (draft.agreedPrice?.raw ?? '') === (saved.current.agreedPrice?.raw ?? '')
+        : (next ?? '') === (before ?? '');
+    if (same) return;
+    try {
+      await api.patchPlacement(placement.id, {
+        [key]: key === 'agreedPrice' ? (draft.agreedPrice?.raw ?? '') : ((next as string) ?? ''),
+      });
+      saved.current = { ...saved.current, [key]: next };
+      setFlash(true);
+      window.setTimeout(() => setFlash(false), 1200);
+      onChanged();
+    } catch (e) {
+      toastError('Could not save', e);
+    }
+  };
+
+  const remove = async () => {
+    const ok = await confirm({
+      title: `Remove ${placement.domain}?`,
+      description: 'The post text and any links recorded for this site are deleted.',
+      confirmLabel: 'Remove',
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      await api.deletePlacement(placement.id);
+      onClose();
+      onChanged();
+    } catch (e) {
+      toastError('Could not remove the site', e);
+    }
+  };
+
+  return (
+    <Dialog.Root open onOpenChange={(e) => !e.open && onClose()} size="lg" placement="center" scrollBehavior="inside">
+      <Portal>
+        <Dialog.Backdrop />
+        <Dialog.Positioner>
+          <Dialog.Content rounded="xl">
+            <Dialog.Header>
+              <HStack gap={2} flex="1">
+                <Dialog.Title>{placement.domain}</Dialog.Title>
+                {flash && (
+                  <Text fontSize="2xs" color="green.fg">
+                    saved
+                  </Text>
+                )}
+              </HStack>
+              <Dialog.CloseTrigger asChild>
+                <CloseButton size="sm" />
+              </Dialog.CloseTrigger>
+            </Dialog.Header>
+
+            <Dialog.Body>
+              <VStack align="stretch" gap={3}>
+                <Field.Root>
+                  <Field.Label fontSize="xs">Post text</Field.Label>
+                  <Textarea
+                    size="sm"
+                    rows={6}
+                    placeholder="Paste the post here, or leave blank and use a link below."
+                    value={draft.contentText ?? ''}
+                    onChange={(e) => set('contentText', e.target.value)}
+                    onBlur={() => commit('contentText')}
+                  />
+                </Field.Root>
+
+                <HStack gap={3} wrap="wrap" align="end">
+                  <Field.Root flex="1" minW="14rem">
+                    <Field.Label fontSize="xs">…or a link to the text</Field.Label>
+                    <Input
+                      size="sm"
+                      placeholder="https://docs.google.com/…"
+                      value={draft.contentUrl ?? ''}
+                      onChange={(e) => set('contentUrl', e.target.value)}
+                      onBlur={() => commit('contentUrl')}
+                    />
+                  </Field.Root>
+                  <Field.Root flex="1" minW="14rem">
+                    <Field.Label fontSize="xs">Published post</Field.Label>
+                    <Input
+                      size="sm"
+                      placeholder="https://site.com/the-post"
+                      value={draft.publishedUrl ?? ''}
+                      onChange={(e) => set('publishedUrl', e.target.value)}
+                      onBlur={() => commit('publishedUrl')}
+                    />
+                  </Field.Root>
+                </HStack>
+
+                <HStack gap={3} wrap="wrap" align="end">
+                  <Field.Root w="9rem">
+                    <Field.Label fontSize="xs">Agreed price</Field.Label>
+                    <Input
+                      size="sm"
+                      placeholder="120 EUR"
+                      value={draft.agreedPrice?.raw ?? ''}
+                      onChange={(e) => set('agreedPrice', { raw: e.target.value })}
+                      onBlur={() => commit('agreedPrice')}
+                    />
+                  </Field.Root>
+                  <Field.Root w="9rem">
+                    <Field.Label fontSize="xs">Paid via</Field.Label>
+                    <Input
+                      size="sm"
+                      placeholder="wise / paypal"
+                      value={draft.paymentMethod ?? ''}
+                      onChange={(e) => set('paymentMethod', e.target.value)}
+                      onBlur={() => commit('paymentMethod')}
+                    />
+                  </Field.Root>
+                  <Field.Root w="9rem">
+                    <Field.Label fontSize="xs">Paid on</Field.Label>
+                    <Input
+                      size="sm"
+                      type="date"
+                      value={toDateInput(draft.paidAt)}
+                      onChange={(e) => set('paidAt', fromDateInput(e.target.value))}
+                      onBlur={() => commit('paidAt')}
+                    />
+                  </Field.Root>
+                  <Field.Root w="9rem">
+                    <Field.Label fontSize="xs">Live on</Field.Label>
+                    <Input
+                      size="sm"
+                      type="date"
+                      value={toDateInput(draft.liveAt)}
+                      onChange={(e) => set('liveAt', fromDateInput(e.target.value))}
+                      onBlur={() => commit('liveAt')}
+                    />
+                  </Field.Root>
+                </HStack>
+
+                <Field.Root>
+                  <Field.Label fontSize="xs">Note</Field.Label>
+                  <Input
+                    size="sm"
+                    placeholder="anything worth remembering about this one"
+                    value={draft.note ?? ''}
+                    onChange={(e) => set('note', e.target.value)}
+                    onBlur={() => commit('note')}
+                  />
+                </Field.Root>
+
+                <Text fontSize="xs" color="fg.subtle">
+                  Every field saves when you leave it. Paid and live are independent — set them in
+                  whichever order they happen. The agreed price stays here and never touches the
+                  price history.
+                </Text>
+              </VStack>
+            </Dialog.Body>
+
+            <Dialog.Footer>
+              <Button size="xs" variant="ghost" colorPalette="red" mr="auto" onClick={remove}>
+                <TrashIcon boxSize={3.5} /> Remove site
+              </Button>
+              <Button size="sm" variant="subtle" onClick={onClose}>
+                Done
+              </Button>
+            </Dialog.Footer>
+          </Dialog.Content>
+        </Dialog.Positioner>
+      </Portal>
+    </Dialog.Root>
   );
 }

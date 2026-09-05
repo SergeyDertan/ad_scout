@@ -25,7 +25,18 @@ set -euo pipefail
 PROJECT="${PROJECT:-postwormhole}"
 SA="${SA:-adscout-backup}"
 BUCKET="${BUCKET:-adscout-backups}"
-LOCATION="${LOCATION:-EU}"
+# Cloud Storage's always-free tier is 5 GB-month of Standard storage, and only
+# in three US *regions*: us-east1, us-west1, us-central1. Multi-region (US, EU)
+# and every other region are billed from the first byte, so EU here quietly cost
+# money. The archives are small and pruned, so the whole mirror fits in the free
+# tier — as long as it stays in one of those three. Note this puts the archives,
+# mailbox refresh tokens included, on US soil.
+LOCATION="${LOCATION:-us-east1}"
+# Versioning keeps a deleted archive recoverable, but noncurrent versions are
+# billed like any other byte and nothing prunes them — left alone they grow past
+# the free 5 GB forever. This expires them a week after the mirror supersedes
+# them, which is well past "I deleted the wrong thing".
+NONCURRENT_DAYS="${NONCURRENT_DAYS:-7}"
 KEY_FILE="${KEY_FILE:-./adscout-backup.json}"
 
 EMAIL="${SA}@${PROJECT}.iam.gserviceaccount.com"
@@ -39,7 +50,14 @@ gcloud auth list --filter=status:ACTIVE --format='value(account)' | grep -q . \
   || die "no active gcloud account — run: gcloud auth login"
 
 say "project ${PROJECT}"
-gcloud config set project "$PROJECT" >/dev/null
+# Scoped to this script's own gcloud calls rather than `gcloud config set
+# project`, which rewrites the active project for every other terminal you have
+# open. It also drops the "your active project does not match the quota project
+# in your local Application Default Credentials file" warning: that check fires
+# only on `config set` (gcloud's config_validators.WarnIfSettingProjectWhenAdc-
+# Exists), and it is about ADC — which application code uses. The gcloud calls
+# below authenticate as your logged-in user, so ADC never enters into them.
+export CLOUDSDK_CORE_PROJECT="$PROJECT"
 
 # --- 1. the service account, with no project roles ---------------------------
 if gcloud iam service-accounts describe "$EMAIL" >/dev/null 2>&1; then
@@ -79,6 +97,23 @@ else
   # would make every prune fail while the local copy silently diverged.
   say "enabling object versioning"
   gcloud storage buckets update "gs://${BUCKET}" --versioning
+
+  say "expiring superseded versions after ${NONCURRENT_DAYS} days"
+  LIFECYCLE="$(mktemp)"
+  trap 'rm -f "$LIFECYCLE"' EXIT
+  cat >"$LIFECYCLE" <<JSON
+{
+  "rule": [
+    {
+      "action": { "type": "Delete" },
+      "condition": { "daysSinceNoncurrentTime": ${NONCURRENT_DAYS}, "isLive": false }
+    }
+  ]
+}
+JSON
+  # Live archives are untouched — only versions the mirror has already replaced
+  # or pruned. Deleting a live object still leaves it recoverable for a week.
+  gcloud storage buckets update "gs://${BUCKET}" --lifecycle-file="$LIFECYCLE"
 fi
 
 # --- 3. the only grant -------------------------------------------------------

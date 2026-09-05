@@ -11,9 +11,12 @@ web/dist-viewer/
 .DS_Store
 
 # Credentials — never committed. The Firebase service account can write the
-# viewer's bucket; client_secret.json is the Gmail OAuth client.
+# viewer's bucket; client_secret.json is the Gmail OAuth client;
+# adscout-backup.json is where provision-backup-sa.sh drops the mirror's key,
+# and the archives it unlocks hold every mailbox's OAuth refresh token.
 firebase-service-account.json
 client_secret.json
+adscout-backup.json
 web/.env.local
 
 # IDE / editor

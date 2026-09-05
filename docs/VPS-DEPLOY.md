@@ -845,6 +845,25 @@ archive is mirrored to Cloud Storage with the same rule applied there, so offsit
 matches on-box. A mirror failure is logged, never fatal — the local copy already
 succeeded, and losing the server over a Cloud Storage hiccup would be worse.
 
+`deploy/provision-backup-sa.sh` creates the credential it needs:
+
+```bash
+./deploy/provision-backup-sa.sh
+# or, on a project that cannot create buckets (Firebase Spark plan):
+BUCKET=postwormhole.firebasestorage.app ./deploy/provision-backup-sa.sh
+```
+
+It makes a service account with **no project roles**, a bucket with public access
+prevention and versioning, and a single `roles/storage.objectAdmin` binding on
+that bucket — then verifies the account holds nothing project-wide. Do not use
+Firebase Console's "Generate new private key" here: that is the Admin SDK account
+and normally carries Editor on the whole project, where the mirror needs three
+verbs on one bucket.
+
+Deliberately **not** a locked retention policy on that bucket: the mirror prunes
+by design, and a lock would make every prune fail while the local copy quietly
+diverged from the remote.
+
 > **The archives contain every mailbox's OAuth refresh token in the clear.**
 > `storage.rules` denies browser reads outside the `snapshot/` prefix, so only
 > the Admin SDK's service account can read `backups/`. Treat that JSON — and any

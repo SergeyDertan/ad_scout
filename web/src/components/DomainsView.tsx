@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { List, type RowComponentProps } from 'react-window';
 import { api } from '../api';
 import { useIsManager } from '../role';
+import { Attachments } from './Attachments';
 import { DataPanel } from './DataPanel';
 import { Empty } from './Empty';
 import { useResource } from '../hooks/useResource';
@@ -35,7 +36,6 @@ import {
   type DomainCell,
   type DomainDetail,
   type DomainSummary,
-  type EmailAttachment,
   type Niche,
   type PostOffer,
   type PriceCell,
@@ -98,29 +98,6 @@ function SourceMessage({ replyId }: { replyId: string }) {
   );
 }
 
-function Attachments({ attachments }: { attachments?: EmailAttachment[] }) {
-  if (!attachments || attachments.length === 0) return null;
-  return (
-    <HStack gap={2} flexWrap="wrap">
-      {attachments.map((a, i) => (
-        <Box
-          key={`${a.filename}-${i}`}
-          as="a"
-          {...{ href: `data:${a.mimeType};base64,${a.contentBase64}`, download: a.filename }}
-          fontSize="xs"
-          bg="bg.muted"
-          rounded="md"
-          px={2.5}
-          py={1.5}
-          _hover={{ bg: 'bg.subtle' }}
-        >
-          <Text as="span" fontWeight="medium">{a.filename}</Text>
-          <Text as="span" color="fg.subtle" ml={2}>{(a.size / 1024).toFixed(1)} KB</Text>
-        </Box>
-      ))}
-    </HStack>
-  );
-}
 
 // --- Folded price sheet tables ------------------------------------------------
 

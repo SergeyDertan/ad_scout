@@ -19,14 +19,12 @@ import {
   HStack,
   Heading,
   Input,
-  Link,
   NativeSelect,
   Portal,
   Table,
   Text,
   Textarea,
   VStack,
-  Wrap,
 } from '@chakra-ui/react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
@@ -37,9 +35,9 @@ import type {
   DealRow,
   DealStatus,
   DealTimelineItem,
-  EmailAttachment,
   Placement,
 } from '../types';
+import { Attachments } from './Attachments';
 import { DataPanel } from './DataPanel';
 import { Empty } from './Empty';
 import { Panel } from './Panel';
@@ -173,7 +171,7 @@ export function DealsView({
           <Empty
             icon={MegaphoneIcon}
             title="No deals yet"
-            description="Open one when a publisher agrees to publish — from here, or from a target's thread."
+            description="Open one when a publisher answers with a price: Start a deal on the Responses page continues that very thread, or use New deal here."
           />
         }
       >
@@ -300,8 +298,10 @@ function NewDealForm({
           </Button>
         </HStack>
         <Text fontSize="xs" color="fg.muted">
-          If this webmaster already has an open deal on the same thread, you'll be taken to it rather
-          than opening a second one.
+          The conversation you already have with this address on that mailbox is adopted
+          automatically, so your first message continues it rather than opening a thread they would
+          have to reconcile by hand. If a deal is already open on it, you'll be taken there. To
+          start from one particular reply, use <b>Start a deal</b> on the Responses page.
         </Text>
       </VStack>
     </Panel>
@@ -557,13 +557,56 @@ function Conversation({
 
   const rows = useMemo(() => buildRows(timeline), [timeline]);
 
+  const toBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
+
   // Follow the conversation down, but only while you are actually at the bottom
   // — scrolling up to re-read the rate card must not be yanked away when a new
-  // reply lands or a placement edit reloads the deal.
-  useEffect(() => {
+  // reply lands or a placement edit reloads the deal. Before paint, so a new
+  // message never flashes the top of the thread on its way down.
+  useLayoutEffect(() => {
+    if (pinned.current) toBottom();
+  }, [rows, toBottom]);
+
+  // OPENING THE DEAL LANDS ON THE NEWEST MESSAGE, and that takes a second effect.
+  //
+  // The pane's height is measured after mount (useAvailableHeight), so on the
+  // render that first shows a conversation the box can still be auto-height: it
+  // is not scrollable, and the effect above sets scrollTop on an element with
+  // nowhere to scroll — a silent no-op. The measured height then arrives, the
+  // box becomes scrollable, and it does so at scrollTop 0: you open a
+  // negotiation at the FIRST message, months back, with the answer you came to
+  // read below the fold.
+  //
+  // Whether it happens is a RACE — the measurement lands in a layout effect and
+  // the scroll in the child's, so which wins depends on how the deal fetch and
+  // the commit interleave. It reliably loses on the deployed console and
+  // reliably wins against a localhost API, which is exactly the kind of bug that
+  // cannot be fixed by reordering the effects.
+  //
+  // So watch the box itself. Its border box changes when the height lands (and
+  // on any window resize), which is exactly when the earlier scroll needs
+  // redoing; it does NOT change when the content inside grows, so expanding a
+  // long message still leaves you reading its top rather than snapping you to
+  // the end of it.
+  useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (el && pinned.current) el.scrollTop = el.scrollHeight;
-  }, [rows]);
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const obs = new ResizeObserver(() => {
+      if (pinned.current) toBottom();
+    });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [toBottom]);
+
+  // A different deal is a different conversation: start it at the bottom even
+  // if you had scrolled up in the last one (this pane is reused, not remounted).
+  useLayoutEffect(() => {
+    pinned.current = true;
+    toBottom();
+  }, [dealId, toBottom]);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -750,7 +793,7 @@ function Bubble({
       boxShadow="xs"
     >
       <MessageBody text={text} inverted={ours && !failed} />
-      {item.kind === 'received' && <Attachments attachments={item.reply.attachments} />}
+      {item.kind === 'received' && <Attachments attachments={item.reply.attachments} compact />}
       {failed && item.kind === 'sent' && (
         <HStack mt={2} gap={2} align="center" wrap="wrap">
           <AlertTriangleIcon boxSize={3.5} />
@@ -842,34 +885,6 @@ function MessageBody({ text, inverted }: { text: string; inverted?: boolean }) {
   );
 }
 
-function Attachments({ attachments }: { attachments?: EmailAttachment[] }) {
-  if (!attachments || attachments.length === 0) return null;
-  return (
-    <Wrap gap={1.5} mt={2}>
-      {attachments.map((a, i) => (
-        <Link
-          key={`${a.filename}-${i}`}
-          href={`data:${a.mimeType};base64,${a.contentBase64}`}
-          download={a.filename}
-          fontSize="2xs"
-          bg="bg.muted"
-          color="fg"
-          rounded="md"
-          px={2}
-          py={1}
-          _hover={{ bg: 'bg.subtle', textDecoration: 'none' }}
-        >
-          <Text as="span" fontWeight="medium">
-            {a.filename}
-          </Text>
-          <Text as="span" color="fg.subtle" ml={1.5}>
-            {(a.size / 1024).toFixed(0)} KB
-          </Text>
-        </Link>
-      ))}
-    </Wrap>
-  );
-}
 
 function Composer({
   body,

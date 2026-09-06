@@ -16,7 +16,8 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './api';
 import { useRoute } from './hooks/useRoute';
-import { useIsManager } from './role';
+import { useIsManager, useRole } from './role';
+import { useSession } from './session';
 import type { BatchRow, Status } from './types';
 import { useStream, type LiveState } from './hooks/useStream';
 import { AccountsView } from './components/AccountsView';
@@ -34,6 +35,7 @@ import {
   ChevronDownIcon,
   InboxIcon,
   LabelsIcon,
+  LogOutIcon,
   MegaphoneIcon,
   PlayIcon,
   ShieldIcon,
@@ -44,10 +46,16 @@ import {
 import type { IconProps } from '@chakra-ui/react';
 import type { ComponentType } from 'react';
 
+/** The order the sections appear in the rail: the funnel, then the record it
+ *  produces, then the things you set once and forget. */
+const GROUPS = ['Outreach', 'Replies', 'Negotiation', 'Settings'] as const;
+type Group = (typeof GROUPS)[number];
+
 const TABS: {
   id: string;
   label: string;
   icon: ComponentType<IconProps>;
+  group: Group;
   count?: (s: Status | null) => number | undefined;
   /** Does the outreach funnel actually describe this page? The stats are about
    *  targets and sends, so they are noise on Deals, Accounts or Labels — a whole
@@ -57,17 +65,17 @@ const TABS: {
    *  only keeps a control out of the UI that could never work. */
   adminOnly?: boolean;
 }[] = [
-  { id: 'accounts', label: 'Accounts', icon: UsersIcon, count: (s) => s?.accounts },
-  { id: 'targets', label: 'Targets', icon: TargetIcon, count: (s) => s?.targets.total, stats: true },
-  { id: 'batches', label: 'Batches', icon: TagIcon, stats: true },
-  { id: 'responses', label: 'Responses', icon: InboxIcon, stats: true },
-  { id: 'domains', label: 'Domains', icon: TagIcon, stats: true },
-  { id: 'deals', label: 'Deals', icon: MegaphoneIcon },
-  { id: 'suppressions', label: 'Suppressions', icon: ShieldIcon },
-  { id: 'ignore', label: 'Ignore', icon: ShieldIcon },
-  { id: 'labels', label: 'Labels', icon: LabelsIcon },
+  { id: 'targets', label: 'Targets', icon: TargetIcon, group: 'Outreach', count: (s) => s?.targets.total, stats: true },
+  { id: 'batches', label: 'Batches', icon: TagIcon, group: 'Outreach', stats: true },
   // Starting a send pass is the operator's call, not a deal manager's.
-  { id: 'run', label: 'Run', icon: PlayIcon, stats: true, adminOnly: true },
+  { id: 'run', label: 'Run', icon: PlayIcon, group: 'Outreach', stats: true, adminOnly: true },
+  { id: 'responses', label: 'Responses', icon: InboxIcon, group: 'Replies', stats: true },
+  { id: 'domains', label: 'Domains', icon: TagIcon, group: 'Replies', stats: true },
+  { id: 'deals', label: 'Deals', icon: MegaphoneIcon, group: 'Negotiation' },
+  { id: 'accounts', label: 'Accounts', icon: UsersIcon, group: 'Settings', count: (s) => s?.accounts },
+  { id: 'labels', label: 'Labels', icon: LabelsIcon, group: 'Settings' },
+  { id: 'suppressions', label: 'Suppressions', icon: ShieldIcon, group: 'Settings' },
+  { id: 'ignore', label: 'Ignore', icon: ShieldIcon, group: 'Settings' },
 ];
 
 const TAB_IDS = new Set(TABS.map((t) => t.id));
@@ -109,6 +117,67 @@ function ConnectionPill({ live }: { live: LiveState }) {
         {label}
       </Text>
     </HStack>
+  );
+}
+
+/** Who is signed in, and the way out — at the foot of the rail, where an
+ *  application puts its account menu. On the local console (no auth at all)
+ *  this renders nothing, so that install is exactly what it was.
+ *
+ *  `compact` is the narrow-window version: the rail has become a scrolling row
+ *  with no foot to sit in, so only the initials and the way out survive. */
+function SessionFooter({ compact }: { compact?: boolean }) {
+  const session = useSession();
+  const role = useRole();
+  if (!session) return null;
+  const email = session.email ?? 'signed in';
+  if (compact) {
+    return (
+      <HStack gap={1}>
+        <Circle size={7} bg="brand.subtle" color="brand.fg" fontSize="2xs" fontWeight="bold" title={email}>
+          {email.slice(0, 2).toUpperCase()}
+        </Circle>
+        <Button
+          size="xs"
+          variant="ghost"
+          color="fg.muted"
+          onClick={session.signOut}
+          aria-label="Sign out"
+          title="Sign out"
+          px={2}
+        >
+          <LogOutIcon boxSize={4} />
+        </Button>
+      </HStack>
+    );
+  }
+  return (
+    <Box borderTopWidth="1px" borderColor="border" px={3} py={2.5}>
+      <HStack gap={2.5}>
+        <Circle size={7} bg="brand.subtle" color="brand.fg" fontSize="2xs" fontWeight="bold" flexShrink={0}>
+          {email.slice(0, 2).toUpperCase()}
+        </Circle>
+        <Box minW={0} flex="1">
+          <Text fontSize="xs" fontWeight="medium" truncate title={email}>
+            {email}
+          </Text>
+          <Text fontSize="2xs" color="fg.muted" textTransform="uppercase" letterSpacing="wide">
+            {role === 'manager' ? 'Manager' : 'Operator'}
+          </Text>
+        </Box>
+        <Button
+          size="xs"
+          variant="ghost"
+          color="fg.muted"
+          onClick={session.signOut}
+          aria-label="Sign out"
+          title="Sign out"
+          px={2}
+        >
+          <LogOutIcon boxSize={4} />
+        </Button>
+      </HStack>
+    </Box>
   );
 }
 
@@ -204,23 +273,47 @@ export function App() {
     }
   }, [batches, statBatch]);
 
+  // NAVIGATION LIVES IN A LEFT RAIL, not a strip of tabs over the page. Ten
+  // destinations is more than a tab row can hold without wrapping to a second
+  // line (which it did, on any window narrower than a desktop), and a rail can
+  // group them: the funnel, the record it produces, and the settings you touch
+  // once. It also stays put — a page's own content no longer shifts the way you
+  // move around. Below `lg` there is no room for a column, so the same list
+  // becomes a scrolling row above the page.
+  //
+  // These are still Chakra tabs, deliberately: the triggers keep their roles,
+  // arrow-key navigation and content association, and `lazyMount` still means a
+  // view keeps its filters once you have visited it.
   return (
-    <Box minH="100vh">
+    <Tabs.Root
+      value={tab}
+      onValueChange={(e) => navigate(e.value)}
+      orientation="vertical"
+      variant="plain"
+      colorPalette="brand"
+      size="md"
+      lazyMount
+      display="flex"
+      flexDirection={{ base: 'column', lg: 'row' }}
+      alignItems="stretch"
+      minH="100dvh"
+    >
       <Flex
-        as="header"
-        align="center"
-        gap={4}
-        px={{ base: 4, md: 8 }}
-        py={3}
+        as="nav"
+        direction="column"
+        w={{ base: 'full', lg: '15.5rem' }}
+        flexShrink={0}
         bg="bg.panel"
-        borderBottomWidth="1px"
         borderColor="border"
+        borderRightWidth={{ base: 0, lg: '1px' }}
+        borderBottomWidth={{ base: '1px', lg: 0 }}
         position="sticky"
         top="0"
+        alignSelf="flex-start"
+        h={{ lg: '100dvh' }}
         zIndex="docked"
-        boxShadow="xs"
       >
-        <HStack gap={2.5}>
+        <HStack gap={2.5} px={4} py={3.5} flexShrink={0}>
           <Square size={9} rounded="lg" bg="brand.solid" color="brand.contrast" boxShadow="sm">
             <TargetIcon boxSize={5} />
           </Square>
@@ -234,140 +327,214 @@ export function App() {
           </Box>
         </HStack>
 
-        <Box flex="1" />
-
-        {status?.providers && (
-          <Tooltip.Root openDelay={200} closeDelay={100}>
-            <Tooltip.Trigger asChild>
-              <HStack gap={1.5} display={{ base: 'none', md: 'flex' }}>
-                {[
-                  ['email', status.providers.email],
-                  ['llm', status.providers.llm],
-                  ['store', status.providers.store],
-                ].map(([k, v]) => (
-                  <Badge key={k} variant="surface" colorPalette="gray" textTransform="none">
-                    <Span color="fg.subtle">{k}</Span>
-                    <Span fontWeight="semibold">{v}</Span>
-                  </Badge>
-                ))}
-              </HStack>
-            </Tooltip.Trigger>
-            <Tooltip.Positioner>
-              <Tooltip.Content>Active providers — email / LLM / store</Tooltip.Content>
-            </Tooltip.Positioner>
-          </Tooltip.Root>
-        )}
-
-        <ConnectionPill live={live} />
-      </Flex>
-
-      <Box maxW="1100px" mx="auto" px={{ base: 4, md: 6 }} py={6}>
-        {statusErr && (
-          <Box
-            bg="red.subtle"
-            color="red.fg"
-            borderWidth="1px"
-            borderColor="red.muted"
-            rounded="lg"
-            px={4}
-            py={3}
-            mb={5}
-            fontSize="sm"
-          >
-            Can't reach the AdScout API. Is the server running (<code>pnpm dev</code> / <code>pnpm serve</code>)?
-          </Box>
-        )}
-
-        {/* The funnel is only rendered where it describes the page you are on,
-            and stays collapsed if you told it to. */}
-        {showStats && (
-          <>
-            <Flex align="center" justify="space-between" gap={3} mb={3} flexWrap="wrap">
-              <HStack gap={2}>
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  color="fg.muted"
-                  px={1}
-                  onClick={toggleStats}
-                  aria-expanded={!statsCollapsed}
-                  aria-label={statsCollapsed ? 'Show statistics' : 'Hide statistics'}
-                >
-                  <ChevronDownIcon
-                    boxSize={4}
-                    transform={statsCollapsed ? 'rotate(-90deg)' : undefined}
-                    transition="transform 0.15s"
-                  />
-                </Button>
+        <Tabs.List
+          flexDirection={{ base: 'row', lg: 'column' }}
+          alignItems={{ base: 'center', lg: 'stretch' }}
+          gap={0.5}
+          px={2}
+          pb={2}
+          flex={{ lg: '1' }}
+          minH={0}
+          overflowX={{ base: 'auto', lg: 'hidden' }}
+          overflowY={{ lg: 'auto' }}
+          borderWidth={0}
+        >
+          {GROUPS.map((group) => {
+            const inGroup = tabs.filter((t) => t.group === group);
+            if (inGroup.length === 0) return null;
+            return (
+              <Box key={group} display="contents">
                 <Text
-                  fontSize="sm"
+                  // Decoration inside a tablist: hidden from assistive tech so
+                  // the list still reads as ten tabs, not ten tabs and four
+                  // stray labels.
+                  aria-hidden
+                  display={{ base: 'none', lg: 'block' }}
+                  px={3}
+                  pt={3}
+                  pb={1}
+                  fontSize="2xs"
                   fontWeight="semibold"
-                  color="fg.muted"
+                  color="fg.subtle"
                   textTransform="uppercase"
                   letterSpacing="wider"
-                  cursor="pointer"
-                  onClick={toggleStats}
                 >
-                  {(() => {
-                    const b = batches.find((x) => x.id === statBatch);
-                    return b ? `Statistics · ${batchLabel(b)}` : 'Statistics · all batches';
-                  })()}
+                  {group}
                 </Text>
-              </HStack>
-              {!statsCollapsed && (
-                <HStack gap={2} bg="bg.panel" borderWidth="1px" borderColor="border" rounded="lg" pl={3} pr={1.5} py={1}>
-                  <NativeSelect.Root size="sm" width="48" variant="plain">
-                    <NativeSelect.Field
-                      value={statBatch}
-                      onChange={(e) => setStatBatch(e.target.value)}
+                {inGroup.map((t) => {
+                  const count = t.count?.(status);
+                  return (
+                    <Tabs.Trigger
+                      key={t.id}
+                      value={t.id}
+                      gap={2.5}
+                      justifyContent="flex-start"
+                      flexShrink={0}
+                      w={{ lg: 'full' }}
+                      px={3}
+                      py={2}
+                      rounded="md"
+                      fontSize="sm"
                       fontWeight="medium"
+                      color="fg.muted"
+                      _hover={{ bg: 'bg.muted', color: 'fg' }}
+                      _selected={{ bg: 'brand.subtle', color: 'brand.fg', fontWeight: 'semibold' }}
                     >
-                      <option value="">all batches</option>
-                      {batches.map((b) => (
-                        <option key={b.id} value={b.id}>
-                          {batchLabel(b)}
-                        </option>
-                      ))}
-                    </NativeSelect.Field>
-                    <NativeSelect.Indicator />
-                  </NativeSelect.Root>
-                </HStack>
-              )}
-            </Flex>
+                      <t.icon boxSize={4} flexShrink={0} />
+                      {t.label}
+                      {count != null && (
+                        <Badge
+                          size="sm"
+                          ms="auto"
+                          rounded="full"
+                          colorPalette={tab === t.id ? 'brand' : 'gray'}
+                          variant={tab === t.id ? 'solid' : 'subtle'}
+                        >
+                          {count}
+                        </Badge>
+                      )}
+                    </Tabs.Trigger>
+                  );
+                })}
+              </Box>
+            );
+          })}
+        </Tabs.List>
 
-            {!statsCollapsed && <StatCards status={status} />}
-          </>
-        )}
+        <Box display={{ base: 'none', lg: 'block' }} flexShrink={0}>
+          <SessionFooter />
+        </Box>
+      </Flex>
 
-        <Tabs.Root
-          value={tab}
-          onValueChange={(e) => navigate(e.value)}
-          variant="enclosed"
-          colorPalette="brand"
-          size="md"
-          lazyMount
+      <Box flex="1" minW={0}>
+        <Flex
+          as="header"
+          align="center"
+          gap={4}
+          px={{ base: 4, md: 8 }}
+          py={3}
+          bg="bg.panel"
+          borderBottomWidth="1px"
+          borderColor="border"
+          position="sticky"
+          top="0"
+          zIndex="docked"
+          boxShadow="xs"
         >
-          <Tabs.List bg="bg.muted" rounded="lg" p={1} mb={1} flexWrap="wrap">
-            {tabs.map((t) => {
-              const count = t.count?.(status);
-              return (
-                <Tabs.Trigger key={t.id} value={t.id} gap={2}>
-                  <t.icon boxSize={4} />
-                  {t.label}
-                  {count != null && (
-                    <Badge
-                      size="sm"
-                      rounded="full"
-                      colorPalette={tab === t.id ? 'brand' : 'gray'}
-                      variant={tab === t.id ? 'solid' : 'subtle'}
-                    >
-                      {count}
+          <Heading size="md" letterSpacing="tight">
+            {tabMeta?.label ?? 'AdScout'}
+          </Heading>
+
+          <Box flex="1" />
+
+          {status?.providers && (
+            <Tooltip.Root openDelay={200} closeDelay={100}>
+              <Tooltip.Trigger asChild>
+                <HStack gap={1.5} display={{ base: 'none', md: 'flex' }}>
+                  {[
+                    ['email', status.providers.email],
+                    ['llm', status.providers.llm],
+                    ['store', status.providers.store],
+                  ].map(([k, v]) => (
+                    <Badge key={k} variant="surface" colorPalette="gray" textTransform="none">
+                      <Span color="fg.subtle">{k}</Span>
+                      <Span fontWeight="semibold">{v}</Span>
                     </Badge>
-                  )}
-                </Tabs.Trigger>
-              );
-            })}
-          </Tabs.List>
+                  ))}
+                </HStack>
+              </Tooltip.Trigger>
+              <Tooltip.Positioner>
+                <Tooltip.Content>Active providers — email / LLM / store</Tooltip.Content>
+              </Tooltip.Positioner>
+            </Tooltip.Root>
+          )}
+
+          <ConnectionPill live={live} />
+
+          {/* No room for the rail's footer on a narrow window, so the account
+              rides in the header there instead. */}
+          <Box display={{ base: 'block', lg: 'none' }}>
+            <SessionFooter compact />
+          </Box>
+        </Flex>
+
+        <Box maxW="1280px" mx="auto" px={{ base: 4, md: 6 }} py={6}>
+          {statusErr && (
+            <Box
+              bg="red.subtle"
+              color="red.fg"
+              borderWidth="1px"
+              borderColor="red.muted"
+              rounded="lg"
+              px={4}
+              py={3}
+              mb={5}
+              fontSize="sm"
+            >
+              Can't reach the AdScout API. Is the server running (<code>pnpm dev</code> / <code>pnpm serve</code>)?
+            </Box>
+          )}
+
+          {/* The funnel is only rendered where it describes the page you are on,
+              and stays collapsed if you told it to. */}
+          {showStats && (
+            <>
+              <Flex align="center" justify="space-between" gap={3} mb={3} flexWrap="wrap">
+                <HStack gap={2}>
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    color="fg.muted"
+                    px={1}
+                    onClick={toggleStats}
+                    aria-expanded={!statsCollapsed}
+                    aria-label={statsCollapsed ? 'Show statistics' : 'Hide statistics'}
+                  >
+                    <ChevronDownIcon
+                      boxSize={4}
+                      transform={statsCollapsed ? 'rotate(-90deg)' : undefined}
+                      transition="transform 0.15s"
+                    />
+                  </Button>
+                  <Text
+                    fontSize="sm"
+                    fontWeight="semibold"
+                    color="fg.muted"
+                    textTransform="uppercase"
+                    letterSpacing="wider"
+                    cursor="pointer"
+                    onClick={toggleStats}
+                  >
+                    {(() => {
+                      const b = batches.find((x) => x.id === statBatch);
+                      return b ? `Statistics · ${batchLabel(b)}` : 'Statistics · all batches';
+                    })()}
+                  </Text>
+                </HStack>
+                {!statsCollapsed && (
+                  <HStack gap={2} bg="bg.panel" borderWidth="1px" borderColor="border" rounded="lg" pl={3} pr={1.5} py={1}>
+                    <NativeSelect.Root size="sm" width="48" variant="plain">
+                      <NativeSelect.Field
+                        value={statBatch}
+                        onChange={(e) => setStatBatch(e.target.value)}
+                        fontWeight="medium"
+                      >
+                        <option value="">all batches</option>
+                        {batches.map((b) => (
+                          <option key={b.id} value={b.id}>
+                            {batchLabel(b)}
+                          </option>
+                        ))}
+                      </NativeSelect.Field>
+                      <NativeSelect.Indicator />
+                    </NativeSelect.Root>
+                  </HStack>
+                )}
+              </Flex>
+
+              {!statsCollapsed && <StatCards status={status} />}
+            </>
+          )}
 
           <Tabs.Content value="accounts">
             <AccountsView tick={ticks.account} />
@@ -379,7 +546,7 @@ export function App() {
             <BatchesView tick={ticks.batch + ticks.target} />
           </Tabs.Content>
           <Tabs.Content value="responses">
-            <ResponsesView tick={ticks.reply} />
+            <ResponsesView tick={ticks.reply} onOpenDeal={(id) => navigate('deals', id)} />
           </Tabs.Content>
           <Tabs.Content value="domains">
             <DomainsView tick={ticks.reply + ticks.target} />
@@ -408,8 +575,8 @@ export function App() {
               <RunView status={status} />
             </Tabs.Content>
           )}
-        </Tabs.Root>
+        </Box>
       </Box>
-    </Box>
+    </Tabs.Root>
   );
 }

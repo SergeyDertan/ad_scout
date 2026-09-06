@@ -1,7 +1,8 @@
-import { Box, Button, Flex, Heading, Spinner, Stack, Text } from '@chakra-ui/react';
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { Button, Flex, Heading, Spinner, Stack, Text } from '@chakra-ui/react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { apiUrl, setTokenProvider } from './apiBase';
 import { RoleContext, type Role } from './role';
+import { SessionContext, type Session } from './session';
 
 // The client half of src/server/auth.ts.
 //
@@ -148,6 +149,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
       .finally(() => setBusy(false));
   }, [fb]);
 
+  // Declared before the early returns below, because hooks must be.
+  const session = useMemo<Session>(
+    () => ({ email: user?.email ?? null, signOut: () => void fb?.signOutUser() }),
+    [user, fb],
+  );
+
   if (requirement === 'checking') {
     return (
       <Gate>
@@ -206,37 +213,13 @@ export function AuthGate({ children }: { children: ReactNode }) {
     );
   }
 
+  // The identity is handed DOWN rather than drawn here. A strip of its own above
+  // the header pushed the whole console down by a row and read as chrome bolted
+  // on top of the app; the navigation is where "who am I" and "how do I stop
+  // being them" belong, and only App knows where that is.
   return (
     <RoleContext.Provider value={role}>
-      <Box>
-        <SignedInBar email={user.email} role={role} onSignOut={() => void fb.signOutUser()} />
-        {children}
-      </Box>
+      <SessionContext.Provider value={session}>{children}</SessionContext.Provider>
     </RoleContext.Provider>
-  );
-}
-
-/** Who you are and how to stop being them. Deliberately unobtrusive — on a
- *  single-operator install this bar is the only sign anything changed. */
-function SignedInBar({ email, role, onSignOut }: { email: string | null; role: Role; onSignOut: () => void }) {
-  return (
-    <Flex
-      justify="flex-end"
-      align="center"
-      gap={3}
-      px={4}
-      py={1.5}
-      borderBottomWidth="1px"
-      borderColor="border.muted"
-      bg="bg.subtle"
-    >
-      <Text fontSize="xs" color="fg.muted">
-        {email}
-        {role === 'manager' && ' · manager'}
-      </Text>
-      <Button size="xs" variant="ghost" onClick={onSignOut}>
-        Sign out
-      </Button>
-    </Flex>
   );
 }

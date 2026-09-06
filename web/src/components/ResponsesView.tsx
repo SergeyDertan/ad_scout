@@ -28,11 +28,12 @@ import { Empty } from './Empty';
 import { EditResponseForm } from './EditResponseForm';
 import { ResponseDetailModal } from './ResponseDetailModal';
 import { ExportDialog } from './ExportDialog';
+import { StartDealDialog, type StartDealSeed } from './StartDealDialog';
 import { useResource } from '../hooks/useResource';
-import { AlertTriangleIcon, DownloadIcon, InboxIcon, SearchIcon } from './icons';
+import { AlertTriangleIcon, DownloadIcon, InboxIcon, MegaphoneIcon, SearchIcon } from './icons';
 
 // From | Site | Batch | Match | Answer | Niches | Actions
-const COLS = '1.2fr 1.2fr 130px 96px 96px 120px 150px';
+const COLS = '1.2fr 1.2fr 130px 96px 96px 120px 190px';
 
 /** A batch's display label: its name, else a short id (manual adds are unnamed). */
 function batchLabel(b: BatchRow): string {
@@ -67,11 +68,13 @@ interface RowData {
   rows: ResponseRow[];
   onShow: (r: ResponseRow) => void;
   onEdit: (id: string) => void;
+  /** Negotiate in THIS thread — absent in the shared viewer, which has no API. */
+  onDeal?: (r: ResponseRow) => void;
   /** Read-only viewers get "Show" only — there is nothing to save to. */
   readOnly?: boolean;
 }
 
-function VirtualRow({ index, style, rows, onShow, onEdit, readOnly }: RowComponentProps<RowData>) {
+function VirtualRow({ index, style, rows, onShow, onEdit, onDeal, readOnly }: RowComponentProps<RowData>) {
   const r = rows[index]!;
   const review = needsReview(r);
   const awaiting = isAwaiting(r);
@@ -154,12 +157,34 @@ function VirtualRow({ index, style, rows, onShow, onEdit, readOnly }: RowCompone
             Edit
           </Button>
         )}
+        {!readOnly && onDeal && (
+          <Button
+            size="xs"
+            variant="ghost"
+            colorPalette="brand"
+            onClick={() => onDeal(r)}
+            title="Open a deal on this very thread and answer them"
+            px={2}
+          >
+            <MegaphoneIcon boxSize={3.5} /> Deal
+          </Button>
+        )}
       </HStack>
     </Box>
   );
 }
 
-export function ResponsesView({ tick, readOnly: readOnlyProp }: { tick: number; readOnly?: boolean }) {
+export function ResponsesView({
+  tick,
+  readOnly: readOnlyProp,
+  onOpenDeal,
+}: {
+  tick: number;
+  readOnly?: boolean;
+  /** Show the deal the thread now belongs to. Absent in the shared viewer,
+   *  which has no Deals page to go to — the control hides with it. */
+  onOpenDeal?: (dealId: string) => void;
+}) {
   // PATCH /api/replies/:id is an operator route, so a manager sees this page
   // read-only. Hook called unconditionally.
   const isManager = useIsManager();
@@ -170,6 +195,7 @@ export function ResponsesView({ tick, readOnly: readOnlyProp }: { tick: number; 
   const [reviewFilter, setReviewFilter] = useState('');
   const [editId, setEditId] = useState<string | null>(null);
   const [showId, setShowId] = useState<string | null>(null);
+  const [dealSeed, setDealSeed] = useState<StartDealSeed | null>(null);
   const [exporting, setExporting] = useState(false);
   const { rows: batches } = useResource(useCallback(() => api.listBatches(), []), tick);
   const { rows: niches } = useResource(useCallback(() => api.listNiches(), []), tick);
@@ -208,6 +234,17 @@ export function ResponsesView({ tick, readOnly: readOnlyProp }: { tick: number; 
   const lateCount = allRows.filter(isLateMessage).length;
   const editingRow = editId ? allRows.find((r) => r.id === editId) : undefined;
   const showingRow = showId ? allRows.find((r) => r.id === showId) : undefined;
+  // Everything the deal needs is already on the row: who answered, which of our
+  // mailboxes they answered to, the site, and the thread to continue.
+  const startDeal = (r: ResponseRow) =>
+    setDealSeed({
+      counterpartyEmail: r.fromAddress,
+      ...(r.accountId ? { accountId: r.accountId } : {}),
+      ...(r.accountEmail ? { accountEmail: r.accountEmail } : {}),
+      ...(r.website ? { website: r.website } : {}),
+      ...(r.threadId ? { threadId: r.threadId } : {}),
+    });
+  const dealsEnabled = Boolean(onOpenDeal) && !readOnly;
 
   if (error)
     return (
@@ -317,6 +354,25 @@ export function ResponsesView({ tick, readOnly: readOnlyProp }: { tick: number; 
             setShowId(null);
             setEditId(showingRow.id);
           }}
+          onStartDeal={
+            dealsEnabled
+              ? () => {
+                  setShowId(null);
+                  startDeal(showingRow);
+                }
+              : undefined
+          }
+        />
+      )}
+
+      {dealSeed && (
+        <StartDealDialog
+          seed={dealSeed}
+          onClose={() => setDealSeed(null)}
+          onOpened={(id) => {
+            setDealSeed(null);
+            onOpenDeal?.(id);
+          }}
         />
       )}
 
@@ -378,7 +434,13 @@ export function ResponsesView({ tick, readOnly: readOnlyProp }: { tick: number; 
             rowCount={rows.length}
             rowHeight={ROW_H}
             rowComponent={VirtualRow}
-            rowProps={{ rows, onShow: (r) => setShowId(r.id), onEdit: setEditId, readOnly } satisfies RowData}
+            rowProps={{
+              rows,
+              onShow: (r) => setShowId(r.id),
+              onEdit: setEditId,
+              ...(dealsEnabled ? { onDeal: startDeal } : {}),
+              readOnly,
+            } satisfies RowData}
             overscanCount={5}
           />
         </Box>

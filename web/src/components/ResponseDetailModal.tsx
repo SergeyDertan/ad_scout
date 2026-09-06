@@ -7,13 +7,11 @@ import {
   Dialog,
   Heading,
   HStack,
-  Link,
   Portal,
   SimpleGrid,
   Table,
   Text,
   VStack,
-  Wrap,
 } from '@chakra-ui/react';
 import {
   compareTerms,
@@ -23,7 +21,6 @@ import {
   invertedPriceOffers,
   offerCellKey,
   offerSite,
-  type EmailAttachment,
   type PostOffer,
   type ResponseRow,
 } from '../types';
@@ -32,7 +29,8 @@ import { ExtractionDebugModal } from './ExtractionDebugModal';
 import { StatusBadge } from './StatusBadge';
 import { TierBadge } from './TierBadge';
 import { ThreadTimeline } from './ThreadPanel';
-import { AlertTriangleIcon } from './icons';
+import { Attachments } from './Attachments';
+import { AlertTriangleIcon, MegaphoneIcon } from './icons';
 
 const INTENT_LABELS: Record<string, string> = {
   holding: 'holding — no answer yet',
@@ -169,44 +167,20 @@ function OffersTable({ offers, contactedSite }: { offers?: PostOffer[]; contacte
   );
 }
 
-/** Downloadable attachment chips (built from the base64 the reply carries). */
-function Attachments({ attachments }: { attachments?: EmailAttachment[] }) {
-  if (!attachments || attachments.length === 0) return null;
-  return (
-    <Section title={`Attachments (${attachments.length})`}>
-      <Wrap gap={2}>
-        {attachments.map((a, i) => (
-          <Link
-            key={`${a.filename}-${i}`}
-            href={`data:${a.mimeType};base64,${a.contentBase64}`}
-            download={a.filename}
-            fontSize="xs"
-            bg="bg.muted"
-            rounded="md"
-            px={2.5}
-            py={1.5}
-            _hover={{ bg: 'bg.subtle', textDecoration: 'none' }}
-          >
-            <Text as="span" fontWeight="medium">{a.filename}</Text>
-            <Text as="span" color="fg.subtle" ml={2}>
-              {a.mimeType} · {(a.size / 1024).toFixed(1)} KB
-            </Text>
-          </Link>
-        ))}
-      </Wrap>
-    </Section>
-  );
-}
 
 export function ResponseDetailModal({
   row: listRow,
   onClose,
   onEdit,
+  onStartDeal,
   readOnly,
 }: {
   row: ResponseRow;
   onClose: () => void;
   onEdit: () => void;
+  /** Negotiate in this thread. Absent where there are no deals to open (the
+   *  shared viewer, a manager's read-only console). */
+  onStartDeal?: () => void;
   /** Hides everything that writes, plus the send history (which the shared
    *  viewer's snapshot deliberately doesn't carry). */
   readOnly?: boolean;
@@ -321,7 +295,11 @@ export function ResponseDetailModal({
                   <OffersTable offers={p?.offers} contactedSite={row.website ?? undefined} />
                 </Section>
 
-                <Attachments attachments={row.attachments} />
+                {row.attachments && row.attachments.length > 0 && (
+                  <Section title={`Attachments (${row.attachments.length})`}>
+                    <Attachments attachments={row.attachments} />
+                  </Section>
+                )}
 
                 {/* Full thread */}
                 <Section title={readOnly ? 'Message' : 'Email thread'}>
@@ -352,7 +330,14 @@ export function ResponseDetailModal({
               <Button variant="outline" onClick={onClose}>Close</Button>
               <Button variant="outline" onClick={() => setDebugOpen(true)}>Debug extraction</Button>
               {!readOnly && (
-                <Button colorPalette="brand" onClick={onEdit}>Edit extraction</Button>
+                <Button variant="outline" onClick={onEdit}>Edit extraction</Button>
+              )}
+              {/* The answer is read, the price is known — the next thing you do
+                  is write back, and that is a deal on THIS thread. */}
+              {onStartDeal && (
+                <Button colorPalette="brand" onClick={onStartDeal}>
+                  <MegaphoneIcon /> Start a deal
+                </Button>
               )}
             </Dialog.Footer>
             {debugOpen && <ExtractionDebugModal replyId={row.id} onClose={() => setDebugOpen(false)} />}

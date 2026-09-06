@@ -6,19 +6,18 @@ import {
   Flex,
   Heading,
   HStack,
-  NativeSelect,
   Span,
   Square,
   Tabs,
   Text,
   Tooltip,
 } from '@chakra-ui/react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from './api';
 import { useRoute } from './hooks/useRoute';
 import { useIsManager, useRole } from './role';
 import { useSession } from './session';
-import type { BatchRow, Status } from './types';
+import type { Status } from './types';
 import { useStream, type LiveState } from './hooks/useStream';
 import { AccountsView } from './components/AccountsView';
 import { TargetsView } from './components/TargetsView';
@@ -30,10 +29,10 @@ import { IgnoreView } from './components/IgnoreView';
 import { SuppressionsView } from './components/SuppressionsView';
 import { LabelsView } from './components/LabelsView';
 import { RunView } from './components/RunView';
-import { StatCards } from './components/StatCards';
+import { OverviewView } from './components/OverviewView';
 import {
-  ChevronDownIcon,
   InboxIcon,
+  LayoutIcon,
   LabelsIcon,
   LogOutIcon,
   MegaphoneIcon,
@@ -46,9 +45,9 @@ import {
 import type { IconProps } from '@chakra-ui/react';
 import type { ComponentType } from 'react';
 
-/** The order the sections appear in the rail: the funnel, then the record it
- *  produces, then the things you set once and forget. */
-const GROUPS = ['Outreach', 'Replies', 'Negotiation', 'Settings'] as const;
+/** The order the sections appear in the rail: the screen you land on, then the
+ *  funnel, then the record it produces, then the things you set once and forget. */
+const GROUPS = ['Overview', 'Outreach', 'Replies', 'Negotiation', 'Settings'] as const;
 type Group = (typeof GROUPS)[number];
 
 const TABS: {
@@ -57,20 +56,17 @@ const TABS: {
   icon: ComponentType<IconProps>;
   group: Group;
   count?: (s: Status | null) => number | undefined;
-  /** Does the outreach funnel actually describe this page? The stats are about
-   *  targets and sends, so they are noise on Deals, Accounts or Labels — a whole
-   *  screen of numbers that answer nothing you came to that page to ask. */
-  stats?: boolean;
   /** Hidden from a manager. The server refuses these routes regardless — this
    *  only keeps a control out of the UI that could never work. */
   adminOnly?: boolean;
 }[] = [
-  { id: 'targets', label: 'Targets', icon: TargetIcon, group: 'Outreach', count: (s) => s?.targets.total, stats: true },
-  { id: 'batches', label: 'Batches', icon: TagIcon, group: 'Outreach', stats: true },
+  { id: 'overview', label: 'Overview', icon: LayoutIcon, group: 'Overview' },
+  { id: 'targets', label: 'Targets', icon: TargetIcon, group: 'Outreach', count: (s) => s?.targets.total },
+  { id: 'batches', label: 'Batches', icon: TagIcon, group: 'Outreach' },
   // Starting a send pass is the operator's call, not a deal manager's.
-  { id: 'run', label: 'Run', icon: PlayIcon, group: 'Outreach', stats: true, adminOnly: true },
-  { id: 'responses', label: 'Responses', icon: InboxIcon, group: 'Replies', stats: true },
-  { id: 'domains', label: 'Domains', icon: TagIcon, group: 'Replies', stats: true },
+  { id: 'run', label: 'Run', icon: PlayIcon, group: 'Outreach', adminOnly: true },
+  { id: 'responses', label: 'Responses', icon: InboxIcon, group: 'Replies' },
+  { id: 'domains', label: 'Domains', icon: TagIcon, group: 'Replies' },
   { id: 'deals', label: 'Deals', icon: MegaphoneIcon, group: 'Negotiation' },
   { id: 'accounts', label: 'Accounts', icon: UsersIcon, group: 'Settings', count: (s) => s?.accounts },
   { id: 'labels', label: 'Labels', icon: LabelsIcon, group: 'Settings' },
@@ -79,8 +75,7 @@ const TABS: {
 ];
 
 const TAB_IDS = new Set(TABS.map((t) => t.id));
-const DEFAULT_TAB = 'targets';
-const STATS_COLLAPSED_KEY = 'adscout.statsCollapsed';
+const DEFAULT_TAB = 'overview';
 
 const LIVE: Record<LiveState, { color: string; label: string }> = {
   connecting: { color: 'gray.400', label: 'Connecting' },
@@ -185,11 +180,6 @@ function SessionFooter({ compact }: { compact?: boolean }) {
 type Ticks = { batch: number; account: number; target: number; reply: number; suppression: number; deal: number };
 const ZERO_TICKS: Ticks = { batch: 0, account: 0, target: 0, reply: 0, suppression: 0, deal: 0 };
 
-/** A batch's display label: its name, else a short id (manual adds are unnamed). */
-function batchLabel(b: BatchRow): string {
-  return b.name?.trim() || `batch ${b.id.replace(/^batch_/, '').slice(0, 8)}`;
-}
-
 export function App() {
   const { route, navigate } = useRoute(DEFAULT_TAB);
   // An unknown path (a stale bookmark, a typo) shows the default rather than a
@@ -202,38 +192,16 @@ export function App() {
   // no trigger, which reads as a blank page.
   const tab = visibleTabIds.has(route.tab) ? route.tab : TAB_IDS.has(route.tab) && !isManager ? route.tab : DEFAULT_TAB;
   const tabMeta = TABS.find((t) => t.id === tab);
-  const [statsCollapsed, setStatsCollapsed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(STATS_COLLAPSED_KEY) === '1';
-    } catch {
-      return false; // private window / storage blocked — just show them
-    }
-  });
-  const toggleStats = useCallback(() => {
-    setStatsCollapsed((v) => {
-      try {
-        localStorage.setItem(STATS_COLLAPSED_KEY, v ? '0' : '1');
-      } catch {
-        /* not being able to remember the choice must not break the toggle */
-      }
-      return !v;
-    });
-  }, []);
-  const showStats = Boolean(tabMeta?.stats);
   const [status, setStatus] = useState<Status | null>(null);
   const [statusErr, setStatusErr] = useState(false);
   const [ticks, setTicks] = useState<Ticks>(ZERO_TICKS);
-  const [batches, setBatches] = useState<BatchRow[]>([]);
-  const [statBatch, setStatBatch] = useState('');
 
-  // Keep the selected batch in a ref so the SSE-driven refreshStatus stays
-  // stable (no stream re-subscribe) while always reading the latest filter.
-  const statBatchRef = useRef(statBatch);
-  statBatchRef.current = statBatch;
-
+  // Unfiltered on purpose. The batch filter belongs to the Overview screen's
+  // funnel; the rail's Targets badge is a count of everything, and reading a
+  // filtered number there made the nav disagree with the page it pointed at.
   const refreshStatus = useCallback(async () => {
     try {
-      setStatus(await api.status(statBatchRef.current || undefined));
+      setStatus(await api.status());
       setStatusErr(false);
     } catch {
       setStatusErr(true);
@@ -256,22 +224,9 @@ export function App() {
 
   const live = useStream(onChange);
 
-  // Refetch stats on mount and whenever the batch filter changes.
   useEffect(() => {
     void refreshStatus();
-  }, [refreshStatus, statBatch]);
-
-  // Batch list for the stats filter; refresh when batches or targets change.
-  useEffect(() => {
-    api.listBatches().then(setBatches).catch(() => {});
-  }, [ticks.batch, ticks.target]);
-
-  // A deleted batch shouldn't stay selected in the filter.
-  useEffect(() => {
-    if (statBatch && !batches.some((b) => b.id === statBatch)) {
-      setStatBatch('');
-    }
-  }, [batches, statBatch]);
+  }, [refreshStatus]);
 
   // NAVIGATION LIVES IN A LEFT RAIL, not a strip of tabs over the page. Ten
   // destinations is more than a tab row can hold without wrapping to a second
@@ -349,7 +304,10 @@ export function App() {
                   // the list still reads as ten tabs, not ten tabs and four
                   // stray labels.
                   aria-hidden
-                  display={{ base: 'none', lg: 'block' }}
+                  // Overview is a single destination that already says its own
+                  // name — a section header repeating it above would be one word
+                  // printed twice.
+                  display={{ base: 'none', lg: group === 'Overview' ? 'none' : 'block' }}
                   px={3}
                   pt={3}
                   pb={1}
@@ -475,67 +433,13 @@ export function App() {
             </Box>
           )}
 
-          {/* The funnel is only rendered where it describes the page you are on,
-              and stays collapsed if you told it to. */}
-          {showStats && (
-            <>
-              <Flex align="center" justify="space-between" gap={3} mb={3} flexWrap="wrap">
-                <HStack gap={2}>
-                  <Button
-                    size="xs"
-                    variant="ghost"
-                    color="fg.muted"
-                    px={1}
-                    onClick={toggleStats}
-                    aria-expanded={!statsCollapsed}
-                    aria-label={statsCollapsed ? 'Show statistics' : 'Hide statistics'}
-                  >
-                    <ChevronDownIcon
-                      boxSize={4}
-                      transform={statsCollapsed ? 'rotate(-90deg)' : undefined}
-                      transition="transform 0.15s"
-                    />
-                  </Button>
-                  <Text
-                    fontSize="sm"
-                    fontWeight="semibold"
-                    color="fg.muted"
-                    textTransform="uppercase"
-                    letterSpacing="wider"
-                    cursor="pointer"
-                    onClick={toggleStats}
-                  >
-                    {(() => {
-                      const b = batches.find((x) => x.id === statBatch);
-                      return b ? `Statistics · ${batchLabel(b)}` : 'Statistics · all batches';
-                    })()}
-                  </Text>
-                </HStack>
-                {!statsCollapsed && (
-                  <HStack gap={2} bg="bg.panel" borderWidth="1px" borderColor="border" rounded="lg" pl={3} pr={1.5} py={1}>
-                    <NativeSelect.Root size="sm" width="48" variant="plain">
-                      <NativeSelect.Field
-                        value={statBatch}
-                        onChange={(e) => setStatBatch(e.target.value)}
-                        fontWeight="medium"
-                      >
-                        <option value="">all batches</option>
-                        {batches.map((b) => (
-                          <option key={b.id} value={b.id}>
-                            {batchLabel(b)}
-                          </option>
-                        ))}
-                      </NativeSelect.Field>
-                      <NativeSelect.Indicator />
-                    </NativeSelect.Root>
-                  </HStack>
-                )}
-              </Flex>
-
-              {!statsCollapsed && <StatCards status={status} />}
-            </>
-          )}
-
+          <Tabs.Content value="overview">
+            <OverviewView
+              tick={ticks.target + ticks.reply + ticks.deal + ticks.account + ticks.batch}
+              onNavigate={(t) => navigate(t)}
+              onOpenDeal={(id) => navigate('deals', id)}
+            />
+          </Tabs.Content>
           <Tabs.Content value="accounts">
             <AccountsView tick={ticks.account} />
           </Tabs.Content>

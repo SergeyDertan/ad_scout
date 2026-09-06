@@ -30,6 +30,16 @@ export const PlusIcon = make(
   </>,
 );
 
+// Four panes — the overview, where the whole operation is on one screen.
+export const LayoutIcon = make(
+  <>
+    <rect x="3" y="3" width="7" height="9" rx="1.5" />
+    <rect x="14" y="3" width="7" height="5" rx="1.5" />
+    <rect x="14" y="12" width="7" height="9" rx="1.5" />
+    <rect x="3" y="16" width="7" height="5" rx="1.5" />
+  </>,
+);
+
 export const PlayIcon = make(<polygon points="6 4 20 12 6 20 6 4" fill="currentColor" stroke="none" />);
 
 export const PauseIcon = make(

@@ -42,6 +42,7 @@ import type { Store } from '../ports/store';
 import type { Extractor } from '../services/extractor';
 import type { Config } from '../config';
 import { advanceCursor, rewindCursor } from './cursor';
+import { buildInboundReply } from './inbound-reply';
 import { heldDeal, openDealThreadIds } from './deal-hold';
 import { syncDealThreads } from './deal-thread-sync';
 import { extractReplyCore, type ExtractedReply } from './extract-core';
@@ -858,29 +859,14 @@ async function handleMessage(
     awaiting,
   );
 
-  const reply: Reply = {
-    id: newId('reply'),
-    emailId: msg.emailId,
-    ...(msg.threadId ? { threadId: msg.threadId } : {}),
-    rfcMessageId: msg.rfcMessageId,
-    fromAddress: msg.fromAddress,
-    accountId: account.id, // which mailbox it landed in
-    ...(msg.subject ? { subject: msg.subject } : {}),
-    ...(match.targetId ? { targetId: match.targetId } : {}),
-    matchMethod: match.method,
-    receivedAt: msg.receivedAt,
-    text: msg.text,
-    ...(msg.attachments?.length ? { attachments: msg.attachments } : {}),
-    extractionStatus: 'pending',
-  };
+  const reply = buildInboundReply({ account, msg, match, ...(deal ? { deal } : {}) });
 
   // Held: store it for the deal's timeline and stop. No extractor call, no
   // rollUp, no PriceRecord, no DomainExclusion, no Suppression, no ignore entry.
-  // 'skipped' keeps it out of extractPendingReplies (which takes only
-  // pending/failed), so it never leaks back into the queue on a later pass.
+  // The builder already marked it 'skipped', which keeps it out of
+  // extractPendingReplies (which takes only pending/failed), so it never leaks
+  // back into the queue on a later pass.
   if (deal) {
-    reply.dealId = deal.id;
-    reply.extractionStatus = 'skipped';
     await applyLabel(deps, account, msg.emailId, LABELS.deal);
     report.held++;
     await store.putReply(reply);
@@ -895,14 +881,13 @@ async function handleMessage(
   }
   report.matched++;
 
-  // Empty body — nothing to extract; save it for the record.
   const target = await store.getTarget(match.targetId);
   if (!target) {
     await store.putReply(reply);
     return;
   }
+  // Empty body — the builder stored it 'skipped'; save it for the record.
   if (!msg.text?.trim()) {
-    reply.extractionStatus = 'skipped';
     await applyLabel(deps, account, msg.emailId, LABELS.matched);
     report.skipped++;
     await store.putReply(reply);

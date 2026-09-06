@@ -924,3 +924,29 @@ test('fetch-pass rewinds the cursor when aborted mid-account so no message is st
   );
   assert.equal((await store.getAccount('acc1'))?.pollCursor?.historyId, '3');
 });
+
+// Regression: a publisher's invoice PDF (techfinitive, 3 Sep 2026) was nowhere in
+// the store. Not lost in the migration to production — never written. The Reply
+// that fetch-pass builds simply omitted `attachments` and `subject`, which
+// poll-pass has always carried, and the scheduler polls with fetch-pass. A Reply
+// doc is written once (rev 1) and never re-fetched, so the file was gone for
+// good the moment it was ingested.
+test('fetch-pass keeps the attachments and subject of the message it stores', async () => {
+  const store = new MemoryStore();
+  await seed(store);
+  const invoice = {
+    filename: 'invoice-4471.pdf',
+    mimeType: 'application/pdf',
+    size: 3,
+    contentBase64: Buffer.from('pdf').toString('base64'),
+  };
+  const email = new CursorAdvancingProvider(store, [
+    { ...inbound(1), subject: 'Invoice for your article', attachments: [invoice] },
+  ]);
+
+  await runFetchPass({ store, email, clock });
+
+  const reply = (await store.listReplies())[0]!;
+  assert.deepEqual(reply.attachments, [invoice], 'the file arrived with the mail; it belongs to the reply');
+  assert.equal(reply.subject, 'Invoice for your article');
+});

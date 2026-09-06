@@ -34,6 +34,7 @@
     "remote:worker": "tsx src/scripts/remote-worker.ts",
     "refetch:replies": "tsx src/scripts/refetch-replies.ts",
     "backfill:replies": "tsx src/scripts/backfill-missing-replies.ts",
+    "heal:techfinitive-attachments": "tsx src/scripts/heal-techfinitive-attachments.ts",
     "data:dump": "tsx src/scripts/data-dump.ts",
     "data:load": "tsx src/scripts/data-load.ts",
     "serve": "tsx src/serve.ts",

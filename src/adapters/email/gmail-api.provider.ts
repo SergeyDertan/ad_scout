@@ -405,6 +405,17 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
     return out;
   }
 
+  /**
+   * Re-read specific messages by Gmail id, attachments included — the repair
+   * path. `fetchReplies` cannot serve one: it follows the historyId cursor and
+   * so returns only what arrived AFTER the last poll, and `fetchThread` drops
+   * attachments on purpose. Neither can reach a file that was dropped at ingest
+   * weeks ago. Read-only: no cursor is moved and no label or read-state changes.
+   */
+  async fetchByIds(account: Account, emailIds: string[]): Promise<IncomingEmail[]> {
+    return this.hydrate(account, emailIds);
+  }
+
   /** messages.get + parse + attachments for each id; skips malformed ones. */
   private async hydrate(account: Account, ids: string[]): Promise<IncomingEmail[]> {
     const out: IncomingEmail[] = [];

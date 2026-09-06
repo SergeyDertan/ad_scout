@@ -10,14 +10,14 @@ import {
   type SentOutreachRef,
 } from '../domain/reply-matching';
 import { LABELS, type OutcomeLabel } from '../domain/labels';
-import type { Account, Reply, Suppression } from '../domain/types';
+import type { Account, Suppression } from '../domain/types';
 import type { Clock } from '../lib/clock';
 import { describeError } from '../lib/errors';
-import { newId } from '../lib/ids';
 import { logger } from '../lib/logger';
 import type { EmailProvider, IncomingEmail } from '../ports/email-provider';
 import type { Store } from '../ports/store';
 import { advanceCursor, rewindCursor } from './cursor';
+import { buildInboundReply } from './inbound-reply';
 import { heldDeal } from './deal-hold';
 import { syncDealThreads } from './deal-thread-sync';
 
@@ -230,35 +230,9 @@ async function handleMessage(
     awaiting,
   );
 
-  // Every matched, non-empty reply enters the extraction queue as 'pending' — a
-  // later substantive reply must still be extracted so it appends a PriceRecord
-  // (PRICE-HISTORY-PLAN.md §5.2 Requirement 2). Empty bodies are stored 'skipped'.
   const target = match.targetId ? await store.getTarget(match.targetId) : undefined;
+  const reply = buildInboundReply({ account, msg, match, ...(deal ? { deal } : {}) });
   const isEmpty = !msg.text?.trim();
-
-  const reply: Reply = {
-    id: newId('reply'),
-    emailId: msg.emailId,
-    ...(msg.threadId ? { threadId: msg.threadId } : {}),
-    rfcMessageId: msg.rfcMessageId,
-    fromAddress: msg.fromAddress,
-    // Which of our mailboxes this landed in. The polling account IS the answer —
-    // it was simply never recorded, leaving every stored reply with an empty
-    // accountId and the responses feed re-deriving it from the outreach thread.
-    accountId: account.id,
-    ...(match.targetId ? { targetId: match.targetId } : {}),
-    matchMethod: match.method,
-    receivedAt: msg.receivedAt,
-    text: msg.text,
-    // Queue on CONTENT, not on whether we could name a target. A reply we failed
-    // to match can still be a real quote about a real site — price history is
-    // keyed by domain, so it has somewhere to land. Only an empty body is
-    // genuinely nothing to extract.
-    // A held reply is 'skipped' whatever its body: it must never enter the
-    // extraction queue (extractPendingReplies takes pending/failed only).
-    extractionStatus: deal || isEmpty ? 'skipped' : 'pending',
-    ...(deal ? { dealId: deal.id } : {}),
-  };
 
   await store.putReply(reply);
 

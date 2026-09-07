@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
 # Bring the production database down to this machine, as an archive, for
-# read-only diagnosis. Nothing here writes to the VPS except one temporary
-# archive in its own backups/ directory, which is deleted again before the
-# script exits.
+# read-only diagnosis. It writes NOTHING to the VPS and needs only read access:
+# the live store is tarred to stdout and streamed over the ssh channel, and the
+# hourly dumps are copied as they are.
 #
 #   ./scripts/fetch-prod-db.sh              # the LIVE store, as it is right now
 #   ./scripts/fetch-prod-db.sh --backup     # the newest hourly dump instead
@@ -140,15 +140,22 @@ ssh_ "$TARGET" "ls -t ${REMOTE}/backups/*.tar.gz 2>/dev/null | head -1 | xargs -
 
 if [ "$MODE" = live ]; then
   ARCHIVE="backups/adscout-live-${STAMP}.tar.gz"
-  REMOTE_TMP="${REMOTE}/backups/.fetch-${STAMP}.tar.gz"
 
-  echo "→ archiving the live store on the VPS"
-  # -C so the archive holds `pouch/...` and not the whole absolute path.
-  ssh_ "$TARGET" "tar -czf '${REMOTE_TMP}' -C '${REMOTE}/data' pouch"
-  echo "→ scp"
-  scp_ "${TARGET}:${REMOTE_TMP}" "$ARCHIVE"
-  # Always clean up after ourselves, including on a failed scp.
-  ssh_ "$TARGET" "rm -f '${REMOTE_TMP}'"
+  # STREAMED, not staged-then-scp'd. Writing the archive on the VPS first would
+  # need write access to a directory owned by the service user, and — worse —
+  # would drop a complete copy of the store, every mailbox's refresh token
+  # included, into a world-readable directory for as long as the transfer took.
+  # tar to stdout crosses the ssh channel and lands here. Nothing is written on
+  # the far side, so nothing has to be cleaned up, and read access is enough.
+  echo "→ streaming the live store down"
+  ssh_ "$TARGET" "tar -czf - -C '${REMOTE}/data' pouch" > "$ARCHIVE"
+  # A failed ssh still leaves the redirect's empty file behind; a truncated
+  # stream leaves a short one. Either way it is not a store, so do not pretend.
+  if [ ! -s "$ARCHIVE" ] || ! tar -tzf "$ARCHIVE" >/dev/null 2>&1; then
+    rm -f "$ARCHIVE"
+    echo "the stream did not produce a readable archive — nothing was written" >&2
+    exit 1
+  fi
 else
   REMOTE_ARCHIVE="$(ssh_ "$TARGET" "ls -t ${REMOTE}/backups/*.tar.gz | head -1")"
   if [ -z "$REMOTE_ARCHIVE" ]; then

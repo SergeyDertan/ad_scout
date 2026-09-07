@@ -209,7 +209,14 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
       },
     );
     // Gmail API returns threadId immediately — no IMAP lookup needed.
-    return { rfcMessageId: msg.rfcMessageId, threadId: result.threadId };
+    //
+    // `result.id` matters as much. Gmail does NOT keep the Message-Id we wrote
+    // into `raw`; it assigns its own (ours survives, if at all, as
+    // X-Google-Original-Message-ID). So the id we generated identifies nothing
+    // in this mailbox, and anything that later has to recognise this message —
+    // deal-thread-sync reading the thread back — needs the id Gmail just gave
+    // us, which is the same value messages.get and threads.get report.
+    return { rfcMessageId: msg.rfcMessageId, threadId: result.threadId, emailId: result.id };
   }
 
   async resolveThreadId(account: Account, rfcMessageId: string): Promise<string | undefined> {

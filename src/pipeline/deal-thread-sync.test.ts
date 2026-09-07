@@ -173,3 +173,75 @@ test('a deal on a domain we never targeted adopts without a target', async () =>
   const [adopted] = (await store.listOutreaches()).filter((o) => o.dealId === deal.id);
   assert.equal(adopted!.targetId, undefined);
 });
+
+/* ---------- the Message-Id we set is not the one that comes back ---------- */
+
+test('a send whose Message-Id Gmail replaced is recognised, not adopted', async () => {
+  const { store, email, deal } = await withDeal();
+  const { outreach } = await sendDealMessage(
+    { store, email, clock },
+    { dealId: deal.id, body: 'from the Deals view' },
+  );
+
+  // The premise: what the mailbox holds is NOT what we asked for. Gmail assigns
+  // its own Message-Id on send, so matching on ours can only ever miss.
+  const inMailbox = await email.fetchThread(account(), outreach.threadId!);
+  const copy = inMailbox.find((m) => m.text === 'from the Deals view');
+  assert.ok(copy, 'the mailbox has our message');
+  assert.notEqual(copy.rfcMessageId, outreach.rfcMessageId, 'the id was rewritten');
+
+  // What makes it recognisable is the provider's own id, recorded at send.
+  assert.equal(outreach.emailId, copy.emailId, "the send recorded Gmail's id");
+
+  const before = (await store.listOutreaches()).length;
+  assert.equal((await syncDealThreads({ store, email })).dealMessages, 0);
+  assert.equal((await store.listOutreaches()).length, before, 'no second copy');
+});
+
+test('an outreach written before emailId existed is still recognised', async () => {
+  const { store, email, threadId, deal } = await withDeal();
+  // A row as ~5.4k of them actually sit in production: our own generated
+  // Message-Id, which Gmail discarded, and no emailId at all.
+  await store.putOutreach({
+    id: 'outreach_legacy',
+    dealId: deal.id,
+    accountId: 'acc1',
+    kind: 'manual',
+    sequenceNo: 0,
+    status: 'sent',
+    rfcMessageId: '<legacy@adscout.local>',
+    threadId,
+    subject: 'Re: guest post',
+    body: 'We can do 150 EUR for the guest post.',
+    reservedAt: '2026-08-19T09:30:00.000Z',
+    sentAt: '2026-08-19T09:30:00.000Z',
+    attempts: 1,
+  });
+  // The same message as the mailbox holds it: different id, seconds later.
+  email.injectSent({
+    threadId,
+    fromAddress: 'vlad@example.com',
+    rfcMessageId: '<CAKjX6WY@mail.gmail.com>',
+    text: 'We can do 150 EUR for the guest post.\n',
+    receivedAt: new Date('2026-08-19T09:30:03Z'),
+  });
+
+  assert.equal((await syncDealThreads({ store, email })).dealMessages, 0);
+});
+
+test('the same words sent again later are a real message, not a duplicate', async () => {
+  const { store, email, threadId, deal } = await withDeal();
+  await store.putOutreach({
+    id: 'outreach_legacy', dealId: deal.id, accountId: 'acc1', kind: 'manual',
+    sequenceNo: 0, status: 'sent', rfcMessageId: '<legacy@adscout.local>', threadId,
+    subject: 'Re: guest post', body: 'Any update?',
+    reservedAt: '2026-08-16T09:30:00.000Z', sentAt: '2026-08-16T09:30:00.000Z', attempts: 1,
+  });
+  // Three days on, chasing again. Same text — and a message in its own right.
+  email.injectSent({
+    threadId, fromAddress: 'vlad@example.com', text: 'Any update?',
+    receivedAt: new Date('2026-08-19T09:30:00Z'),
+  });
+
+  assert.equal((await syncDealThreads({ store, email })).dealMessages, 1);
+});

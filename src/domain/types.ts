@@ -135,7 +135,22 @@ export interface Outreach {
   kind: OutreachKind;
   sequenceNo: number; // 0 = initial, 1.. = follow-ups
   status: SendStatus;
+  /**
+   * The Message-Id we generated and put on the wire. It is NOT a reliable handle
+   * on the sent message: Gmail replaces a self-set Message-Id, so for every
+   * gmail-api send the value stored here exists nowhere in the mailbox. Kept
+   * because it is what SMTP self-lookup searches for, and because it is the only
+   * identifier the ~5.4k rows written before `emailId` have.
+   */
   rfcMessageId: string;
+  /**
+   * The provider's own id for this message — Gmail's message id, the same value
+   * that comes back as `IncomingEmail.emailId` when the message is read again.
+   * THIS is what identifies a sent message afterwards; rfcMessageId cannot.
+   * Absent on anything sent over SMTP, and on everything sent before this field
+   * existed.
+   */
+  emailId?: string;
   threadId?: string;
   subject: string;
   body: string;

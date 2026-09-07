@@ -241,6 +241,10 @@ export async function sendDealMessage(
       ...outreach,
       status: 'sent',
       sentAt: now.toISOString(),
+      // The provider's own id for what it just sent. Without it the only handle
+      // on this message is a Message-Id Gmail has already thrown away, and the
+      // thread-sync pass reads it back as somebody else's mail.
+      ...(result.emailId ? { emailId: result.emailId } : {}),
       ...(landedIn ? { threadId: landedIn, threadResolvedAt: now.toISOString() } : {}),
     };
     await store.putOutreach(sent);

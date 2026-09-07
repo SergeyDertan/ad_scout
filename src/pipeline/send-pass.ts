@@ -194,6 +194,9 @@ async function sendOne(
       ...outreach,
       status: 'sent',
       sentAt: now.toISOString(),
+      // See Outreach.emailId: the provider's id is the only one that still
+      // names this message after Gmail has rewritten the Message-Id.
+      ...(result.emailId ? { emailId: result.emailId } : {}),
       ...(threadId ? { threadId, threadResolvedAt: now.toISOString() } : {}),
     });
 

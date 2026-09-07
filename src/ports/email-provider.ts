@@ -31,8 +31,21 @@ export interface OutgoingEmail {
 }
 
 export interface SendResult {
+  /**
+   * The Message-Id we ASKED for. Not necessarily the one the message ended up
+   * with: Gmail replaces a self-set Message-Id on send, so for a gmail-api
+   * account this identifies our intent and nothing in the mailbox. Anything that
+   * has to recognise the message later wants `emailId`.
+   */
   rfcMessageId: string;
   threadId?: string; // usually resolved post-send (SMTP returns none)
+  /**
+   * The provider's OWN id for the message it just sent — the same value
+   * `IncomingEmail.emailId` carries when we read that message back. Present for
+   * gmail-api, which returns it from messages.send; absent over SMTP, which
+   * reports nothing about where the message landed.
+   */
+  emailId?: string;
 }
 
 export interface IncomingEmail {

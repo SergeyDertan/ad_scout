@@ -40,17 +40,23 @@ export class DummyEmailProvider implements EmailProvider {
     // A reply joins the thread it names; anything else opens a new one.
     const threadId = msg.threadId ?? threadIdFor(msg.rfcMessageId);
     this.threads.set(msg.rfcMessageId, threadId);
-    // Our own copy, as a real mailbox keeps one in Sent.
+    const emailId = `sent_${++this.seq}`;
+    // Our own copy, as a real mailbox keeps one in Sent — AND WITH THE MESSAGE-ID
+    // THE SERVER ASSIGNED, not the one we asked for. Gmail replaces a self-set
+    // Message-Id on send, and this fake used to echo ours straight back, which
+    // made deal-thread-sync's dedupe look correct in every test while it failed
+    // against every real mailbox. A fake more cooperative than the real thing
+    // does not test anything.
     this.mailbox.push({
-      emailId: `sent_${++this.seq}`,
+      emailId,
       threadId,
-      rfcMessageId: msg.rfcMessageId,
+      rfcMessageId: `<${emailId}@dummy.example>`,
       fromAddress: msg.account.email,
       subject: msg.subject,
       receivedAt: new Date().toISOString(),
       text: msg.body,
     });
-    return { rfcMessageId: msg.rfcMessageId, threadId };
+    return { rfcMessageId: msg.rfcMessageId, threadId, emailId };
   }
 
   /** One conversation, ours included. Never drains — see `mailbox`. */

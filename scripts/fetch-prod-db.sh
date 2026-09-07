@@ -43,17 +43,50 @@
 # treat what this script leaves behind as mailbox credentials and delete it when
 # the investigation is done.
 #
+# SSH TARGET, AND WHY IT IS NOT JUST AN IP. adscout.dva-lymona.biz.ua is behind
+# Cloudflare, whose proxy carries 80/443 only — an ssh to the public name hangs.
+# So the address here is the origin IP. But a RAW IP matches no `Host` block in
+# ~/.ssh/config, which is where the IdentityFile and User usually live: point
+# this at an IP and ssh offers its default key names, the server rejects them,
+# and you get a password prompt on a box you have perfectly good key access to.
+#
+# Hence ADSCOUT_SSH: give it whatever target already works from your shell — an
+# alias from your ssh config is best, since the config then supplies the user and
+# the key. It is passed through verbatim.
+#
+#   ADSCOUT_SSH=adscout ./scripts/fetch-prod-db.sh          # a Host alias
+#   ADSCOUT_SSH=adscout@95.216.149.252 ./scripts/...        # explicit
+#   ADSCOUT_SSH_USER= ./scripts/...                         # let the config decide
+#
 # Env:
-#   ADSCOUT_HOST=95.216.149.252   the VPS (IP, so it does not depend on DNS)
-#   ADSCOUT_SSH_USER=adscout      the service user that owns /opt/adscout
+#   ADSCOUT_SSH                   complete ssh target, verbatim. Overrides the two below.
+#   ADSCOUT_HOST=95.216.149.252   the VPS origin IP (Cloudflare hides the name)
+#   ADSCOUT_SSH_USER=adscout      service user that owns /opt/adscout. Set it EMPTY
+#                                 to send no user at all and let ssh_config choose.
+#   ADSCOUT_SSH_OPTS             extra ssh/scp flags, e.g. '-i ~/.ssh/adscout'
 #   ADSCOUT_REMOTE=/opt/adscout   deployment root on the VPS
 
 set -euo pipefail
 
 HOST="${ADSCOUT_HOST:-95.216.149.252}"
-SSH_USER="${ADSCOUT_SSH_USER:-adscout}"
 REMOTE="${ADSCOUT_REMOTE:-/opt/adscout}"
-TARGET="${SSH_USER}@${HOST}"
+# Unset ⇒ adscout. Set-but-empty ⇒ deliberately no user, so ssh_config decides.
+SSH_USER="${ADSCOUT_SSH_USER-adscout}"
+if [ -n "${ADSCOUT_SSH:-}" ]; then
+  TARGET="$ADSCOUT_SSH"
+elif [ -n "$SSH_USER" ]; then
+  TARGET="${SSH_USER}@${HOST}"
+else
+  TARGET="$HOST"
+fi
+# Word-split deliberately: these are flags, not one argument.
+# shellcheck disable=SC2206
+SSH_OPTS=( ${ADSCOUT_SSH_OPTS:-} )
+
+# The `${a[@]+...}` guard is for bash 3.2, which macOS still ships as /bin/bash:
+# expanding an EMPTY array under `set -u` is an error there.
+ssh_() { ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "$@"; }
+scp_() { scp ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "$@"; }
 
 MODE=live
 IMPORT=yes
@@ -62,7 +95,9 @@ for arg in "$@"; do
     --live)      MODE=live ;;
     --backup)    MODE=backup ;;
     --no-import) IMPORT=no ;;
-    -h|--help)   sed -n '2,48p' "$0" | sed 's/^#\{1,2\} \{0,1\}//'; exit 0 ;;
+    # The whole leading comment block, however long it grows — a line range here
+    # silently starts truncating the help the first time the header is edited.
+    -h|--help)   awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; exit 0 ;;
     *)           echo "unknown argument: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -78,15 +113,30 @@ echo "→ ${TARGET}:${REMOTE}"
 # Fail here, with a readable message, rather than three commands later. A first
 # connection BY IP will not match a known_hosts entry made for the domain, so
 # expect a host-key prompt the first time.
-if ! ssh -o ConnectTimeout=10 "$TARGET" "test -d ${REMOTE}/data/pouch"; then
-  echo "cannot reach ${REMOTE}/data/pouch on ${TARGET}" >&2
-  echo "check the ssh user (ADSCOUT_SSH_USER=root ./scripts/fetch-prod-db.sh) or your key" >&2
+#
+# BatchMode so a target ssh cannot authenticate FAILS instead of sitting on a
+# password prompt. A password prompt here is not "you need the password" — it is
+# ssh telling you it found no usable key, which for this box means the target
+# matched no Host block in your ssh config. Say so, rather than inviting someone
+# to type a service account's password into a script.
+if ! ssh_ -o ConnectTimeout=10 -o BatchMode=yes "$TARGET" "test -d ${REMOTE}/data/pouch"; then
+  echo >&2
+  echo "cannot open ${REMOTE}/data/pouch as ${TARGET} with a key." >&2
+  echo >&2
+  echo "If you normally reach this box without a password, you reach it by an ALIAS," >&2
+  echo "and a bare IP matches no Host block — so no IdentityFile is selected. Use the" >&2
+  echo "alias that already works:" >&2
+  echo >&2
+  echo "    grep -B2 -A6 -i '95.216.149.252' ~/.ssh/config      # find its name" >&2
+  echo "    ADSCOUT_SSH=<that alias> $0 $*" >&2
+  echo >&2
+  echo "Or point at the key directly:  ADSCOUT_SSH_OPTS='-i ~/.ssh/<key>' $0 $*" >&2
   exit 1
 fi
 
 # For orientation, whichever mode is running: how stale the safe copy would be.
 echo -n "→ newest hourly backup: "
-ssh "$TARGET" "ls -t ${REMOTE}/backups/*.tar.gz 2>/dev/null | head -1 | xargs -r basename" || true
+ssh_ "$TARGET" "ls -t ${REMOTE}/backups/*.tar.gz 2>/dev/null | head -1 | xargs -r basename" || true
 
 if [ "$MODE" = live ]; then
   ARCHIVE="backups/adscout-live-${STAMP}.tar.gz"
@@ -94,20 +144,20 @@ if [ "$MODE" = live ]; then
 
   echo "→ archiving the live store on the VPS"
   # -C so the archive holds `pouch/...` and not the whole absolute path.
-  ssh "$TARGET" "tar -czf '${REMOTE_TMP}' -C '${REMOTE}/data' pouch"
+  ssh_ "$TARGET" "tar -czf '${REMOTE_TMP}' -C '${REMOTE}/data' pouch"
   echo "→ scp"
-  scp "${TARGET}:${REMOTE_TMP}" "$ARCHIVE"
+  scp_ "${TARGET}:${REMOTE_TMP}" "$ARCHIVE"
   # Always clean up after ourselves, including on a failed scp.
-  ssh "$TARGET" "rm -f '${REMOTE_TMP}'"
+  ssh_ "$TARGET" "rm -f '${REMOTE_TMP}'"
 else
-  REMOTE_ARCHIVE="$(ssh "$TARGET" "ls -t ${REMOTE}/backups/*.tar.gz | head -1")"
+  REMOTE_ARCHIVE="$(ssh_ "$TARGET" "ls -t ${REMOTE}/backups/*.tar.gz | head -1")"
   if [ -z "$REMOTE_ARCHIVE" ]; then
     echo "no backups in ${REMOTE}/backups — is BACKUP=off?" >&2
     exit 1
   fi
   ARCHIVE="backups/$(basename "$REMOTE_ARCHIVE")"
   echo "→ scp $(basename "$REMOTE_ARCHIVE")"
-  scp "${TARGET}:${REMOTE_ARCHIVE}" "$ARCHIVE"
+  scp_ "${TARGET}:${REMOTE_ARCHIVE}" "$ARCHIVE"
 fi
 
 echo "→ ${ARCHIVE}  ($(du -h "$ARCHIVE" | cut -f1))"

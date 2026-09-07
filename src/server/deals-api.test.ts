@@ -320,3 +320,128 @@ test('every payload names our own mailbox, not just theirs', async () => {
     await h.close();
   }
 });
+
+// --- Attachments ------------------------------------------------------------
+
+const png = Buffer.from('89504e470d0a1a0a', 'hex');
+
+test('a screenshot posted with a message is sent, stored, and comes back on the timeline', async () => {
+  const h = await start();
+  try {
+    const deal = await J(`${h.base}/api/deals`, post('', {
+      counterpartyEmail: 'admin@site1.com', accountId: 'a1', threadIds: [h.threadId],
+    }));
+
+    const sent = await J(`${h.base}/api/deals/${deal.id}/messages`, post('', {
+      body: 'this is what I mean',
+      attachments: [
+        { filename: 'shot.png', mimeType: 'image/png', contentBase64: png.toString('base64') },
+      ],
+    }));
+
+    assert.equal(sent.outreach.attachments.length, 1);
+    // Recomputed from the bytes, never taken from the request: it is what the
+    // caps are enforced against and what the UI prints.
+    assert.equal(sent.outreach.attachments[0].size, png.length);
+    assert.deepEqual(h.email.sent[h.email.sent.length - 1]!.attachments![0]!.contentBase64,
+      png.toString('base64'), 'the same bytes reached the wire');
+
+    const detail = await J(`${h.base}/api/deals/${deal.id}`);
+    const ours = detail.timeline.filter((i: any) => i.kind === 'sent');
+    assert.equal(ours[ours.length - 1].outreach.attachments[0].filename, 'shot.png');
+  } finally {
+    await h.close();
+  }
+});
+
+// A screenshot IS the message often enough — "here's what I mean" with a picture
+// of the broken layout — that requiring a sentence with it would be arbitrary.
+test('a message may be nothing but a file, but not nothing at all', async () => {
+  const h = await start();
+  try {
+    const deal = await J(`${h.base}/api/deals`, post('', {
+      counterpartyEmail: 'admin@site1.com', accountId: 'a1', threadIds: [h.threadId],
+    }));
+
+    const ok = await J(`${h.base}/api/deals/${deal.id}/messages`, post('', {
+      attachments: [
+        { filename: 'shot.png', mimeType: 'image/png', contentBase64: png.toString('base64') },
+      ],
+    }));
+    assert.equal(ok.outreach.body, '');
+    assert.equal(ok.outreach.attachments.length, 1);
+
+    const empty = await fetch(`${h.base}/api/deals/${deal.id}/messages`, post('', {}));
+    assert.equal(empty.status, 400);
+  } finally {
+    await h.close();
+  }
+});
+
+test('files that could never be sent are refused with a reason, before anything is attempted', async () => {
+  const h = await start();
+  try {
+    const deal = await J(`${h.base}/api/deals`, post('', {
+      counterpartyEmail: 'admin@site1.com', accountId: 'a1', threadIds: [h.threadId],
+    }));
+    const before = h.email.sent.length;
+    const url = `${h.base}/api/deals/${deal.id}/messages`;
+
+    // Not base64 at all — the commonest client bug is posting the data: URL whole.
+    const bad = await fetch(url, post('', {
+      body: 'x',
+      attachments: [{ filename: 'a.png', mimeType: 'image/png', contentBase64: 'data:image/png;base64,iVBOR' }],
+    }));
+    assert.equal(bad.status, 400);
+    assert.match((await bad.json()).error, /not valid base64/);
+
+    // Over the per-message total, which no email could carry.
+    const huge = await fetch(url, post('', {
+      body: 'x',
+      attachments: [{
+        filename: 'big.bin', mimeType: 'application/octet-stream',
+        contentBase64: Buffer.alloc(4 * 1024 * 1024, 7).toString('base64'),
+      }],
+    }));
+    assert.equal(huge.status, 400);
+    assert.match((await huge.json()).error, /more than one email can carry/);
+
+    const nameless = await fetch(url, post('', {
+      body: 'x',
+      attachments: [{ mimeType: 'image/png', contentBase64: png.toString('base64') }],
+    }));
+    assert.equal(nameless.status, 400);
+
+    assert.equal(h.email.sent.length, before, 'nothing left the mailbox');
+    assert.equal(
+      (await h.store.listOutreaches()).filter((o) => o.kind === 'manual').length, 0,
+      'and nothing was written down',
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+// The composer hides the paperclip on a mailbox that cannot carry files, and
+// this is where it learns that. The send route enforces the same answer anyway.
+test('the deal detail says whether its mailbox can send files at all', async () => {
+  const h = await start();
+  try {
+    const deal = await J(`${h.base}/api/deals`, post('', {
+      counterpartyEmail: 'admin@site1.com', accountId: 'a1', threadIds: [h.threadId],
+    }));
+    assert.equal((await J(`${h.base}/api/deals/${deal.id}`)).canSendAttachments, true);
+
+    h.email.canSendAttachments = () => false;
+    assert.equal((await J(`${h.base}/api/deals/${deal.id}`)).canSendAttachments, false);
+
+    const refused = await fetch(`${h.base}/api/deals/${deal.id}/messages`, post('', {
+      body: 'see attached',
+      attachments: [{ filename: 'a.png', mimeType: 'image/png', contentBase64: png.toString('base64') }],
+    }));
+    assert.equal(refused.status, 400, 'a client-input problem, not a send failure');
+    assert.match((await refused.json()).error, /Gmail API/);
+  } finally {
+    await h.close();
+  }
+});

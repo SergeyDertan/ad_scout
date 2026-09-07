@@ -8,7 +8,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import type { Account } from '../../domain/types';
-import { credsFor } from './smtp-imap.provider';
+import { AttachmentsUnsupportedError } from '../../ports/email-provider';
+import { credsFor, SmtpImapProvider } from './smtp-imap.provider';
 
 function account(credentialRef: string): Account {
   return {
@@ -59,4 +60,30 @@ test('credsFor: a non-Gmail host overrides SMTP/IMAP hosts and ports', () => {
   assert.equal(creds.imapHost, 'mail.work.example');
   assert.equal(creds.smtpPort, 587);
   assert.equal(creds.imapPort, 143);
+});
+
+// Attachments are Gmail-API-only by decision, and the refusal must happen BEFORE
+// any credential or transport work — a message whose screenshot was silently
+// dropped looks, to the person who sent it, exactly like one that went.
+test('send refuses attachments rather than dropping them', async () => {
+  const provider = new SmtpImapProvider();
+  await assert.rejects(
+    () =>
+      provider.send({
+        to: 'admin@t1.com',
+        subject: 'Re: guest post',
+        body: 'see attached',
+        rfcMessageId: '<own@adscout>',
+        account: account('GMAIL_OUTREACH'),
+        attachments: [
+          { filename: 'shot.png', mimeType: 'image/png', size: 1, contentBase64: 'eA==' },
+        ],
+      }),
+    AttachmentsUnsupportedError,
+    'and it is a typed refusal, so the API can answer 400 rather than 502',
+  );
+});
+
+test('canSendAttachments is a plain no, so callers can ask before writing anything', () => {
+  assert.equal(new SmtpImapProvider().canSendAttachments(), false);
 });

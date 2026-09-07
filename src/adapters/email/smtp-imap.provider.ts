@@ -15,6 +15,7 @@
 import type { OutcomeLabel } from '../../domain/labels';
 import type { Account, EmailAttachment } from '../../domain/types';
 import {
+  AttachmentsUnsupportedError,
   MAX_ATTACHMENT_BYTES,
   type EmailProvider,
   type IncomingEmail,
@@ -57,8 +58,28 @@ export class SmtpImapProvider implements EmailProvider {
   readonly name = 'smtp-imap';
   readonly supportsThreadId = true;
 
+  // See send(): a deliberate refusal, so callers can say so before writing
+  // anything down.
+  canSendAttachments(): boolean {
+    return false;
+  }
+
   async send(msg: OutgoingEmail): Promise<SendResult> {
+    // Sending files is a Gmail-API-only capability, by decision rather than by
+    // limitation — nodemailer would take them happily. Refusing here keeps one
+    // implementation of outbound MIME instead of two, and refusing LOUDLY is the
+    // whole point: a message whose screenshot was silently dropped looks sent.
+    //
+    // Reachable in one real case: RoutingEmailProvider falls back to this
+    // adapter for a gmail-api account that has not finished OAuth. Callers check
+    // for this before reserving an Outreach, so nothing is recorded.
+    if (msg.attachments?.length) {
+      throw new AttachmentsUnsupportedError(
+        'this mailbox sends over SMTP, which AdScout does not use for attachments — connect it to the Gmail API to send files',
+      );
+    }
     const creds = credsFor(msg.account);
+
     const nodemailer: any = await import('nodemailer' as string);
     const transport = nodemailer.createTransport({
       host: creds.smtpHost,

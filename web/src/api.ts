@@ -9,6 +9,7 @@ import type {
   DomainDetail,
   DomainExclusion,
   DomainSummary,
+  EmailAttachment,
   ExtractionDebug,
   IgnoreEntry,
   NewAccount,
@@ -154,7 +155,15 @@ export const api = {
     req<{ ok: boolean }>(`/deals/${id}/threads`, { method: 'POST', body: JSON.stringify({ threadIds }) }),
   // `subject` is derived server-side from the thread being answered; pass one
   // only for the first message on a deal that has no conversation yet.
-  sendDealMessage: (id: string, body: { body: string; subject?: string; threadId?: string }) =>
+  sendDealMessage: (
+    id: string,
+    body: {
+      body: string;
+      subject?: string;
+      threadId?: string;
+      attachments?: EmailAttachment[];
+    },
+  ) =>
     req<{ outreach: Outreach; threadId?: string }>(`/deals/${id}/messages`, {
       method: 'POST',
       body: JSON.stringify(body),

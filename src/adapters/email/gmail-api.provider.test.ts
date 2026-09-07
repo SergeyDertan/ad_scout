@@ -294,3 +294,119 @@ test('fetchThread: a real transport failure still propagates', async () => {
     restore();
   }
 });
+
+// --- Outgoing MIME ----------------------------------------------------------
+
+/** Capture the raw message a send would put on the wire, decoded back to text. */
+async function rawOf(msg: Parameters<GmailApiProvider['send']>[0]): Promise<string> {
+  const store = new MemoryStore();
+  await store.putAccount(msg.account);
+  const provider = new GmailApiProvider(store, 'cid', 'secret');
+  const original = globalThis.fetch;
+  let raw = '';
+  globalThis.fetch = (async (_input: string | URL, init?: RequestInit) => {
+    raw = (JSON.parse(String(init!.body)) as { raw: string }).raw;
+    return new Response(JSON.stringify({ id: 'm1', threadId: 't1' }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    await provider.send(msg);
+  } finally {
+    globalThis.fetch = original;
+  }
+  return Buffer.from(raw, 'base64url').toString('utf8');
+}
+
+function outgoing(attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>) {
+  return {
+    to: 'admin@t1.com',
+    subject: 'Re: guest post',
+    body: 'Here is what I meant.',
+    rfcMessageId: '<own@adscout>',
+    account: account(),
+    ...(attachments
+      ? {
+          attachments: attachments.map((a) => ({
+            filename: a.filename,
+            mimeType: a.mimeType,
+            size: a.content.length,
+            contentBase64: a.content.toString('base64'),
+          })),
+        }
+      : {}),
+  };
+}
+
+// The cold sequence goes down this path on every send. A message with no files
+// must therefore be built exactly as it was before attachments existed — not
+// "equivalently", but as a single text/plain part with no boundary in sight.
+test('a message with no attachments is still a plain single-part message', async () => {
+  const raw = await rawOf(outgoing());
+  assert.match(raw, /^Content-Type: text\/plain; charset=utf-8$/m);
+  assert.doesNotMatch(raw, /multipart/);
+  assert.doesNotMatch(raw, /Content-Disposition/);
+  assert.match(raw, /Here is what I meant\./);
+});
+
+test('attachments make the message multipart, with the text first and the file intact', async () => {
+  const png = Buffer.from('89504e470d0a1a0a' + '00'.repeat(120), 'hex');
+  const raw = await rawOf(outgoing([{ filename: 'shot.png', mimeType: 'image/png', content: png }]));
+
+  const boundary = raw.match(/boundary="([^"]+)"/)?.[1];
+  assert.ok(boundary, 'the multipart header names a boundary');
+  assert.match(raw, /^Content-Type: multipart\/mixed; /m);
+  assert.equal(raw.split(`--${boundary}`).length - 1, 3, 'two parts, then the closing delimiter');
+  assert.ok(raw.trimEnd().endsWith(`--${boundary}--`), 'the message ends with the closing delimiter');
+
+  // The text part comes first: mail clients show it as the message.
+  assert.ok(
+    raw.indexOf('text/plain') < raw.indexOf('image/png'),
+    'the body is the first part',
+  );
+  assert.match(raw, /Content-Disposition: attachment; filename="shot\.png"/);
+
+  // The bytes survive: pull the last part's base64 back out and compare.
+  const parts = raw.split(`--${boundary}`);
+  const filePart = parts[2]!;
+  const encoded = filePart.slice(filePart.indexOf('\r\n\r\n') + 4).trim();
+  assert.deepEqual(Buffer.from(encoded, 'base64'), png, 'the file arrives byte for byte');
+  assert.ok(
+    encoded.split('\r\n').every((line) => line.length <= 76),
+    'base64 is wrapped at the 76 columns RFC 2045 allows',
+  );
+});
+
+// An encoded-word is not legal in a parameter value, so a non-ASCII name must
+// take RFC 2231's filename* form rather than the =?utf-8?B?…?= used for Subject.
+test('a non-ASCII filename is encoded as an RFC 2231 parameter', async () => {
+  const raw = await rawOf(
+    outgoing([{ filename: 'скриншот.png', mimeType: 'image/png', content: Buffer.from('x') }]),
+  );
+  assert.match(raw, /Content-Disposition: attachment; filename\*=utf-8''/);
+  assert.doesNotMatch(raw, /filename="скриншот/, 'never raw UTF-8 in a quoted parameter');
+  assert.doesNotMatch(raw, /filename="=\?/, 'and never a Subject-style encoded word');
+});
+
+// A header is not a place to accept whatever the client typed: a mimeType with a
+// newline in it could inject a header of its own.
+test('a malformed mime type falls back to the generic one', async () => {
+  const raw = await rawOf(
+    outgoing([
+      { filename: 'x.bin', mimeType: 'image/png\r\nBcc: someone@else.com', content: Buffer.from('x') },
+    ]),
+  );
+  assert.match(raw, /Content-Type: application\/octet-stream/);
+  assert.doesNotMatch(raw, /Bcc:/);
+});
+
+// A header line has a hard 998-character limit, and percent-encoding costs up to
+// nine characters per character — so the budget belongs to the ENCODED name.
+test('a long non-ASCII filename is trimmed to keep the header legal, extension and all', async () => {
+  const raw = await rawOf(
+    outgoing([
+      { filename: `${'счёт'.repeat(80)}.pdf`, mimeType: 'application/pdf', content: Buffer.from('x') },
+    ]),
+  );
+  const line = raw.split('\r\n').find((l) => l.startsWith('Content-Disposition'))!;
+  assert.ok(line.length < 998, `header line is ${line.length} characters`);
+  assert.match(line, /\.pdf$/, 'and still says what kind of file it is');
+});

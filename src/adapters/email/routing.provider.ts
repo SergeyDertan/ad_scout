@@ -34,6 +34,14 @@ export class RoutingEmailProvider implements EmailProvider {
     return this.pick(msg.account).send(msg);
   }
 
+  // Answered by whichever adapter would actually carry the message — which is
+  // the whole reason this question is per-account: an unconnected gmail-api
+  // account lands on smtp-imap, and smtp-imap cannot.
+  canSendAttachments(account: Account): boolean {
+    const provider = this.pick(account);
+    return provider.canSendAttachments?.(account) ?? true;
+  }
+
   fetchReplies(account: Account, since?: Date): Promise<IncomingEmail[]> {
     return this.pick(account).fetchReplies(account, since);
   }

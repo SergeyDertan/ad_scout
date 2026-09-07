@@ -43,6 +43,7 @@ import type {
   Batch,
   CanPost,
   DealStatus,
+  EmailAttachment,
   ExtractionProvenance,
   ID,
   OutreachResult,
@@ -71,7 +72,12 @@ import type { Clock } from '../lib/clock';
 import { newId } from '../lib/ids';
 import { draftEmail } from '../services/drafter';
 import { logger } from '../lib/logger';
-import type { EmailProvider } from '../ports/email-provider';
+import {
+  AttachmentsUnsupportedError,
+  MAX_ATTACHMENT_BYTES,
+  MAX_OUTGOING_ATTACHMENT_TOTAL_BYTES,
+  type EmailProvider,
+} from '../ports/email-provider';
 import type { Store } from '../ports/store';
 import { dealTimeline, MissingSubjectError, sendDealMessage } from '../pipeline/deal-send';
 import {
@@ -154,6 +160,67 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 
 function str(v: unknown): string | undefined {
   return typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined;
+}
+
+/** More files than any real message needs, and few enough that the total cap is
+ *  reached before the per-message loop is worth worrying about. */
+const MAX_ATTACHMENTS_PER_MESSAGE = 10;
+
+/**
+ * Files posted with a deal message, validated into EmailAttachments.
+ *
+ * `size` is RECOMPUTED from the decoded bytes rather than read from the request:
+ * it is what the caps are enforced against and what the UI later prints, and a
+ * number the client supplies is neither. Returns a message instead of throwing
+ * so the route can answer 400 with something a person can act on.
+ */
+function parseAttachments(
+  value: unknown,
+): { attachments: EmailAttachment[] } | { error: string } {
+  if (value === undefined || value === null) return { attachments: [] };
+  if (!Array.isArray(value)) return { error: 'attachments must be an array' };
+  if (value.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+    return { error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} attachments per message` };
+  }
+
+  const attachments: EmailAttachment[] = [];
+  let total = 0;
+  for (const raw of value) {
+    if (typeof raw !== 'object' || raw === null) return { error: 'each attachment must be an object' };
+    const a = raw as Record<string, unknown>;
+    const filename = str(a.filename);
+    const contentBase64 = typeof a.contentBase64 === 'string' ? a.contentBase64 : undefined;
+    if (!filename) return { error: 'each attachment needs a filename' };
+    if (!contentBase64) return { error: `${filename}: no content` };
+
+    // Buffer.from is famously forgiving — it skips what it cannot decode rather
+    // than failing — so a round-trip is the only honest test that the client
+    // sent base64 and not, say, a data: URL with its prefix still attached.
+    const content = Buffer.from(contentBase64, 'base64');
+    if (!content.length || content.toString('base64') !== contentBase64.replace(/\s+/g, '')) {
+      return { error: `${filename}: content is not valid base64` };
+    }
+    if (content.length > MAX_ATTACHMENT_BYTES) {
+      return { error: `${filename} is larger than ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)} MB` };
+    }
+    total += content.length;
+    if (total > MAX_OUTGOING_ATTACHMENT_TOTAL_BYTES) {
+      return {
+        error: `those files total more than ${(MAX_OUTGOING_ATTACHMENT_TOTAL_BYTES / 1024 / 1024).toFixed(1)} MB, which is more than one email can carry`,
+      };
+    }
+
+    attachments.push({
+      filename,
+      mimeType: str(a.mimeType) ?? 'application/octet-stream',
+      size: content.length,
+      // The canonical re-encoding, not the string that arrived: it is what the
+      // decoded bytes and `size` actually describe, and it is what the MIME
+      // builder can safely line-wrap.
+      contentBase64: content.toString('base64'),
+    });
+  }
+  return { attachments };
 }
 
 /** Strip raw OAuth tokens from an account before sending to the client.
@@ -910,6 +977,13 @@ async function handle(
       return sendJson(res, 200, {
         deal,
         accountEmail: dealAccount?.email,
+        // Whether this deal's mailbox can carry files, answered by the provider
+        // that would actually send them. The composer hides the paperclip when
+        // it cannot, which is kinder than letting someone pick a screenshot and
+        // then refusing it — the send route enforces the same answer regardless.
+        canSendAttachments: dealAccount
+          ? deps.email?.canSendAttachments?.(dealAccount) ?? true
+          : false,
         placements: placements.sort((a, b) => a.domain.localeCompare(b.domain)),
         domains: dealDomains(placements),
         threadIds: (await store.listThreadLinks({ dealId: deal.id })).map((l) => l.threadId),
@@ -1025,7 +1099,13 @@ async function handle(
       // first message on a deal that has no conversation yet.
       const subject = str(body.subject);
       const text = str(body.body);
-      if (!text) return sendJson(res, 400, { error: 'body is required' });
+      const files = parseAttachments(body.attachments);
+      if ('error' in files) return sendJson(res, 400, { error: files.error });
+      // A message may be nothing but a screenshot — the body is only required
+      // when there is no other content to send.
+      if (!text && files.attachments.length === 0) {
+        return sendJson(res, 400, { error: 'body is required' });
+      }
       if (!(await store.getDeal(seg[2]))) return sendJson(res, 404, { error: 'deal not found' });
       try {
         const sent = await sendDealMessage(
@@ -1033,7 +1113,8 @@ async function handle(
           {
             dealId: seg[2],
             ...(subject ? { subject } : {}),
-            body: text,
+            body: text ?? '',
+            ...(files.attachments.length ? { attachments: files.attachments } : {}),
             ...(str(body.threadId) ? { threadId: str(body.threadId)! } : {}),
           },
         );
@@ -1041,6 +1122,11 @@ async function handle(
       } catch (err) {
         // Nothing was sent and nothing recorded — the caller must name a subject.
         if (err instanceof MissingSubjectError) return sendJson(res, 400, { error: err.message });
+        // Likewise: refused before the reservation, because this mailbox cannot
+        // carry files at all.
+        if (err instanceof AttachmentsUnsupportedError) {
+          return sendJson(res, 400, { error: err.message });
+        }
         // The Outreach is already recorded as 'failed' — report, don't swallow.
         return sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
       }

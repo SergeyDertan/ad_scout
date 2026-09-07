@@ -10,6 +10,8 @@
 // Credentials are loaded automatically from client_secret.json (or via
 // GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET env vars).
 
+import { randomUUID } from 'node:crypto';
+
 import { ALL_LABELS, LABEL_COLORS, type OutcomeLabel } from '../../domain/labels';
 import type { Account, EmailAttachment } from '../../domain/types';
 import { describeError } from '../../lib/errors';
@@ -192,6 +194,12 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
   }
 
   // ----- EmailProvider -------------------------------------------------------
+
+  // The one adapter that carries files: it builds the MIME itself and hands
+  // Gmail the whole message.
+  canSendAttachments(): boolean {
+    return true;
+  }
 
   async send(msg: OutgoingEmail): Promise<SendResult> {
     const raw = buildRfc2822(msg);
@@ -519,10 +527,22 @@ export class GmailApiProvider implements EmailProvider, GmailOAuthHandler {
   }
 }
 
-// ----- RFC 2822 builder (plain-text, no external deps) ----------------------
+// ----- RFC 2822 builder (plain-text + attachments, no external deps) --------
 
+/**
+ * The message as Gmail wants it: one RFC 2822 document.
+ *
+ * A message with no files is built exactly as it always was — a single
+ * text/plain part, byte for byte. That is the point of the branch rather than
+ * always emitting multipart: every cold send in the drip goes down the old path
+ * unchanged, so adding attachments to deals cannot alter what a pitch looks
+ * like in a publisher's inbox.
+ *
+ * With files it becomes multipart/mixed: the same text part first (clients show
+ * the first part as the message), then one base64 part per file.
+ */
 function buildRfc2822(msg: OutgoingEmail): string {
-  return [
+  const headers = [
     `From: ${msg.account.senderName} <${msg.account.email}>`,
     `To: ${msg.to}`,
     `Subject: ${encodeHeader(msg.subject)}`,
@@ -534,11 +554,98 @@ function buildRfc2822(msg: OutgoingEmail): string {
     ...(msg.inReplyTo ? [`In-Reply-To: ${msg.inReplyTo}`] : []),
     ...(msg.references?.length ? [`References: ${msg.references.join(' ')}`] : []),
     `MIME-Version: 1.0`,
+  ];
+
+  const textPart = [
     `Content-Type: text/plain; charset=utf-8`,
     `Content-Transfer-Encoding: quoted-printable`,
     ``,
     encodeQP(msg.body),
+  ];
+
+  if (!msg.attachments?.length) {
+    return [...headers, ...textPart].join('\r\n');
+  }
+
+  const boundary = mimeBoundary();
+  return [
+    ...headers,
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    ``,
+    `--${boundary}`,
+    ...textPart,
+    ...msg.attachments.flatMap((att) => [
+      ``,
+      `--${boundary}`,
+      `Content-Type: ${sanitizeMimeType(att.mimeType)}`,
+      `Content-Transfer-Encoding: base64`,
+      `Content-Disposition: attachment; ${filenameParam(att.filename)}`,
+      ``,
+      wrapBase64(att.contentBase64),
+    ]),
+    ``,
+    `--${boundary}--`,
+    ``,
   ].join('\r\n');
+}
+
+/** A delimiter that cannot occur inside base64 or in a quoted-printable body,
+ *  and cannot collide with another message's. */
+function mimeBoundary(): string {
+  return `--adscout-${randomUUID()}`;
+}
+
+/** A header value is not a place to accept arbitrary client input. Keep the
+ *  MIME type to the shape of a MIME type, and fall back to the generic one. */
+function sanitizeMimeType(mimeType: string): string {
+  return /^[\w.+-]+\/[\w.+-]+$/.test(mimeType) ? mimeType : 'application/octet-stream';
+}
+
+/**
+ * The `filename` parameter of Content-Disposition.
+ *
+ * Encoded-words (`=?utf-8?B?…?=`) are NOT legal inside a parameter value, which
+ * is why this cannot reuse encodeHeader: RFC 2231's `filename*` is the correct
+ * form for a non-ASCII name, and Gmail honours it. An ASCII name takes the plain
+ * quoted form, with the characters that would end the quoted string removed.
+ */
+function filenameParam(filename: string): string {
+  const name = shortEnoughName(filename);
+  if (!/[^\x20-\x7E]/.test(name)) {
+    return `filename="${name.replace(/["\\]/g, '_')}"`;
+  }
+  return `filename*=utf-8''${encodeURIComponent(name)}`;
+}
+
+/**
+ * A filename trimmed until the header line it goes on is safely legal.
+ *
+ * The budget is spent by the ENCODED name, not the typed one: percent-encoding
+ * costs up to nine characters per character, so a merely long Cyrillic or CJK
+ * name — 200 characters is nothing for a downloaded invoice — would otherwise
+ * produce a header line past RFC 5322's 998-character hard limit and a message
+ * some MTA in the path is entitled to reject.
+ *
+ * The extension is kept while the middle is eaten, because a name is far more
+ * useful truncated than it is without the part that says what the file IS.
+ */
+function shortEnoughName(filename: string): string {
+  const clean = filename.replace(/[\r\n]/g, '').trim();
+  if (!clean) return 'attachment';
+  const dot = clean.lastIndexOf('.');
+  const ext = dot > 0 ? clean.slice(dot, dot + 12) : '';
+  let base = dot > 0 ? clean.slice(0, dot) : clean;
+  while (base && encodeURIComponent(base + ext).length > 200) base = base.slice(0, -1);
+  const name = base + ext;
+  // Only reachable if the extension alone is oversized, which means it is not
+  // an extension.
+  return encodeURIComponent(name).length > 200 ? 'attachment' : name || 'attachment';
+}
+
+/** RFC 2045 caps an encoded line at 76 characters. Gmail tolerates a single
+ *  enormous line; other MTAs in the path are entitled not to. */
+function wrapBase64(b64: string): string {
+  return (b64.replace(/\s+/g, '').match(/.{1,76}/g) ?? []).join('\r\n');
 }
 
 function encodeHeader(s: string): string {

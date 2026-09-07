@@ -320,6 +320,8 @@ export interface Outreach {
   status: SendStatus;
   subject: string;
   body: string;
+  /** Files we sent with it — present only on a hand-written deal message. */
+  attachments?: EmailAttachment[];
   reservedAt: string;
   sentAt?: string;
   error?: string;
@@ -698,6 +700,8 @@ export interface DealReply {
 export interface DealDetail {
   deal: Deal;
   accountEmail?: string;
+  /** Whether this deal's mailbox can send files at all (Gmail API only). */
+  canSendAttachments?: boolean;
   placements: Placement[];
   domains: string[];
   threadIds: string[];

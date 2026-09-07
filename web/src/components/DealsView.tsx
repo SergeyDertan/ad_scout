@@ -19,6 +19,7 @@ import {
   Flex,
   HStack,
   Heading,
+  IconButton,
   Input,
   Link,
   NativeSelect,
@@ -30,6 +31,7 @@ import {
 } from '@chakra-ui/react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
+import { pastedName, readAsAttachment, rejectReason } from '../attachments';
 import { splitQuoted } from '../quoted-text';
 import type {
   Account,
@@ -37,8 +39,10 @@ import type {
   DealRow,
   DealStatus,
   DealTimelineItem,
+  EmailAttachment,
   Placement,
 } from '../types';
+
 import { Attachments } from './Attachments';
 import { DataPanel } from './DataPanel';
 import { Empty } from './Empty';
@@ -52,6 +56,7 @@ import {
   ChevronDownIcon,
   ExternalLinkIcon,
   MegaphoneIcon,
+  PaperclipIcon,
   PencilIcon,
   PlusIcon,
   SearchIcon,
@@ -503,7 +508,9 @@ function DealDetailView({
           dealId={deal.id}
           timeline={timeline}
           hasThread={threadIds.length > 0}
+          canAttach={detail.canSendAttachments !== false}
           fromEmail={accountEmail}
+
           toEmail={deal.counterpartyEmail}
           onSent={load}
         />
@@ -581,6 +588,7 @@ function Conversation({
   dealId,
   timeline,
   hasThread,
+  canAttach,
   fromEmail,
   toEmail,
   onSent,
@@ -590,13 +598,17 @@ function Conversation({
   /** Whether a thread exists to reply into. Without one there is no subject to
    *  inherit, and the composer asks for one. */
   hasThread: boolean;
+  /** Whether this deal's mailbox can carry files at all — Gmail API only. */
+  canAttach: boolean;
   fromEmail?: string;
   toEmail: string;
   onSent: () => void;
 }) {
   const [body, setBody] = useState('');
   const [subject, setSubject] = useState('');
+  const [files, setFiles] = useState<EmailAttachment[]>([]);
   const [busy, setBusy] = useState(false);
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
 
@@ -669,6 +681,47 @@ function Conversation({
     return undefined;
   }, [timeline]);
 
+  /**
+   * Stage dropped, pasted or picked files.
+   *
+   * Each is checked against what is ALREADY staged, one at a time, so a
+   * selection that busts the total keeps the files that fit rather than being
+   * refused wholesale — and says which one it stopped at.
+   */
+  const addFiles = useCallback(async (picked: FileList | File[], pasted = false) => {
+    const list = [...picked];
+    if (list.length === 0) return;
+    for (const file of list) {
+      let attachment: EmailAttachment;
+      try {
+        attachment = await readAsAttachment(file);
+      } catch (e) {
+        toastError('Could not read that file', e);
+        continue;
+      }
+      // Only a PASTE gets renamed: the clipboard calls every screenshot
+      // "image.png" (see pastedName), while a file someone chose has a name
+      // they picked, even when that name happens to be image.png.
+      if (pasted || !attachment.filename) {
+        attachment.filename = pastedName(attachment.mimeType, new Date());
+      }
+
+      let stop: string | undefined;
+      setFiles((current) => {
+        const reason = rejectReason(current, { name: attachment.filename, size: attachment.size });
+        if (reason) {
+          stop = reason;
+          return current;
+        }
+        return [...current, attachment];
+      });
+      if (stop) {
+        toaster.create({ type: 'error', title: 'Not attached', description: stop });
+        break;
+      }
+    }
+  }, []);
+
   const send = async () => {
     setBusy(true);
     try {
@@ -676,9 +729,12 @@ function Conversation({
         body,
         // Only ever sent for the first message on a deal with no conversation.
         ...(hasThread || !subject.trim() ? {} : { subject: subject.trim() }),
+        ...(files.length ? { attachments: files } : {}),
       });
-      // Cleared only on success — a failed send must not eat what you wrote.
+      // Cleared only on success — a failed send must not eat what you wrote, or
+      // make you find the screenshot again.
       setBody('');
+      setFiles([]);
       pinned.current = true;
       toaster.create({ type: 'success', title: 'Message sent' });
       onSent();
@@ -689,7 +745,10 @@ function Conversation({
     }
   };
 
-  const canSend = Boolean(body.trim()) && (hasThread || Boolean(subject.trim()));
+  // A message may be a screenshot with nothing typed — that is a whole reply in
+  // a negotiation ("here's what I mean"), so files alone are enough to send.
+  const canSend =
+    Boolean(body.trim() || files.length) && (hasThread || Boolean(subject.trim()));
 
   return (
     <Panel
@@ -727,6 +786,10 @@ function Conversation({
         replyingUnder={replyingUnder}
         fromEmail={fromEmail}
         toEmail={toEmail}
+        files={files}
+        canAttach={canAttach}
+        onAddFiles={addFiles}
+        onRemoveFile={(i) => setFiles((current) => current.filter((_, at) => at !== i))}
         busy={busy}
         canSend={canSend}
         onSend={send}
@@ -837,8 +900,17 @@ function Bubble({
       py={2.5}
       boxShadow="xs"
     >
-      <MessageBody text={text} inverted={ours && !failed} />
-      {item.kind === 'received' && <Attachments attachments={item.reply.attachments} compact />}
+      {/* A message can be nothing but a screenshot, and an empty body would
+          otherwise render as an empty line above it. */}
+      {text.trim() && <MessageBody text={text} inverted={ours && !failed} />}
+      {/* Both directions: a screenshot we sent is as much a part of the
+          negotiation as the rate card they sent back. */}
+      <Attachments
+
+        attachments={item.kind === 'sent' ? item.outreach.attachments : item.reply.attachments}
+        compact
+      />
+
       {failed && item.kind === 'sent' && (
         <HStack mt={2} gap={2} align="center" wrap="wrap">
           <AlertTriangleIcon boxSize={3.5} />
@@ -940,6 +1012,10 @@ function Composer({
   replyingUnder,
   fromEmail,
   toEmail,
+  files,
+  canAttach,
+  onAddFiles,
+  onRemoveFile,
   busy,
   canSend,
   onSend,
@@ -952,11 +1028,18 @@ function Composer({
   replyingUnder?: string;
   fromEmail?: string;
   toEmail: string;
+  files: EmailAttachment[];
+  canAttach: boolean;
+  onAddFiles: (files: FileList | File[], pasted?: boolean) => void;
+
+  onRemoveFile: (index: number) => void;
   busy: boolean;
   canSend: boolean;
   onSend: () => void;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  const picker = useRef<HTMLInputElement>(null);
+  const [dragging, setDragging] = useState(false);
 
   // Grow with the message, up to a point — a composer that eats the whole pane
   // is as bad as one you can only see three lines of.
@@ -967,9 +1050,41 @@ function Composer({
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
   }, [body]);
 
+  // Dropping anywhere on the composer counts. dragenter/dragleave fire for every
+  // child the pointer crosses, so the highlight is driven by dragover (which
+  // repeats while the pointer is inside) and cleared on leave of the box itself.
+  const dropProps = canAttach
+    ? {
+        onDragOver: (e: React.DragEvent) => {
+          if (!e.dataTransfer.types.includes('Files')) return;
+          e.preventDefault();
+          setDragging(true);
+        },
+        onDragLeave: (e: React.DragEvent) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false);
+        },
+        onDrop: (e: React.DragEvent) => {
+          if (!e.dataTransfer.files.length) return;
+          e.preventDefault();
+          setDragging(false);
+          onAddFiles(e.dataTransfer.files);
+        },
+      }
+    : {};
+
   return (
-    <VStack align="stretch" gap={2} borderTopWidth="1px" borderColor="border" p={3} flexShrink={0}>
+    <VStack
+      align="stretch"
+      gap={2}
+      borderTopWidth="1px"
+      borderColor={dragging ? 'brand.solid' : 'border'}
+      bg={dragging ? 'brand.subtle' : undefined}
+      p={3}
+      flexShrink={0}
+      {...dropProps}
+    >
       <HStack fontSize="2xs" color="fg.subtle" gap={1.5} wrap="wrap">
+
         <Text>{fromEmail ?? 'this deal’s mailbox'}</Text>
         <Text>→</Text>
         <Text>{toEmail}</Text>
@@ -994,7 +1109,36 @@ function Composer({
         />
       )}
 
+      {/* Above the textarea, where what you are about to send is visible while
+          you write the sentence that goes with it. */}
+      <Attachments attachments={files} onRemove={onRemoveFile} />
+
       <HStack align="end" gap={2}>
+        {canAttach && (
+          <>
+            <input
+              ref={picker}
+              type="file"
+              multiple
+              hidden
+              onChange={(e) => {
+                if (e.target.files?.length) onAddFiles(e.target.files);
+                // Cleared so picking the SAME file twice in a row still fires
+                // change the second time.
+                e.target.value = '';
+              }}
+            />
+            <IconButton
+              size="sm"
+              variant="ghost"
+              aria-label="Attach a file"
+              title="Attach a file — or paste a screenshot"
+              onClick={() => picker.current?.click()}
+            >
+              <PaperclipIcon boxSize={4} />
+            </IconButton>
+          </>
+        )}
         <Textarea
           ref={ref}
           size="sm"
@@ -1004,6 +1148,15 @@ function Composer({
           placeholder="Write a reply…"
           value={body}
           onChange={(e) => setBody(e.target.value)}
+          // The screenshot path: ⌘⇧4 then ⌘V, with no trip through a file
+          // dialog. Only intercepted when the clipboard actually holds a file —
+          // pasting text stays ordinary pasting.
+          onPaste={(e) => {
+            if (!canAttach || !e.clipboardData.files.length) return;
+            e.preventDefault();
+            onAddFiles(e.clipboardData.files, true);
+
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && canSend && !busy) {
               e.preventDefault();
@@ -1020,6 +1173,9 @@ function Composer({
         {needsSubject
           ? 'Opens the conversation, and holds it from the first message.'
           : 'Goes out as a reply in the existing thread, and keeps the conversation held.'}
+        {canAttach
+          ? ' Paste, drop or pick a screenshot to send it along.'
+          : ' This mailbox sends over SMTP, so it cannot attach files — connect it to the Gmail API.'}
       </Text>
     </VStack>
   );

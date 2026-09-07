@@ -15,12 +15,12 @@
 //      touching the publisher's answer.
 
 import { normalizeEmail } from '../domain/reply-matching';
-import type { Deal, ID, Outreach, Reply } from '../domain/types';
+import type { Deal, EmailAttachment, ID, Outreach, Reply } from '../domain/types';
 import type { Clock } from '../lib/clock';
 import { describeError } from '../lib/errors';
 import { newId, newMessageId } from '../lib/ids';
 import { logger } from '../lib/logger';
-import type { EmailProvider } from '../ports/email-provider';
+import { AttachmentsUnsupportedError, type EmailProvider } from '../ports/email-provider';
 import type { Store } from '../ports/store';
 
 export interface DealSendDeps {
@@ -39,6 +39,12 @@ export interface DealSendInput {
    */
   subject?: string;
   body: string;
+  /**
+   * Files to send with the message — a screenshot, usually. Validated by the
+   * caller (size, count, decodability); refused here only when the deal's
+   * mailbox cannot carry them at all.
+   */
+  attachments?: EmailAttachment[];
   /**
    * Which conversation to continue. Omit to reply on the deal's most recent
    * thread, or when the deal has none yet — then this opens a new one.
@@ -187,6 +193,16 @@ export async function sendDealMessage(
   const account = await store.getAccount(deal.accountId);
   if (!account) throw new Error(`deal ${deal.id} references a missing account: ${deal.accountId}`);
 
+  // Before the reservation, deliberately. Everything below this line writes to
+  // the store, and a message this mailbox can never send should leave no trace
+  // of having been attempted — it is a client error, not a failed send.
+  const attachments = input.attachments?.length ? input.attachments : undefined;
+  if (attachments && email.canSendAttachments?.(account) === false) {
+    throw new AttachmentsUnsupportedError(
+      `${account.email} sends over SMTP, which AdScout does not use for attachments — connect the mailbox to the Gmail API to send files`,
+    );
+  }
+
   const threadId = input.threadId ?? (await newestThread(store, deal.id));
   const history = threadId ? await threadHistory(store, threadId) : [];
   const headers = threadingHeaders(history);
@@ -216,6 +232,9 @@ export async function sendDealMessage(
     ...(threadId ? { threadId } : {}),
     subject,
     body: input.body,
+    // Recorded on the reservation, so what we meant to send survives a crash
+    // mid-send exactly as the body does.
+    ...(attachments ? { attachments } : {}),
     reservedAt: now.toISOString(),
     attempts: 0,
   };
@@ -228,6 +247,7 @@ export async function sendDealMessage(
       body: input.body,
       rfcMessageId,
       account,
+      ...(attachments ? { attachments } : {}),
       ...headers,
       ...(threadId ? { threadId } : {}),
     });

@@ -9,12 +9,43 @@ import type { Account, EmailAttachment, ISO } from '../domain/types';
 // can't bloat the store — publisher price lists (PDF/XLSX) are tens of KB.
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 
+/**
+ * The decoded total one OUTGOING message may carry, across all its files.
+ *
+ * Deliberately far below anything a provider would refuse, because three limits
+ * sit above it and the smallest is not documented: Gmail's own 25 MB ceiling on
+ * a sent message, the 32m nginx allows on the API vhost, and — the binding one —
+ * the size at which `messages.send` stops accepting a raw body inline and wants
+ * a resumable upload instead. Google's reference does not state that figure, so
+ * this cap is set to keep the base64-encoded message (≈ +33%) under 5 MB, which
+ * is the lowest value anyone reports for it.
+ *
+ * The real use is screenshots, at a few hundred KB each. If someone ever needs
+ * more than this, the fix is a resumable upload in the Gmail adapter, not a
+ * bigger number here.
+ */
+export const MAX_OUTGOING_ATTACHMENT_TOTAL_BYTES = 3.5 * 1024 * 1024;
+
+/** Sending files is a Gmail-API-only capability. The SMTP adapter throws this
+ *  rather than quietly dropping them, and callers check for it BEFORE reserving
+ *  an Outreach so a message we know we cannot send is never recorded as failed. */
+export class AttachmentsUnsupportedError extends Error {}
+
 export interface OutgoingEmail {
   to: string;
   subject: string;
   body: string;
   rfcMessageId: string; // we set our own Message-Id for exact self-lookup
   account: Account; // sending identity + credentialRef
+  /**
+   * Files to send alongside the body — screenshots, mostly, on a deal message a
+   * person wrote. The cold sequence never sets this.
+   *
+   * Same shape as the attachments that arrive on a Reply, so one representation
+   * covers both directions and the UI renders either with the same component.
+   * Supported only by the Gmail API adapter; see AttachmentsUnsupportedError.
+   */
+  attachments?: EmailAttachment[];
   /**
    * Reply threading. All three are set together or not at all, and only for a
    * message that continues an existing conversation.
@@ -64,6 +95,17 @@ export interface EmailProvider {
   /** Gmail (X-GM-THRID) / RFC 8474 OBJECTID THREADID → true. */
   readonly supportsThreadId: boolean;
   send(msg: OutgoingEmail): Promise<SendResult>;
+  /**
+   * Can THIS mailbox send files? Asked before a message is reserved, so a send
+   * we already know will fail is refused as a client error rather than recorded
+   * as a failed outreach.
+   *
+   * Per-account rather than a readonly flag, because RoutingEmailProvider picks
+   * an adapter per account: a gmail-api account that has not finished OAuth
+   * falls back to smtp-imap, which refuses. Optional — a provider that does not
+   * answer is simply tried, and says so at send time.
+   */
+  canSendAttachments?(account: Account): boolean;
   fetchReplies(account: Account, since?: Date): Promise<IncomingEmail[]>;
   /**
    * Every message on ONE conversation, ours included — the only read path that

@@ -35,6 +35,11 @@ export class DummyEmailProvider implements EmailProvider {
   /** Every message sent, in order — so tests can assert on threading headers. */
   sent: OutgoingEmail[] = [];
 
+  /** A stand-in for a mailbox that can carry files, since most tests want the
+   *  ordinary path. A field rather than a method so a test needing the refusal
+   *  can simply reassign it. */
+  canSendAttachments = (): boolean => true;
+
   async send(msg: OutgoingEmail): Promise<SendResult> {
     this.sent.push(msg);
     // A reply joins the thread it names; anything else opens a new one.

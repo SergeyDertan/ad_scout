@@ -15,6 +15,7 @@ import {
   sendDealMessage,
   threadingHeaders,
 } from './deal-send';
+import { AttachmentsUnsupportedError } from '../ports/email-provider';
 import { runSendPass } from './send-pass';
 
 const config = loadConfig({} as NodeJS.ProcessEnv);
@@ -404,4 +405,81 @@ test('the thread they ANSWERED wins over a more recent one they ignored', async 
   const wire = email.sent[email.sent.length - 1]!;
   assert.equal(wire.threadId, threadId, 'replied where they actually have context');
   assert.equal(wire.inReplyTo, '<their-quote@x>', 'as a reply to their own message');
+});
+
+// --- Attachments ------------------------------------------------------------
+
+const shot = {
+  filename: 'shot.png',
+  mimeType: 'image/png',
+  size: 3,
+  contentBase64: Buffer.from('png').toString('base64'),
+};
+
+test('a screenshot goes out with the message and stays on the record of it', async () => {
+  const { store, email, threadId } = await withThread();
+  const deal = await openDeal(store, clock, {
+    counterpartyEmail: 'admin@t1.com', accountId: 'acc1', threadIds: [threadId],
+  });
+
+  const { outreach } = await sendDealMessage({ store, email, clock }, {
+    dealId: deal.id, body: 'this is what I mean', attachments: [shot],
+  });
+
+  assert.deepEqual(email.sent[email.sent.length - 1]!.attachments, [shot], 'it reached the wire');
+  assert.deepEqual(outreach.attachments, [shot], 'and the timeline can show what we sent');
+  const stored = (await store.listOutreaches()).find((o) => o.id === outreach.id)!;
+  assert.deepEqual(stored.attachments, [shot], 'from the store, not just the return value');
+});
+
+// The files are written with the RESERVATION, before the network call, for the
+// same reason the body is: a crash mid-send must leave a row that still says
+// what was meant to go out.
+test('a send that fails still records the files it was carrying', async () => {
+  const { store, threadId } = await withThread();
+  const email = new DummyEmailProvider();
+  email.send = async () => { throw new Error('gmail said no'); };
+  const deal = await openDeal(store, clock, {
+    counterpartyEmail: 'admin@t1.com', accountId: 'acc1', threadIds: [threadId],
+  });
+
+  await assert.rejects(() =>
+    sendDealMessage({ store, email, clock }, {
+      dealId: deal.id, subject: 'Re: guest post', body: 'see attached', attachments: [shot],
+    }),
+  );
+  const failed = (await store.listOutreaches()).find((o) => o.status === 'failed')!;
+  assert.deepEqual(failed.attachments, [shot]);
+});
+
+test('a mailbox that cannot send files refuses BEFORE anything is written down', async () => {
+  const { store, email, threadId } = await withThread();
+  email.canSendAttachments = () => false;
+  const deal = await openDeal(store, clock, {
+    counterpartyEmail: 'admin@t1.com', accountId: 'acc1', threadIds: [threadId],
+  });
+  const before = (await store.listOutreaches()).length;
+
+  await assert.rejects(
+    () => sendDealMessage({ store, email, clock }, {
+      dealId: deal.id, body: 'see attached', attachments: [shot],
+    }),
+    AttachmentsUnsupportedError,
+  );
+
+  assert.equal((await store.listOutreaches()).length, before, 'no reservation, no failed row');
+  assert.equal(email.sent.length, 1, 'and nothing on the wire but the original cold pitch');
+});
+
+test('the same mailbox still sends an ordinary message with no files', async () => {
+  const { store, email, threadId } = await withThread();
+  email.canSendAttachments = () => false;
+  const deal = await openDeal(store, clock, {
+    counterpartyEmail: 'admin@t1.com', accountId: 'acc1', threadIds: [threadId],
+  });
+  const { outreach } = await sendDealMessage({ store, email, clock }, {
+    dealId: deal.id, body: 'no files here',
+  });
+  assert.equal(outreach.status, 'sent');
+  assert.equal(outreach.attachments, undefined);
 });

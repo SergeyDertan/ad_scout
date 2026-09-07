@@ -154,6 +154,16 @@ export interface Outreach {
   threadId?: string;
   subject: string;
   body: string;
+  /**
+   * Files sent with this message, base64, exactly as a Reply keeps the ones that
+   * arrived. Written on the RESERVED document, before the send: a crash midway
+   * then leaves a row that still says what was meant to go out.
+   *
+   * Only a 'manual' deal message ever has these, and only from a Gmail-API
+   * mailbox. A message adopted by deal-thread-sync has none even if the person
+   * attached one in Gmail — fetchThread does not read attachments.
+   */
+  attachments?: EmailAttachment[];
   reservedAt: ISO;
   sentAt?: ISO;
   threadResolvedAt?: ISO;
@@ -168,8 +178,9 @@ export type MatchMethod = 'threadId' | 'fromAddress' | 'unmatched';
 // the reply is saved for the record but never enters the extraction queue.
 export type ExtractionStatus = 'pending' | 'done' | 'failed' | 'skipped';
 
-/** A file attached to an inbound email. Content is base64 so it serializes into
- *  JSON (IncomingEmail transport + persisted Reply document) without a Buffer. */
+/** A file attached to an email, in either direction — one received on a Reply,
+ *  or one we sent on an Outreach. Content is base64 so it serializes into JSON
+ *  (the provider transports, the persisted documents) without a Buffer. */
 export interface EmailAttachment {
   filename: string;
   mimeType: string;

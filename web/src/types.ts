@@ -661,8 +661,10 @@ export interface DealRow extends Deal {
   liveCount: number;
 }
 
-/** One post on one domain. `paidAt` and `liveAt` are independent facts, not
- *  stages — either can be set first. */
+/** One post on one domain. `paidAt`, `liveAt` and `indexedAt` are independent
+ *  facts, not stages — any of them can be set first, and a post can be live for
+ *  weeks without ever being indexed. All three are absent on placements written
+ *  before their field existed, which reads correctly as "not yet". */
 export interface Placement {
   id: string;
   dealId: string;
@@ -674,6 +676,7 @@ export interface Placement {
   paidAt?: string;
   publishedUrl?: string;
   liveAt?: string;
+  indexedAt?: string;
   note?: string;
 }
 

@@ -495,6 +495,17 @@ export interface Placement {
   /** When it went live. Separate from `publishedUrl`, because "they published it,
    *  link to follow" is a real state we need to be able to record. */
   liveAt?: ISO;
+  /**
+   * When we saw the published post in a search engine's index — the last thing
+   * that has to be true for the placement to be worth what we paid. A post can
+   * be live for weeks and never indexed, which is the case worth spotting.
+   *
+   * Stored as a date although the UI only ever ticks a box: the timestamp costs
+   * nothing to keep and answers "how long did it take" later, whereas a boolean
+   * throws that away for good. Absent on every placement written before this
+   * field existed, which reads correctly as "not indexed yet".
+   */
+  indexedAt?: ISO;
   note?: string;
 }
 

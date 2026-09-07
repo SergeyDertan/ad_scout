@@ -177,3 +177,18 @@ export const LogOutIcon = make(
 export const PaperclipIcon = make(
   <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />,
 );
+
+export const PencilIcon = make(
+  <>
+    <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+    <line x1="15" y1="5" x2="19" y2="9" />
+  </>,
+);
+
+export const ExternalLinkIcon = make(
+  <>
+    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+    <polyline points="15 3 21 3 21 9" />
+    <line x1="10" y1="14" x2="21" y2="3" />
+  </>,
+);

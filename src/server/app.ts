@@ -24,7 +24,7 @@
 //   POST   /api/deals/:id/placements     { domain | domains }
 //   POST   /api/deals/:id/messages       { body, subject?, threadId? } → sends, holds the thread
 //                                        (subject defaults to Re: the thread's own)
-//   PATCH  /api/placements/:id           { contentText?, contentUrl?, agreedPrice?, paidAt?, ... }
+//   PATCH  /api/placements/:id           { contentText?, contentUrl?, agreedPrice?, paidAt?, indexedAt?, ... }
 //   DELETE /api/placements/:id
 //   POST   /api/run/send | /api/run/poll | /api/run/fetch
 //   GET    /api/stream                  (Server-Sent Events: store change feed)
@@ -871,7 +871,10 @@ async function handle(
           domains: dealDomains(placements),
           placementCount: placements.length,
           paidCount: placements.filter((p) => p.paidAt).length,
-          liveCount: placements.filter((p) => p.liveAt ?? p.publishedUrl).length,
+          // The date, not the link. A pasted URL is not a claim that the post
+          // went live, and since the deal view now shows Published as a box you
+          // tick, counting a bare URL as live made this column contradict it.
+          liveCount: placements.filter((p) => p.liveAt).length,
         });
       }
       rows.sort((a, b) => b.openedAt.localeCompare(a.openedAt));
@@ -1050,7 +1053,7 @@ async function handle(
       const patch: Record<string, unknown> = {};
       for (const field of [
         'contentText', 'contentUrl', 'publishedUrl', 'paymentMethod',
-        'paidAt', 'liveAt', 'note',
+        'paidAt', 'liveAt', 'indexedAt', 'note',
       ]) {
         if (body[field] !== undefined) patch[field] = str(body[field]) || undefined;
       }

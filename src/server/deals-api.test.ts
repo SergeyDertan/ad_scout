@@ -178,6 +178,85 @@ test('a placement records content, price, paid and published independently', asy
   }
 });
 
+test('indexed is a fact of its own — set, kept, and cleared like the rest', async () => {
+  const h = await start();
+  try {
+    const deal = await J(`${h.base}/api/deals`, post('', {
+      counterpartyEmail: 'admin@site1.com', accountId: 'a1', domains: ['site1.com'],
+    }));
+    const p = (await J(`${h.base}/api/deals/${deal.id}`)).placements[0];
+    assert.equal(p.indexedAt, undefined, 'a new placement is not indexed');
+
+    const indexed = await J(`${h.base}/api/placements/${p.id}`, patch({
+      publishedUrl: 'https://site1.com/post',
+      indexedAt: '2026-08-22T12:00:00.000Z',
+    }));
+    assert.equal(indexed.indexedAt, '2026-08-22T12:00:00.000Z');
+    assert.equal(indexed.liveAt, undefined, 'indexed without a live date is a real state');
+
+    // Untick: the UI sends '' to clear, exactly as it does for paid and live.
+    const cleared = await J(`${h.base}/api/placements/${p.id}`, patch({ indexedAt: '' }));
+    assert.equal(cleared.indexedAt, undefined);
+    assert.equal(cleared.publishedUrl, 'https://site1.com/post', 'clearing one flag touches nothing else');
+  } finally {
+    await h.close();
+  }
+});
+
+test('the list counts a post live by its date, never by a pasted link', async () => {
+  const h = await start();
+  try {
+    const deal = await J(`${h.base}/api/deals`, post('', {
+      counterpartyEmail: 'admin@site1.com', accountId: 'a1', domains: ['site1.com'],
+    }));
+    const p = (await J(`${h.base}/api/deals/${deal.id}`)).placements[0];
+
+    // A link recorded before the day it went live. The deal view shows Published
+    // as a box driven by liveAt, so counting this as live would put the list in
+    // contradiction with the card it links to.
+    await J(`${h.base}/api/placements/${p.id}`, patch({ publishedUrl: 'https://site1.com/post' }));
+    const beforeDate = (await J(`${h.base}/api/deals`)).find((d: { id: string }) => d.id === deal.id);
+    assert.equal(beforeDate.liveCount, 0, 'a URL is not a claim that it went live');
+
+    await J(`${h.base}/api/placements/${p.id}`, patch({ liveAt: '2026-08-25T12:00:00Z' }));
+    const afterDate = (await J(`${h.base}/api/deals`)).find((d: { id: string }) => d.id === deal.id);
+    assert.equal(afterDate.liveCount, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test('a placement stored before indexedAt existed still reads and patches', async () => {
+  const h = await start();
+  try {
+    const deal = await J(`${h.base}/api/deals`, post('', {
+      counterpartyEmail: 'admin@site1.com', accountId: 'a1',
+    }));
+    // Exactly the shape the live deals carry: no indexedAt key at all. An
+    // optional field added to a stored type has to be absent-safe, not just
+    // undefined-safe, or the two open deals would break on the way in.
+    await h.store.putPlacement({
+      id: 'placement_old',
+      dealId: deal.id,
+      domain: 'site1.com',
+      publishedUrl: 'https://site1.com/old-post',
+      paidAt: '2026-08-10T12:00:00.000Z',
+    });
+
+    const detail = await J(`${h.base}/api/deals/${deal.id}`);
+    const old = detail.placements.find((x: { id: string }) => x.id === 'placement_old');
+    assert.ok(old, 'the old row is served');
+    assert.equal(old.indexedAt, undefined, 'reads as "not indexed yet", not as an error');
+
+    const patched = await J(`${h.base}/api/placements/placement_old`, patch({ note: 'chase the invoice' }));
+    assert.equal(patched.note, 'chase the invoice');
+    assert.equal(patched.paidAt, '2026-08-10T12:00:00.000Z', 'the fields it did have are untouched');
+    assert.equal(patched.indexedAt, undefined, 'a patch does not invent the new field');
+  } finally {
+    await h.close();
+  }
+});
+
 test('status moves are validated and closing records a reason', async () => {
   const h = await start();
   try {

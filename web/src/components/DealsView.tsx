@@ -12,6 +12,7 @@ import {
   Badge,
   Box,
   Button,
+  Checkbox,
   CloseButton,
   Dialog,
   Field,
@@ -19,6 +20,7 @@ import {
   HStack,
   Heading,
   Input,
+  Link,
   NativeSelect,
   Portal,
   Table,
@@ -44,7 +46,18 @@ import { Panel } from './Panel';
 import { useConfirm } from './Confirm';
 import { useResource } from '../hooks/useResource';
 import { toaster, toastError } from './Toaster';
-import { AlertTriangleIcon, CheckIcon, MegaphoneIcon, PlusIcon, SendIcon, TrashIcon } from './icons';
+import {
+  AlertTriangleIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  ExternalLinkIcon,
+  MegaphoneIcon,
+  PencilIcon,
+  PlusIcon,
+  SearchIcon,
+  SendIcon,
+  TrashIcon,
+} from './icons';
 
 const STATUS_META: Record<DealStatus, { label: string; palette: string }> = {
   negotiation: { label: 'Negotiation', palette: 'orange' },
@@ -96,6 +109,38 @@ function toDateInput(iso?: string): string {
 }
 function fromDateInput(value: string): string | undefined {
   return value ? new Date(value + 'T12:00:00Z').toISOString() : undefined;
+}
+
+/** Today, as the stamp a ticked box writes. Midday UTC for the same reason
+ *  fromDateInput uses it: the date must read the same either side of midnight
+ *  in every timezone we might look at it from. */
+function todayStamp(): string {
+  return fromDateInput(new Date().toISOString().slice(0, 10))!;
+}
+
+/**
+ * An absolute, safe href for a link somebody typed into a text box.
+ *
+ * These fields hold whatever was pasted — `site.com/the-post` at least as often
+ * as a full URL — and a bare domain in an `href` is a RELATIVE path, so clicking
+ * it would navigate inside the app instead of out to the post. Anything already
+ * carrying a scheme that is not http(s) (`javascript:`, `data:`) gets no link at
+ * all; it is text we can show but must never hand to the browser.
+ */
+function safeHref(url: string): string | undefined {
+  const raw = url.trim();
+  if (!raw) return undefined;
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) return undefined;
+  return `https://${raw}`;
+}
+
+/** Google's own answer to "is this page indexed": a `site:` search for the exact
+ *  URL. Empty when there is no published post to ask about yet. */
+function indexCheckUrl(publishedUrl?: string): string | undefined {
+  const bare = (publishedUrl ?? '').trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  if (!bare) return undefined;
+  return `https://www.google.com/search?q=${encodeURIComponent(`site:${bare}`)}`;
 }
 
 export function DealsView({
@@ -999,10 +1044,21 @@ function DealRail({
 }) {
   const [adding, setAdding] = useState(false);
   const [newDomain, setNewDomain] = useState('');
-  const [editing, setEditing] = useState<Placement | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
   const [draftNote, setDraftNote] = useState(note ?? '');
 
   useEffect(() => setDraftNote(note ?? ''), [note]);
+
+  // One post is not a choice — show it open, which is the whole deal on one
+  // screen with nothing to click. Seeded once per deal (and once more when the
+  // first site is added to an empty one), so collapsing it keeps it collapsed
+  // through every reload the live stream provokes.
+  const seededFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (seededFor.current === dealId || placements.length === 0) return;
+    seededFor.current = dealId;
+    setOpenId(placements.length === 1 ? placements[0]!.id : null);
+  }, [dealId, placements]);
 
   const add = async () => {
     if (!newDomain.trim()) return;
@@ -1026,13 +1082,16 @@ function DealRail({
     }
   };
 
-  // The open editor must follow the deal as it reloads, or saving one field and
-  // then reloading would leave the dialog showing a stale object.
-  const open = editing ? (placements.find((p) => p.id === editing.id) ?? null) : null;
+  // An expanded post carries the fields the dialog used to hold, and 20rem is not
+  // enough room for them — a price, a date and a URL end up one per line. The
+  // rail borrows the width back from the conversation only while a post is open,
+  // and gives it straight back when you collapse it.
+  const expandedAny = placements.some((p) => p.id === openId);
 
   return (
     <Box
-      w={{ base: 'full', lg: '20rem' }}
+      w={{ base: 'full', lg: expandedAny ? '28rem' : '20rem' }}
+      transition="width 150ms ease"
       flexShrink={0}
       overflowY={{ base: 'visible', lg: 'auto' }}
       minH="0"
@@ -1079,7 +1138,15 @@ function DealRail({
           ) : (
             <VStack align="stretch" gap={2}>
               {placements.map((p) => (
-                <PlacementSummary key={p.id} placement={p} onOpen={() => setEditing(p)} />
+                <PlacementCard
+                  key={p.id}
+                  placement={p}
+                  expanded={p.id === openId}
+                  // One at a time: two open post records in a 28rem column is a
+                  // scroll, and you are only ever working on one of them.
+                  onToggle={() => setOpenId((cur) => (cur === p.id ? null : p.id))}
+                  onChanged={onChange}
+                />
               ))}
             </VStack>
           )}
@@ -1099,122 +1166,96 @@ function DealRail({
           />
         </Panel>
       </VStack>
-
-      {open && (
-        <PlacementEditor
-          key={open.id}
-          placement={open}
-          onChanged={onChange}
-          onClose={() => setEditing(null)}
-        />
-      )}
     </Box>
   );
 }
 
-/** What a post looks like when you are not editing it: the four facts you check
- *  mid-negotiation, and nothing else. */
-function PlacementSummary({ placement: p, onOpen }: { placement: Placement; onOpen: () => void }) {
-  const paid = Boolean(p.paidAt);
-  const live = Boolean(p.liveAt || p.publishedUrl);
-  const price = p.agreedPrice?.raw?.trim();
-  const content = p.contentText?.trim()
-    ? `text · ${p.contentText.trim().length.toLocaleString()} chars`
-    : p.contentUrl?.trim()
-      ? 'linked doc'
-      : 'no text yet';
 
-  return (
-    <Box
-      as="button"
-      textAlign="left"
-      w="full"
-      borderWidth="1px"
-      borderColor="border"
-      rounded="lg"
-      p={2.5}
-      cursor="pointer"
-      _hover={{ bg: 'bg.subtle', borderColor: 'brand.emphasized' }}
-      onClick={onOpen}
-    >
-      <HStack justify="space-between" gap={2} mb={1}>
-        <Text fontWeight="semibold" fontSize="sm" truncate>
-          {p.domain}
-        </Text>
-        <HStack gap={1} flexShrink={0}>
-          {paid && (
-            <Badge size="xs" colorPalette="green" variant="subtle">
-              paid
-            </Badge>
-          )}
-          {live && (
-            <Badge size="xs" colorPalette="blue" variant="subtle">
-              live
-            </Badge>
-          )}
-          {!paid && !live && (
-            <Badge size="xs" colorPalette="gray" variant="subtle">
-              draft
-            </Badge>
-          )}
-        </HStack>
-      </HStack>
-      <Text fontSize="xs" color={price ? 'fg' : 'fg.subtle'}>
-        {price ? `${price}${p.paymentMethod ? ` · ${p.paymentMethod}` : ''}` : 'no price agreed yet'}
-      </Text>
-      <Text fontSize="2xs" color="fg.muted">
-        {content}
-        {paid && ` · paid ${fmtShortDate(p.paidAt)}`}
-        {p.liveAt && ` · live ${fmtShortDate(p.liveAt)}`}
-      </Text>
-    </Box>
-  );
-}
+// ---------------------------------------------------------------------------
+// One post, in the rail
+// ---------------------------------------------------------------------------
 
 /**
- * The full post record, opened on demand.
+ * A post record: a summary line always, the full thing when you open it.
  *
- * Every field saves itself when you leave it — there is no Save button to forget,
- * and nothing here is a multi-field transaction. The draft is seeded once and
- * never re-synced from the server while the dialog is open, so a reload provoked
- * by saving one field cannot wipe what you are typing into the next.
+ * This used to be a summary that opened a dialog. Fulfilment is not a form you
+ * fill in once — it is three facts (paid, published, indexed) that arrive days
+ * apart and get checked off one at a time, and putting them behind a modal meant
+ * two clicks and a lost view of the conversation for every one of them. Only the
+ * post text still opens a window, because it is the one field you touch once and
+ * the one that genuinely needs the room.
+ *
+ * Every field saves itself when you leave it, and a checkbox the moment you tick
+ * it — there is no Save button to forget. The draft is seeded once and is NOT
+ * re-synced from the server while the card is open, so the reload that each save
+ * provokes cannot wipe what you are typing into the next field; a collapsed card
+ * takes the server's version freely, since nothing is being typed into it.
  */
-function PlacementEditor({
+function PlacementCard({
   placement,
+  expanded,
+  onToggle,
   onChanged,
-  onClose,
 }: {
   placement: Placement;
+  expanded: boolean;
+  onToggle: () => void;
   onChanged: () => void;
-  onClose: () => void;
 }) {
-  const [draft, setDraft] = useState(placement);
+  const [draft, setDraft] = useState<Placement>(placement);
   const saved = useRef<Placement>(placement);
   const [flash, setFlash] = useState(false);
+  const [textOpen, setTextOpen] = useState(false);
   const confirm = useConfirm();
+
+  useEffect(() => {
+    if (expanded) return;
+    saved.current = placement;
+    setDraft(placement);
+  }, [expanded, placement]);
 
   const set = <K extends keyof Placement>(key: K, value: Placement[K]) =>
     setDraft((d) => ({ ...d, [key]: value }));
 
-  const commit = async (key: keyof Placement) => {
-    const next = draft[key];
-    const before = saved.current[key];
+  /**
+   * Persist one field. The value is passed rather than read from `draft` so a
+   * control with no blur to wait for — a checkbox, a date picker — can set and
+   * save in the same breath without reading its own stale state.
+   */
+  const save = async <K extends keyof Placement>(key: K, value: Placement[K]): Promise<void> => {
     const same =
       key === 'agreedPrice'
-        ? (draft.agreedPrice?.raw ?? '') === (saved.current.agreedPrice?.raw ?? '')
-        : (next ?? '') === (before ?? '');
+        ? ((value as Placement['agreedPrice'])?.raw ?? '') === (saved.current.agreedPrice?.raw ?? '')
+        : (value ?? '') === (saved.current[key] ?? '');
     if (same) return;
     try {
       await api.patchPlacement(placement.id, {
-        [key]: key === 'agreedPrice' ? (draft.agreedPrice?.raw ?? '') : ((next as string) ?? ''),
+        // The server takes '' as "clear this", so an absent value must not be
+        // dropped from the body — that would read as "leave it alone".
+        [key]:
+          key === 'agreedPrice'
+            ? ((value as Placement['agreedPrice'])?.raw ?? '')
+            : ((value as string | undefined) ?? ''),
       });
-      saved.current = { ...saved.current, [key]: next };
+      saved.current = { ...saved.current, [key]: value };
       setFlash(true);
       window.setTimeout(() => setFlash(false), 1200);
       onChanged();
     } catch (e) {
       toastError('Could not save', e);
     }
+  };
+
+  /** Tick or untick a date-backed flag. Ticking stamps today; the date input
+   *  beside it is there to correct the day when it was not today. */
+  const setFlag = (key: 'paidAt' | 'liveAt' | 'indexedAt', on: boolean): void => {
+    const at = on ? todayStamp() : undefined;
+    set(key, at);
+    void save(key, at);
+  };
+  const setFlagDate = (key: 'paidAt' | 'liveAt' | 'indexedAt', iso?: string): void => {
+    set(key, iso);
+    void save(key, iso);
   };
 
   const remove = async () => {
@@ -1227,136 +1268,413 @@ function PlacementEditor({
     if (!ok) return;
     try {
       await api.deletePlacement(placement.id);
-      onClose();
       onChanged();
     } catch (e) {
       toastError('Could not remove the site', e);
     }
   };
 
+  const closeText = () => {
+    void save('contentText', draft.contentText);
+    setTextOpen(false);
+  };
+
+  const paid = Boolean(draft.paidAt);
+  // Strictly the date, not "there is a URL". The Published box is right here
+  // showing its own state, and a badge that disagreed with the box beside it
+  // would be the UI arguing with itself — which it did, for any post whose link
+  // was pasted before the day was recorded.
+  const live = Boolean(draft.liveAt);
+  const indexed = Boolean(draft.indexedAt);
+  const price = draft.agreedPrice?.raw?.trim();
+  const chars = draft.contentText?.trim().length ?? 0;
+  const checkUrl = indexCheckUrl(draft.publishedUrl);
+
   return (
-    <Dialog.Root open onOpenChange={(e) => !e.open && onClose()} size="lg" placement="center" scrollBehavior="inside">
+    <Box borderWidth="1px" borderColor={expanded ? 'brand.emphasized' : 'border'} rounded="lg">
+      {/* The summary line, and the control that opens the record. A button so it
+          answers to the keyboard and announces its own state. */}
+      <Box
+        as="button"
+        textAlign="left"
+        w="full"
+        p={2.5}
+        cursor="pointer"
+        rounded="lg"
+        aria-expanded={expanded}
+        _hover={{ bg: 'bg.subtle' }}
+        onClick={onToggle}
+      >
+        <HStack justify="space-between" gap={2} mb={1}>
+          <HStack gap={1.5} minW="0">
+            <ChevronDownIcon
+              boxSize={3.5}
+              color="fg.muted"
+              flexShrink={0}
+              transform={expanded ? 'rotate(0deg)' : 'rotate(-90deg)'}
+              transition="transform 120ms ease"
+            />
+            <Text fontWeight="semibold" fontSize="sm" truncate>
+              {draft.domain}
+            </Text>
+          </HStack>
+          <HStack gap={1} flexShrink={0}>
+            {flash && (
+              <Text fontSize="2xs" color="green.fg">
+                saved
+              </Text>
+            )}
+            {paid && (
+              <Badge size="xs" colorPalette="green" variant="subtle">
+                paid
+              </Badge>
+            )}
+            {live && (
+              <Badge size="xs" colorPalette="blue" variant="subtle">
+                live
+              </Badge>
+            )}
+            {indexed && (
+              <Badge size="xs" colorPalette="purple" variant="subtle">
+                indexed
+              </Badge>
+            )}
+            {!paid && !live && !indexed && (
+              <Badge size="xs" colorPalette="gray" variant="subtle">
+                draft
+              </Badge>
+            )}
+          </HStack>
+        </HStack>
+        <Text fontSize="xs" color={price ? 'fg' : 'fg.subtle'}>
+          {price
+            ? `${price}${draft.paymentMethod ? ` · ${draft.paymentMethod}` : ''}`
+            : 'no price agreed yet'}
+        </Text>
+        {!expanded && (
+          <Text fontSize="2xs" color="fg.muted">
+            {chars ? `text · ${chars.toLocaleString()} chars` : draft.contentUrl?.trim() ? 'linked doc' : 'no text yet'}
+            {paid && ` · paid ${fmtShortDate(draft.paidAt)}`}
+            {draft.liveAt && ` · live ${fmtShortDate(draft.liveAt)}`}
+            {indexed && ` · indexed ${fmtShortDate(draft.indexedAt)}`}
+          </Text>
+        )}
+      </Box>
+
+      {expanded && (
+        <VStack align="stretch" gap={3} px={2.5} pb={2.5}>
+          {/* Fulfilment: three independent facts, in the order they normally
+              happen — but any of them can be true first. */}
+          <VStack align="stretch" gap={1.5} borderTopWidth="1px" borderColor="border" pt={2.5}>
+            <FlagRow
+              label="Paid"
+              at={draft.paidAt}
+              onToggle={(on) => setFlag('paidAt', on)}
+              onDate={(iso) => setFlagDate('paidAt', iso)}
+            />
+            <FlagRow
+              label="Published"
+              at={draft.liveAt}
+              onToggle={(on) => setFlag('liveAt', on)}
+              onDate={(iso) => setFlagDate('liveAt', iso)}
+            />
+            <HStack justify="space-between" gap={2}>
+              <Checkbox.Root
+                size="sm"
+                checked={indexed}
+                onCheckedChange={(d) => setFlag('indexedAt', Boolean(d.checked))}
+              >
+                <Checkbox.HiddenInput aria-label="Indexed" />
+                <Checkbox.Control />
+                <Checkbox.Label fontSize="xs">
+                  Indexed
+                  {indexed && (
+                    <Text as="span" color="fg.subtle" ml={1.5}>
+                      {fmtShortDate(draft.indexedAt)}
+                    </Text>
+                  )}
+                </Checkbox.Label>
+              </Checkbox.Root>
+              {/* Google's own answer, rather than ours. Nothing to check against
+                  until there is a published URL to ask about. */}
+              <Button
+                size="2xs"
+                variant="subtle"
+                asChild={Boolean(checkUrl)}
+                disabled={!checkUrl}
+                title={checkUrl ? 'Search Google for this exact page' : 'Add the published post link first'}
+              >
+                {checkUrl ? (
+                  <a href={checkUrl} target="_blank" rel="noreferrer noopener">
+                    <SearchIcon boxSize={3} /> Check index
+                  </a>
+                ) : (
+                  <span>
+                    <SearchIcon boxSize={3} /> Check index
+                  </span>
+                )}
+              </Button>
+            </HStack>
+          </VStack>
+
+          <HStack gap={3} align="end">
+            <Field.Root flex="1">
+              <Field.Label fontSize="xs">Agreed price</Field.Label>
+              <Input
+                size="sm"
+                placeholder="120 EUR"
+                value={draft.agreedPrice?.raw ?? ''}
+                onChange={(e) => set('agreedPrice', { raw: e.target.value })}
+                onBlur={() => void save('agreedPrice', draft.agreedPrice)}
+              />
+            </Field.Root>
+            <Field.Root flex="1">
+              <Field.Label fontSize="xs">Paid via</Field.Label>
+              <Input
+                size="sm"
+                placeholder="wise / paypal"
+                value={draft.paymentMethod ?? ''}
+                onChange={(e) => set('paymentMethod', e.target.value)}
+                onBlur={() => void save('paymentMethod', draft.paymentMethod)}
+              />
+            </Field.Root>
+          </HStack>
+
+          <LinkField
+            label="Published post"
+            placeholder="https://site.com/the-post"
+            value={draft.publishedUrl ?? ''}
+            onChange={(v) => set('publishedUrl', v)}
+            onCommit={(v) => void save('publishedUrl', v || undefined)}
+          />
+
+          <Field.Root>
+            <Field.Label fontSize="xs">Post text</Field.Label>
+            <HStack gap={2} w="full">
+              <Button size="xs" variant="subtle" onClick={() => setTextOpen(true)}>
+                <PencilIcon boxSize={3} /> {chars ? 'Edit text' : 'Write the post'}
+              </Button>
+              <Text fontSize="xs" color="fg.subtle" truncate>
+                {chars ? `${chars.toLocaleString()} chars` : 'nothing written yet'}
+              </Text>
+            </HStack>
+          </Field.Root>
+
+          <LinkField
+            label="…or a link to the text"
+            placeholder="https://docs.google.com/…"
+            value={draft.contentUrl ?? ''}
+            onChange={(v) => set('contentUrl', v)}
+            onCommit={(v) => void save('contentUrl', v || undefined)}
+          />
+
+          <Field.Root>
+            <Field.Label fontSize="xs">Note</Field.Label>
+            <Input
+              size="sm"
+              placeholder="anything worth remembering about this one"
+              value={draft.note ?? ''}
+              onChange={(e) => set('note', e.target.value)}
+              onBlur={() => void save('note', draft.note)}
+            />
+          </Field.Root>
+
+          <HStack justify="space-between" pt={1}>
+            <Text fontSize="2xs" color="fg.subtle">
+              Saves as you go. The agreed price stays here and never touches the price history.
+            </Text>
+            <Button
+              size="2xs"
+              variant="ghost"
+              colorPalette="red"
+              flexShrink={0}
+              aria-label={`Remove ${draft.domain}`}
+              onClick={remove}
+            >
+              <TrashIcon boxSize={3.5} />
+            </Button>
+          </HStack>
+        </VStack>
+      )}
+
+      {textOpen && (
+        <PostTextDialog
+          domain={draft.domain}
+          value={draft.contentText ?? ''}
+          onChange={(v) => set('contentText', v)}
+          onClose={closeText}
+        />
+      )}
+    </Box>
+  );
+}
+
+/** A checkbox backed by a date: ticked means the date is set. The date input
+ *  appears only once it is, because an empty date input next to an unticked box
+ *  is two controls asking the same question. */
+function FlagRow({
+  label,
+  at,
+  onToggle,
+  onDate,
+}: {
+  label: string;
+  at?: string;
+  onToggle: (on: boolean) => void;
+  onDate: (iso?: string) => void;
+}) {
+  return (
+    <HStack justify="space-between" gap={2}>
+      <Checkbox.Root size="sm" checked={Boolean(at)} onCheckedChange={(d) => onToggle(Boolean(d.checked))}>
+        <Checkbox.HiddenInput aria-label={label} />
+        <Checkbox.Control />
+        <Checkbox.Label fontSize="xs">{label}</Checkbox.Label>
+      </Checkbox.Root>
+      {at && (
+        <Input
+          size="xs"
+          type="date"
+          w="9rem"
+          aria-label={`${label} on`}
+          value={toDateInput(at)}
+          // A native date input only reports a whole valid date, so there is no
+          // half-typed state to wait out — save on change, not on blur.
+          onChange={(e) => onDate(fromDateInput(e.target.value))}
+        />
+      )}
+    </HStack>
+  );
+}
+
+/**
+ * A URL field that is a link once it holds one.
+ *
+ * A published post is something you open far more often than you edit, and an
+ * input box you have to select-and-copy out of is the wrong shape for that. Set
+ * ⇒ an anchor plus a pencil; empty ⇒ straight back to the input, since there is
+ * nothing to click and hiding the field behind a button would be a step for no
+ * reason.
+ */
+function LinkField({
+  label,
+  placeholder,
+  value,
+  onChange,
+  onCommit,
+}: {
+  label: string;
+  placeholder: string;
+  value: string;
+  onChange: (v: string) => void;
+  onCommit: (v: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const href = safeHref(value);
+
+  return (
+    <Field.Root>
+      <Field.Label fontSize="xs">{label}</Field.Label>
+      {editing || !value.trim() ? (
+        <Input
+          size="sm"
+          autoFocus={editing}
+          placeholder={placeholder}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+          onBlur={() => {
+            setEditing(false);
+            onCommit(value);
+          }}
+        />
+      ) : (
+        <HStack gap={1} w="full" minW="0">
+          {href ? (
+            <Link
+              href={href}
+              target="_blank"
+              rel="noreferrer noopener"
+              fontSize="sm"
+              flex="1"
+              minW="0"
+              gap={1}
+            >
+              {/* The URL truncates; the icon must not, or a long link eats its
+                  own "opens elsewhere" cue. */}
+              <Text as="span" truncate minW="0">
+                {value.trim()}
+              </Text>
+              <ExternalLinkIcon boxSize={3} flexShrink={0} />
+            </Link>
+          ) : (
+            // Text we can show but must not hand to the browser — see safeHref.
+            <Text fontSize="sm" color="fg.muted" flex="1" minW="0" truncate title="not a link we can open">
+              {value.trim()}
+            </Text>
+          )}
+          <Button
+            size="2xs"
+            variant="ghost"
+            flexShrink={0}
+            aria-label={`Edit ${label}`}
+            onClick={() => setEditing(true)}
+          >
+            <PencilIcon boxSize={3} />
+          </Button>
+        </HStack>
+      )}
+    </Field.Root>
+  );
+}
+
+/** The one field still worth a window. It is written once, it is long, and it is
+ *  the only thing here that a 28rem rail genuinely cannot hold. */
+function PostTextDialog({
+  domain,
+  value,
+  onChange,
+  onClose,
+}: {
+  domain: string;
+  value: string;
+  onChange: (v: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog.Root
+      open
+      onOpenChange={(e) => !e.open && onClose()}
+      size="xl"
+      placement="center"
+      scrollBehavior="inside"
+    >
       <Portal>
         <Dialog.Backdrop />
         <Dialog.Positioner>
           <Dialog.Content rounded="xl">
             <Dialog.Header>
-              <HStack gap={2} flex="1">
-                <Dialog.Title>{placement.domain}</Dialog.Title>
-                {flash && (
-                  <Text fontSize="2xs" color="green.fg">
-                    saved
-                  </Text>
-                )}
-              </HStack>
+              <Dialog.Title>Post text · {domain}</Dialog.Title>
               <Dialog.CloseTrigger asChild>
                 <CloseButton size="sm" />
               </Dialog.CloseTrigger>
             </Dialog.Header>
-
             <Dialog.Body>
-              <VStack align="stretch" gap={3}>
-                <Field.Root>
-                  <Field.Label fontSize="xs">Post text</Field.Label>
-                  <Textarea
-                    size="sm"
-                    rows={6}
-                    placeholder="Paste the post here, or leave blank and use a link below."
-                    value={draft.contentText ?? ''}
-                    onChange={(e) => set('contentText', e.target.value)}
-                    onBlur={() => commit('contentText')}
-                  />
-                </Field.Root>
-
-                <HStack gap={3} wrap="wrap" align="end">
-                  <Field.Root flex="1" minW="14rem">
-                    <Field.Label fontSize="xs">…or a link to the text</Field.Label>
-                    <Input
-                      size="sm"
-                      placeholder="https://docs.google.com/…"
-                      value={draft.contentUrl ?? ''}
-                      onChange={(e) => set('contentUrl', e.target.value)}
-                      onBlur={() => commit('contentUrl')}
-                    />
-                  </Field.Root>
-                  <Field.Root flex="1" minW="14rem">
-                    <Field.Label fontSize="xs">Published post</Field.Label>
-                    <Input
-                      size="sm"
-                      placeholder="https://site.com/the-post"
-                      value={draft.publishedUrl ?? ''}
-                      onChange={(e) => set('publishedUrl', e.target.value)}
-                      onBlur={() => commit('publishedUrl')}
-                    />
-                  </Field.Root>
-                </HStack>
-
-                <HStack gap={3} wrap="wrap" align="end">
-                  <Field.Root w="9rem">
-                    <Field.Label fontSize="xs">Agreed price</Field.Label>
-                    <Input
-                      size="sm"
-                      placeholder="120 EUR"
-                      value={draft.agreedPrice?.raw ?? ''}
-                      onChange={(e) => set('agreedPrice', { raw: e.target.value })}
-                      onBlur={() => commit('agreedPrice')}
-                    />
-                  </Field.Root>
-                  <Field.Root w="9rem">
-                    <Field.Label fontSize="xs">Paid via</Field.Label>
-                    <Input
-                      size="sm"
-                      placeholder="wise / paypal"
-                      value={draft.paymentMethod ?? ''}
-                      onChange={(e) => set('paymentMethod', e.target.value)}
-                      onBlur={() => commit('paymentMethod')}
-                    />
-                  </Field.Root>
-                  <Field.Root w="9rem">
-                    <Field.Label fontSize="xs">Paid on</Field.Label>
-                    <Input
-                      size="sm"
-                      type="date"
-                      value={toDateInput(draft.paidAt)}
-                      onChange={(e) => set('paidAt', fromDateInput(e.target.value))}
-                      onBlur={() => commit('paidAt')}
-                    />
-                  </Field.Root>
-                  <Field.Root w="9rem">
-                    <Field.Label fontSize="xs">Live on</Field.Label>
-                    <Input
-                      size="sm"
-                      type="date"
-                      value={toDateInput(draft.liveAt)}
-                      onChange={(e) => set('liveAt', fromDateInput(e.target.value))}
-                      onBlur={() => commit('liveAt')}
-                    />
-                  </Field.Root>
-                </HStack>
-
-                <Field.Root>
-                  <Field.Label fontSize="xs">Note</Field.Label>
-                  <Input
-                    size="sm"
-                    placeholder="anything worth remembering about this one"
-                    value={draft.note ?? ''}
-                    onChange={(e) => set('note', e.target.value)}
-                    onBlur={() => commit('note')}
-                  />
-                </Field.Root>
-
-                <Text fontSize="xs" color="fg.subtle">
-                  Every field saves when you leave it. Paid and live are independent — set them in
-                  whichever order they happen. The agreed price stays here and never touches the
-                  price history.
-                </Text>
-              </VStack>
+              <Textarea
+                autoFocus
+                size="sm"
+                rows={18}
+                placeholder="Paste the post here, or close this and give a link to the text instead."
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+              />
             </Dialog.Body>
-
             <Dialog.Footer>
-              <Button size="xs" variant="ghost" colorPalette="red" mr="auto" onClick={remove}>
-                <TrashIcon boxSize={3.5} /> Remove site
-              </Button>
+              {/* Saved on close, not on blur: Escape and the X never blur the
+                  textarea, and losing a pasted post to a stray keypress is not a
+                  trade worth making for one fewer write. */}
+              <Text fontSize="xs" color="fg.muted" mr="auto">
+                {value.trim().length.toLocaleString()} chars · saved when you close this
+              </Text>
               <Button size="sm" variant="subtle" onClick={onClose}>
                 Done
               </Button>

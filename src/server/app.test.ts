@@ -351,6 +351,38 @@ test('POST /api/preview renders the outreach email from the global pitch profile
   }
 });
 
+test('batch language is stored and used by the outreach preview', async () => {
+  const h = await start();
+  try {
+    const batch = await J(`${h.base}/api/batches`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Spanish sites', language: 'es' }),
+    });
+    assert.equal(batch.language, 'es');
+    assert.equal((await h.store.getBatch(batch.id))?.language, 'es');
+
+    const preview = await J(`${h.base}/api/preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ websiteUrl: 'alvo.example', contactName: 'Mariana', language: 'pt' }),
+    });
+    assert.equal(preview.subject, 'Interesse em publicar um artigo patrocinado no seu site');
+    assert.match(preview.body, /^Olá, Mariana,/);
+    assert.match(preview.body, /poderia partilhar as suas tarifas/);
+    assert.match(preview.body, /Com os melhores cumprimentos/);
+
+    const invalid = await fetch(`${h.base}/api/batches`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Unsupported', language: 'fr' }),
+    });
+    assert.equal(invalid.status, 400);
+  } finally {
+    await h.close();
+  }
+});
+
 test('POST /api/accounts creates a Gmail account with derived credentialRef', async () => {
   const h = await start();
   try {

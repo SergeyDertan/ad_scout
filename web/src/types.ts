@@ -619,10 +619,14 @@ export interface Batch {
   id: string;
   name?: string;
   source: 'import' | 'manual';
+  /** Language used for every automated outreach in this batch. */
+  language?: OutreachLanguage;
   /** Per-import advertised site override; global config default when absent. */
   advertised?: { url: string; description: string };
   createdAt: string;
 }
+
+export type OutreachLanguage = 'en' | 'es' | 'pt';
 
 /** A batch enriched by GET /api/batches with its live target rollup. */
 export interface BatchRow extends Batch {
@@ -632,6 +636,7 @@ export interface BatchRow extends Batch {
 
 export interface NewBatch {
   name?: string;
+  language?: OutreachLanguage;
   advertised?: { url: string; description?: string };
 }
 

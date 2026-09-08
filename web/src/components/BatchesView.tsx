@@ -113,6 +113,9 @@ export function BatchesView({ tick }: { tick: number }) {
                 {b.source === 'manual' && (
                   <Badge size="sm" colorPalette="gray" variant="subtle">manual</Badge>
                 )}
+                <Badge size="sm" colorPalette="blue" variant="subtle">
+                  {(b.language ?? 'en').toUpperCase()}
+                </Badge>
               </HStack>
 
               <Text

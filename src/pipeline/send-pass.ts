@@ -95,7 +95,7 @@ export async function runSendPass(deps: SendDeps, opts: SendOpts = {}): Promise<
   const batchById = new Map(batches.map((b) => [b.id, b] as const));
 
   // Build the work queue: follow-ups due first, then pending targets. The pitch
-  // profile is the target's batch (advertised override) layered on global config.
+  // profile layers the target batch's language/site over global config.
   const followUps: WorkItem[] = [];
   const initials: WorkItem[] = [];
   for (const t of await store.listTargets()) {

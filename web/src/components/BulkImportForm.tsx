@@ -5,6 +5,7 @@ import {
   Heading,
   HStack,
   Input,
+  NativeSelect,
   Spinner,
   Text,
   Textarea,
@@ -12,6 +13,7 @@ import {
 } from '@chakra-ui/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
+import type { OutreachLanguage } from '../types';
 import { Panel } from './Panel';
 import { toaster, toastError } from './Toaster';
 
@@ -108,6 +110,7 @@ export function BulkImportForm({
 }) {
   const [text, setText] = useState('');
   const [name, setName] = useState('');
+  const [language, setLanguage] = useState<OutreachLanguage>('en');
   const [advUrl, setAdvUrl] = useState('');
   const [advDescription, setAdvDescription] = useState('');
   const [fileRows, setFileRows] = useState<ParsedRow[] | null>(null);
@@ -125,15 +128,15 @@ export function BulkImportForm({
   const rows = fileRows ?? textRows;
 
   // The email is rendered from the first parsed row, so the preview shows a
-  // real target rather than a placeholder. Advertised overrides on this batch
-  // are applied just as they would be at send time.
+  // real target rather than a placeholder. Batch language/site overrides are
+  // applied just as they would be at send time.
   const sampleRow = rows[0];
   const advertised = advUrl.trim()
     ? { url: advUrl.trim(), description: advDescription.trim() || undefined }
     : undefined;
 
-  // Debounced live preview: refetch whenever the sample target or the
-  // advertised override changes, but only while the panel is open.
+  // Debounced live preview: refetch whenever the sample target or a batch
+  // message option changes, but only while the panel is open.
   useEffect(() => {
     if (!showPreview) return;
     if (previewDebounceRef.current) clearTimeout(previewDebounceRef.current);
@@ -145,6 +148,7 @@ export function BulkImportForm({
           websiteUrl: sampleRow?.websiteUrl || 'example.com',
           contactName: sampleRow?.contactName,
           contactEmail: sampleRow?.contactEmail,
+          language,
           ...(advertised ? { advertised } : {}),
         });
         setPreview(result);
@@ -163,6 +167,7 @@ export function BulkImportForm({
     sampleRow?.websiteUrl,
     sampleRow?.contactName,
     sampleRow?.contactEmail,
+    language,
     advertised?.url,
     advertised?.description,
   ]);
@@ -194,11 +199,11 @@ export function BulkImportForm({
     if (rows.length === 0) return;
     setBusy(true);
     setProgress({ done: 0, total: rows.length });
-    // Create the batch record first, then stamp every row with its id. An
-    // advertised URL here overrides the global default for this import's emails.
+    // Create the batch record first, then stamp every row with its id. Its
+    // language and advertised site are resolved again at send time.
     let batchId: string;
     try {
-      const batch = await api.createBatch({ name: name.trim() || undefined, advertised });
+      const batch = await api.createBatch({ name: name.trim() || undefined, language, advertised });
       batchId = batch.id;
     } catch (err) {
       setBusy(false);
@@ -250,6 +255,22 @@ export function BulkImportForm({
             placeholder="e.g. Casino sites — July"
           />
           <Field.HelperText>Labels this import in the Batches tab.</Field.HelperText>
+        </Field.Root>
+
+        <Field.Root maxW="xs">
+          <Field.Label>Email language</Field.Label>
+          <NativeSelect.Root>
+            <NativeSelect.Field
+              value={language}
+              onChange={(e) => setLanguage(e.target.value as OutreachLanguage)}
+            >
+              <option value="en">English</option>
+              <option value="es">Spanish</option>
+              <option value="pt">Portuguese (Portugal)</option>
+            </NativeSelect.Field>
+            <NativeSelect.Indicator />
+          </NativeSelect.Root>
+          <Field.HelperText>Sets the subject and message for this batch.</Field.HelperText>
         </Field.Root>
 
         <Field.Root maxW="xs">
@@ -346,7 +367,7 @@ export function BulkImportForm({
       )}
 
       {/* Message preview — shows the exact outreach email the first row would
-          receive, including any advertised override set above. */}
+          receive, including the language and advertised override set above. */}
       <Box mt={4}>
         <Button
           size="xs"

@@ -83,6 +83,21 @@ test('send-pass reserves, sends, resolves threadId, and contacts targets', async
   assert.ok(outreaches.every((o) => o.status === 'sent' && o.threadId && o.kind === 'initial'));
 });
 
+test('send-pass drafts each target in its batch language', async () => {
+  const store = new MemoryStore();
+  const email = new DummyEmailProvider();
+  await seed(store);
+  await store.putBatch({ ...batch(), language: 'es' });
+
+  await runSendPass({ store, email, clock, config });
+
+  assert.equal(email.sent.length, 2);
+  assert.ok(email.sent.every((message) => message.subject === 'Interés en publicar un artículo patrocinado en su sitio web'));
+  assert.ok(email.sent.every((message) => message.body.startsWith('Hola, ')));
+  assert.ok(email.sent.every((message) => message.body.includes('¿podría compartir sus tarifas')));
+  assert.ok(email.sent.every((message) => message.body.endsWith('Un cordial saludo,\nVlad')));
+});
+
 test('send-pass is idempotent — a second run sends nothing new', async () => {
   const store = new MemoryStore();
   const email = new DummyEmailProvider();

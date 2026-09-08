@@ -17,6 +17,7 @@ import type {
   NewTarget,
   Niche,
   Outreach,
+  OutreachLanguage,
   Placement,
   ResponseRow,
   Status,
@@ -49,8 +50,8 @@ export const api = {
   status: (batchId?: string) =>
     req<Status>('/status' + (batchId ? `?batchId=${encodeURIComponent(batchId)}` : '')),
 
-  // outreach email preview (rendered from the global pitch profile)
-  previewEmail: (body: { websiteUrl?: string; advertised?: { url: string; description?: string }; contactEmail?: string; contactName?: string; notes?: string }) =>
+  // outreach email preview (global pitch profile + selected batch language)
+  previewEmail: (body: { websiteUrl?: string; language?: OutreachLanguage; advertised?: { url: string; description?: string }; contactEmail?: string; contactName?: string; notes?: string }) =>
     req<{ subject: string; body: string; senderName: string; senderEmail: string }>('/preview', { method: 'POST', body: JSON.stringify(body) }),
 
   // accounts

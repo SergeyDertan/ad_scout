@@ -60,7 +60,7 @@ import { accountSendState } from '../domain/account-state';
 import { accountStats } from '../domain/account-stats';
 import { engagementOf, outcomesOf } from '../domain/engagement';
 import { assembleResult, parsePrice, type RawExtraction, type RawOffer } from '../domain/extraction';
-import { resolveProfile } from '../domain/pitch';
+import { isOutreachLanguage, resolveProfile } from '../domain/pitch';
 import {
   buildBatchRows,
   buildDomainDetail,
@@ -459,7 +459,7 @@ async function handle(
     }
 
     // POST /api/preview — render the outreach email from the global pitch profile
-    // (optionally overriding the advertised site, as a batch would) + a fake target.
+    // with the batch language/advertised overrides + a fake target.
     if (method === 'POST' && seg[1] === 'preview' && seg.length === 2) {
       const body = (await readJsonBody(req)) as Record<string, unknown>;
       const websiteUrl = str(body.websiteUrl) ?? 'example.com';
@@ -470,7 +470,9 @@ async function handle(
       const advertised = str(adv.url)
         ? { url: str(adv.url)!, description: str(adv.description) ?? '' }
         : undefined;
-      const profile = resolveProfile(advertised ? { advertised } : undefined, deps.config.pitch);
+      const language = str(body.language) ?? 'en';
+      if (!isOutreachLanguage(language)) return sendJson(res, 400, { error: 'unsupported language' });
+      const profile = resolveProfile({ ...(advertised ? { advertised } : {}), language }, deps.config.pitch);
       const fakeTarget: Target = {
         id: 'preview',
         websiteUrl,
@@ -689,18 +691,21 @@ async function handle(
     }
 
     // POST /api/batches — create a named import batch; the bulk-import client
-    // calls this first, then posts each target with the returned id. An optional
-    // `advertised` overrides the global advertised site for this import's emails.
+    // calls this first, then posts each target with the returned id. Language
+    // selects localized copy; `advertised` optionally overrides the global site.
     if (method === 'POST' && seg[1] === 'batches' && seg.length === 2) {
       const body = (await readJsonBody(req)) as Record<string, unknown>;
       const adv = (body.advertised ?? {}) as Record<string, unknown>;
       const advertised = str(adv.url)
         ? { url: str(adv.url)!, description: str(adv.description) ?? '' }
         : undefined;
+      const language = str(body.language) ?? 'en';
+      if (!isOutreachLanguage(language)) return sendJson(res, 400, { error: 'unsupported language' });
       const batch: Batch = {
         id: newId('batch'),
         ...(str(body.name) ? { name: str(body.name) } : {}),
         source: 'import',
+        language,
         ...(advertised ? { advertised } : {}),
         createdAt: deps.clock.now().toISOString(),
       };

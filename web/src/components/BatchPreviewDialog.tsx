@@ -20,8 +20,8 @@ interface Preview {
   senderEmail: string;
 }
 
-/** Renders the outreach email a batch's targets would receive — the batch's
- *  advertised override (if any) is applied on top of the global pitch profile. */
+/** Renders the outreach email a batch's targets would receive, including its
+ *  language and advertised-site override. */
 export function BatchPreviewDialog({ batch, onClose }: { batch: BatchRow; onClose: () => void }) {
   const [websiteUrl, setWebsiteUrl] = useState('example.com');
   const [contactName, setContactName] = useState('');
@@ -41,6 +41,7 @@ export function BatchPreviewDialog({ batch, onClose }: { batch: BatchRow; onClos
         const result = await api.previewEmail({
           websiteUrl: websiteUrl.trim() || 'example.com',
           contactName: contactName.trim() || undefined,
+          language: batch.language ?? 'en',
           ...(batch.advertised ? { advertised: batch.advertised } : {}),
         });
         setPreview(result);
@@ -53,7 +54,7 @@ export function BatchPreviewDialog({ batch, onClose }: { batch: BatchRow; onClos
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [batch.advertised, websiteUrl, contactName]);
+  }, [batch.advertised, batch.language, websiteUrl, contactName]);
 
   return (
     <Dialog.Root open onOpenChange={(e) => { if (!e.open) onClose(); }} size="xl" placement="center" scrollBehavior="inside">
@@ -65,6 +66,7 @@ export function BatchPreviewDialog({ batch, onClose }: { batch: BatchRow; onClos
               <Dialog.Title>Email preview</Dialog.Title>
               <Text fontSize="xs" color="fg.muted">
                 {label}
+                {` · ${(batch.language ?? 'en').toUpperCase()}`}
                 {batch.advertised ? ` · advertising ${batch.advertised.url}` : ' · global advertised default'}
               </Text>
               <Dialog.CloseTrigger asChild>

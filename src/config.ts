@@ -25,8 +25,8 @@ export interface Config {
   antigravity: { model: string; timeoutMs: number };
   googleOAuth: { clientId: string; clientSecret: string };
   sendWindow: { startHour: number; endHour: number; paceEndHour: number };
-  /** Global outreach pitch defaults. A Batch may override `advertised` per import;
-   *  everything else is global. Drives both the drafter and the extractor. */
+  /** Global outreach pitch defaults. A Batch may override `advertised` and the
+   *  outreach language per import. Drives both the drafter and the extractor. */
   pitch: PitchProfile;
   /** No-reply follow-up policy (global). */
   followUp: { afterDays: number; maxFollowUps: number };

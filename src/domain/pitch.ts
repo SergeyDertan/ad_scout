@@ -1,7 +1,13 @@
 // Resolve the pitch profile for an outreach: a batch may override the advertised
-// site per import; topic/format/subject always come from the global defaults.
+// site and message language; topic/format/English subject come from global defaults.
 
-import type { Batch, PitchProfile } from './types';
+import type { Batch, OutreachLanguage, PitchProfile } from './types';
+
+export const OUTREACH_LANGUAGES: readonly OutreachLanguage[] = ['en', 'es', 'pt'];
+
+export function isOutreachLanguage(value: unknown): value is OutreachLanguage {
+  return typeof value === 'string' && OUTREACH_LANGUAGES.includes(value as OutreachLanguage);
+}
 
 /** How the outreach that produced a reply framed its question — which decides how
  *  the extractor reads a niche-less flat price:
@@ -24,13 +30,14 @@ export function pitchStyleForBatch(batchId?: string): PitchStyle {
 }
 
 export function resolveProfile(
-  batch: Pick<Batch, 'advertised'> | undefined,
+  batch: Pick<Batch, 'advertised' | 'language'> | undefined,
   defaults: PitchProfile,
 ): PitchProfile {
   return {
     advertised: batch?.advertised ?? defaults.advertised,
     topic: defaults.topic,
     format: defaults.format,
+    language: batch?.language ?? defaults.language ?? 'en',
     ...(defaults.subjectTemplate ? { subjectTemplate: defaults.subjectTemplate } : {}),
   };
 }

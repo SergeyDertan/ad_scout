@@ -9,15 +9,20 @@ export type JsonSchema = Record<string, unknown>;
 
 // --- Pitch profile ----------------------------------------------------------
 
+export type OutreachLanguage = 'en' | 'es' | 'pt';
+
 /**
  * The "what & how" of an outreach email: the site we advertise, the topic/format
- * we pitch, and an optional subject override. Global defaults live in Config; a
- * Batch may override `advertised` per import. Resolved via resolveProfile().
+ * we pitch, the message language, and an optional English subject override.
+ * Global defaults live in Config; a Batch may override `advertised` and
+ * `language` per import. Resolved via resolveProfile().
  */
 export interface PitchProfile {
   advertised: { url: string; description: string };
   topic: string;
   format: string;
+  /** Language of the deterministic outreach copy. Defaults to English. */
+  language?: OutreachLanguage;
   subjectTemplate?: string;
 }
 
@@ -103,8 +108,10 @@ export interface Batch {
   id: ID;
   name?: string; // user-given label for an import; absent for manual adds
   source: BatchSource;
+  /** Language used for every automated outreach in this batch. */
+  language?: OutreachLanguage;
   /** Per-import advertised site override. Absent ⇒ the global config default is
-   *  used when drafting. This is the only pitch field that varies per import. */
+   *  used when drafting. */
   advertised?: { url: string; description: string };
   createdAt: ISO;
 }

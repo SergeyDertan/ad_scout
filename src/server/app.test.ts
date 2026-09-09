@@ -326,6 +326,62 @@ test('GET /api/targets?status= filters', async () => {
   }
 });
 
+test('GET /api/targets/page bounds, filters, and strips rich target data', async () => {
+  const h = await start();
+  try {
+    await h.store.putTarget({
+      id: 't3',
+      websiteUrl: 'new.example',
+      contactEmail: 'editor@new.example',
+      contactName: 'Editor',
+      notes: 'large private note',
+      status: 'replied',
+      followUpCount: 2,
+      result: {
+        canPost: 'yes',
+        optOut: false,
+        intent: 'answer',
+        reasoning: 'large private reasoning',
+        offers: [],
+      },
+      createdAt: '2026-06-02T00:00:00Z',
+    });
+
+    const first = await J(`${h.base}/api/targets/page?limit=1`);
+    assert.equal(first.items.length, 1);
+    assert.equal(first.items[0].id, 't3');
+    assert.equal(first.items[0].canPost, 'yes');
+    assert.equal('notes' in first.items[0], false);
+    assert.equal('result' in first.items[0], false);
+    assert.equal(first.page.total, 3);
+    assert.ok(first.page.nextCursor);
+    assert.equal(first.facets.byStatus.pending, 1);
+    assert.equal(first.facets.byStatus.contacted, 1);
+    assert.equal(first.facets.byStatus.replied, 1);
+    assert.equal(first.facets.unbatched, 1);
+    assert.equal(first.facets.batches.length, 1);
+    assert.equal(first.facets.batches[0].count, 2);
+
+    const second = await J(
+      `${h.base}/api/targets/page?limit=1&cursor=${encodeURIComponent(first.page.nextCursor)}`,
+    );
+    assert.equal(second.items[0].id, 't2');
+    assert.ok(second.page.previousCursor);
+
+    const searched = await J(`${h.base}/api/targets/page?q=EDITOR&status=replied`);
+    assert.deepEqual(searched.items.map((row: any) => row.id), ['t3']);
+    const unbatched = await J(`${h.base}/api/targets/page?unbatched=true`);
+    assert.deepEqual(unbatched.items.map((row: any) => row.id), ['t3']);
+    const batch = await J(`${h.base}/api/targets/page?batchId=b1`);
+    assert.equal(batch.page.total, 2);
+
+    const bad = await fetch(`${h.base}/api/targets/page?status=wat`);
+    assert.equal(bad.status, 400);
+  } finally {
+    await h.close();
+  }
+});
+
 test('POST /api/preview renders the outreach email from the global pitch profile', async () => {
   const h = await start();
   try {

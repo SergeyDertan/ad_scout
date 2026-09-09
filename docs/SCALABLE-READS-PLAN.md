@@ -44,7 +44,7 @@ verification notes in the same commit as each step.
 - [x] Step 1 — shared cursor/envelope types, validation, and tests.
 - [x] Step 2 — Responses: server filtering/paging, slim rows, direct detail read,
       bounded client page, and export behavior made explicit.
-- [ ] Step 3 — Targets: server filtering/paging/counts and bounded client page.
+- [x] Step 3 — Targets: server filtering/paging/counts and bounded client page.
 - [ ] Step 4 — Domains: server filtering/sorting/paging and bounded client page.
 - [ ] Step 5 — replace transitional scans with indexed/materialized reads.
 - [ ] Step 6 — type-aware SSE invalidation for the active query only.
@@ -74,6 +74,18 @@ verification notes in the same commit as each step.
   10.31 MiB for the legacy full response feed. Transitional server build time
   is still 536 ms because it scans the store; Step 5 owns that remaining cost.
 - Root/web typechecks, the production web build, and the full 436-test suite
+  passed.
+
+### 2026-09-09 — Step 3
+
+- Targets UI retains one 50-row page and sends status, batch, unbatched, and
+  search filters to `GET /api/targets/page`.
+- Target list rows omit notes, account assignment, and the rich extraction
+  result; the table receives only `canPost` from that result.
+- Status totals and batch counts are computed on the server. Target and
+  Responses filters now receive at most 100 recent batch choices (plus an older
+  currently selected batch), eliminating their unbounded `/api/batches` reads.
+- Root/web typechecks, the production web build, and the full 437-test suite
   passed.
 
 ## Acceptance targets

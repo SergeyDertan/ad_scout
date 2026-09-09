@@ -8,14 +8,13 @@ import {
   InputGroup,
   Link,
   NativeSelect,
-  SimpleGrid,
   Text,
 } from '@chakra-ui/react';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useDeferredValue, useState } from 'react';
 import { List, type RowComponentProps } from 'react-window';
 import { api } from '../api';
 import { useIsManager } from '../role';
-import type { BatchRow, Target, TargetStatus } from '../types';
+import type { BatchFilterOption, TargetFacets, TargetListRow, TargetStatus } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { AddTargetForm } from './AddTargetForm';
 import { BulkImportForm } from './BulkImportForm';
@@ -23,34 +22,30 @@ import { ThreadPanel } from './ThreadPanel';
 import { Empty } from './Empty';
 import { useConfirm } from './Confirm';
 import { toaster, toastError } from './Toaster';
-import { useResource } from '../hooks/useResource';
+import { usePagedResource } from '../hooks/useResource';
 import { FilterIcon, PlusIcon, SearchIcon, TargetIcon, TrashIcon } from './icons';
 
-const STATUSES: (TargetStatus | '')[] = [
-  '', 'pending', 'reserved', 'contacted', 'replied', 'bounced', 'needs_review', 'excluded',
+const TARGET_STATUSES: TargetStatus[] = [
+  'pending', 'reserved', 'contacted', 'replied', 'bounced', 'needs_review', 'excluded',
 ];
+const STATUSES: (TargetStatus | '')[] = ['', ...TARGET_STATUSES];
 
 // px widths for the 7 columns: website | batch | contact | status | followups | canpost | actions
 const COLS = '1fr 140px 200px 110px 64px 70px 80px';
 const ROW_H = 52;
 const MAX_LIST_H = 600;
+const PAGE_SIZE = 50;
+const EMPTY_FACETS: TargetFacets = { byStatus: {}, unbatched: 0, batches: [] };
 
 type Mode = 'add' | 'import' | null;
 
 // Sentinel batch-filter value for targets that carry no batchId (pre-backfill).
 const NO_BATCH = '__none__';
 
-/** One import's worth of targets, summarized for the batch filter dropdown. */
-interface BatchInfo {
-  id: string;
-  count: number;
-  firstAt: string; // earliest createdAt in the batch
-}
-
 /** Human label for a batch option — date/time of the import + row count. The raw
  *  id (a uuid) is unhelpful on its own, so it goes in the option's title tooltip. */
-function batchLabel(b: BatchInfo): string {
-  const when = new Date(b.firstAt).toLocaleString(undefined, {
+function batchLabel(b: BatchFilterOption): string {
+  const when = new Date(b.createdAt).toLocaleString(undefined, {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
@@ -88,16 +83,15 @@ function StatChip({ label, value, active, onClick }: { label: string; value: num
 
 // Row renderer for react-window 2.x — extra props come from rowProps
 interface RowData {
-  targets: Target[];
-  batchNames: Record<string, string>;
-  onRemove: (t: Target) => void;
+  targets: TargetListRow[];
+  onRemove: (t: TargetListRow) => void;
   /** False for a manager: DELETE /api/targets/:id is refused for that role. */
   canRemove: boolean;
-  onThread: (t: Target) => void;
+  onThread: (t: TargetListRow) => void;
   threadId: string | null;
 }
 
-function VirtualRow({ index, style, targets, batchNames, onRemove, canRemove, onThread, threadId }: RowComponentProps<RowData>) {
+function VirtualRow({ index, style, targets, onRemove, canRemove, onThread, threadId }: RowComponentProps<RowData>) {
   const t = targets[index]!;
   const isThreadOpen = threadId === t.id;
   return (
@@ -137,14 +131,14 @@ function VirtualRow({ index, style, targets, batchNames, onRemove, canRemove, on
         )}
       </Box>
       <Text color="fg.muted" overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap" fontSize="xs">
-        {(t.batchId && batchNames[t.batchId]) ?? '—'}
+        {t.batchName ?? (t.batchId ? `batch ${t.batchId.replace(/^batch_/, '').slice(0, 8)}` : '—')}
       </Text>
       <Text color="fg.muted" overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
         {t.contactEmail}
       </Text>
       <Box><StatusBadge value={t.status} /></Box>
       <Text textAlign="center" color={t.followUpCount ? 'fg' : 'fg.subtle'}>{t.followUpCount}</Text>
-      <Text color="fg.muted">{t.result?.canPost ?? '—'}</Text>
+      <Text color="fg.muted">{t.canPost ?? '—'}</Text>
       <HStack justify="flex-end" gap={1}>
         <Button
           size="xs"
@@ -170,59 +164,40 @@ export function TargetsView({ tick }: { tick: number }) {
   const [batchFilter, setBatchFilter] = useState('');
   const [search, setSearch] = useState('');
   const [mode, setMode] = useState<Mode>(null);
-  const [threadTarget, setThreadTarget] = useState<Target | null>(null);
+  const [threadTarget, setThreadTarget] = useState<TargetListRow | null>(null);
   const confirm = useConfirm();
 
-  const { rows: batchList } = useResource(
-    useCallback((signal: AbortSignal) => api.listBatches(signal), []),
-    tick,
-  );
+  const deferredSearch = useDeferredValue(search.trim());
+  const filterKey = JSON.stringify([statusFilter, batchFilter, deferredSearch]);
+  const [pageCursor, setPageCursor] = useState<{ filterKey: string; value?: string }>({ filterKey: '' });
+  const cursor = pageCursor.filterKey === filterKey ? pageCursor.value : undefined;
   const {
-    rows: allTargets,
+    result,
     loading,
     error,
     reload: load,
-  } = useResource(
+  } = usePagedResource(
     useCallback(
-      (signal: AbortSignal) => api.listTargets(statusFilter, undefined, signal),
-      [statusFilter],
+      (signal: AbortSignal) => api.listTargetPage({
+        limit: PAGE_SIZE,
+        ...(cursor ? { cursor } : {}),
+        ...(statusFilter ? { status: statusFilter } : {}),
+        ...(batchFilter && batchFilter !== NO_BATCH ? { batchId: batchFilter } : {}),
+        ...(batchFilter === NO_BATCH ? { unbatched: true } : {}),
+        ...(deferredSearch ? { search: deferredSearch } : {}),
+      }, signal),
+      [batchFilter, cursor, deferredSearch, statusFilter],
     ),
     tick,
   );
+  const targets = result?.items ?? [];
+  const facets = result?.facets ?? EMPTY_FACETS;
+  const batches = facets.batches;
+  const hasUnbatched = facets.unbatched > 0;
+  const byStatus = facets.byStatus;
+  const statusTotal = Object.values(byStatus).reduce((sum, count) => sum + (count ?? 0), 0);
 
-  // Batches present in the loaded set, newest first — drives the filter dropdown.
-  const batches = useMemo(() => {
-    const map = new Map<string, BatchInfo>();
-    for (const t of allTargets) {
-      if (!t.batchId) continue;
-      const cur = map.get(t.batchId);
-      if (cur) {
-        cur.count++;
-        if (t.createdAt < cur.firstAt) cur.firstAt = t.createdAt;
-      } else {
-        map.set(t.batchId, { id: t.batchId, count: 1, firstAt: t.createdAt });
-      }
-    }
-    return [...map.values()].sort((a, b) => b.firstAt.localeCompare(a.firstAt));
-  }, [allTargets]);
-  const hasUnbatched = useMemo(() => allTargets.some((t) => !t.batchId), [allTargets]);
-
-  const q = search.trim().toLowerCase();
-  const targets = allTargets.filter((t) => {
-    if (q && !t.websiteUrl.toLowerCase().includes(q) && !t.contactEmail.toLowerCase().includes(q))
-      return false;
-    if (batchFilter === NO_BATCH) return !t.batchId;
-    if (batchFilter && t.batchId !== batchFilter) return false;
-    return true;
-  });
-
-  // Status breakdown from loaded targets
-  const byStatus = targets.reduce<Record<string, number>>((acc, t) => {
-    acc[t.status] = (acc[t.status] ?? 0) + 1;
-    return acc;
-  }, {});
-
-  const remove = async (t: Target) => {
+  const remove = async (t: TargetListRow) => {
     const ok = await confirm({
       title: 'Remove target?',
       description: <><b>{t.websiteUrl}</b> will be removed from the outreach queue.</>,
@@ -240,24 +215,14 @@ export function TargetsView({ tick }: { tick: number }) {
     }
   };
 
-  const handleThread = (t: Target) => {
+  const handleThread = (t: TargetListRow) => {
     setThreadTarget((prev) => (prev?.id === t.id ? null : t));
   };
 
   const listHeight = Math.min(targets.length * ROW_H, MAX_LIST_H);
 
-  // id → display name for the batch column and filter labels.
-  const batchNames = useMemo(() => {
-    const m: Record<string, string> = {};
-    for (const b of batchList as BatchRow[]) {
-      m[b.id] = b.name?.trim() || `batch ${b.id.replace(/^batch_/, '').slice(0, 8)}`;
-    }
-    return m;
-  }, [batchList]);
-
   const rowData: RowData = {
     targets,
-    batchNames,
     onRemove: remove,
     canRemove: !isManager,
     onThread: handleThread,
@@ -267,20 +232,20 @@ export function TargetsView({ tick }: { tick: number }) {
   return (
     <Box pt={4}>
       {/* Stats row */}
-      {targets.length > 0 && !loading && (
+      {statusTotal > 0 && !loading && (
         <HStack gap={2} mb={3} flexWrap="wrap">
           <StatChip
             label="all"
-            value={targets.length}
+            value={statusTotal}
             active={statusFilter === ''}
             onClick={() => setStatusFilter('')}
           />
-          {STATUSES.filter(Boolean).map((s) =>
+          {TARGET_STATUSES.map((s) =>
             byStatus[s] ? (
               <StatChip
                 key={s}
                 label={s.replace(/_/g, ' ')}
-                value={byStatus[s]}
+                value={byStatus[s] ?? 0}
                 active={statusFilter === s}
                 onClick={() => setStatusFilter(statusFilter === s ? '' : s as TargetStatus)}
               />
@@ -336,7 +301,7 @@ export function TargetsView({ tick }: { tick: number }) {
                 <option value="">all batches</option>
                 {batches.map((b) => (
                   <option key={b.id} value={b.id} title={b.id}>
-                    {batchNames[b.id] ?? batchLabel(b)}
+                    {b.name?.trim() || batchLabel(b)}
                   </option>
                 ))}
                 {hasUnbatched && <option value={NO_BATCH}>— no batch —</option>}
@@ -392,33 +357,34 @@ export function TargetsView({ tick }: { tick: number }) {
         <Empty
           icon={TargetIcon}
           title={
-            q
+            deferredSearch
               ? `No targets match "${search.trim()}"`
               : statusFilter
                 ? `No ${statusFilter.replace(/_/g, ' ')} targets`
                 : 'No targets queued'
           }
           description={
-            q || statusFilter || batchFilter
+            deferredSearch || statusFilter || batchFilter
               ? 'Try a different filter.'
               : 'Add a website to the outreach queue to begin.'
           }
         >
-          {!statusFilter && !q && (
+          {!statusFilter && !deferredSearch && (
             <Button size="sm" colorPalette="brand" mt={2} hidden={isManager} onClick={() => setMode('add')}>
               <PlusIcon /> Add target
             </Button>
           )}
         </Empty>
       ) : (
-        <Box
-          bg="bg.panel"
-          borderWidth="1px"
-          borderColor="border"
-          rounded="xl"
-          boxShadow="xs"
-          overflow="hidden"
-        >
+        <>
+          <Box
+            bg="bg.panel"
+            borderWidth="1px"
+            borderColor="border"
+            rounded="xl"
+            boxShadow="xs"
+            overflow="hidden"
+          >
           {/* Sticky header */}
           <Box
             display="grid"
@@ -447,15 +413,39 @@ export function TargetsView({ tick }: { tick: number }) {
             <Text textAlign="end">Actions</Text>
           </Box>
 
-          <List
-            style={{ height: listHeight }}
-            rowCount={targets.length}
-            rowHeight={ROW_H}
-            rowComponent={VirtualRow}
-            rowProps={rowData}
-            overscanCount={5}
-          />
-        </Box>
+            <List
+              style={{ height: listHeight }}
+              rowCount={targets.length}
+              rowHeight={ROW_H}
+              rowComponent={VirtualRow}
+              rowProps={rowData}
+              overscanCount={5}
+            />
+          </Box>
+          <Flex mt={3} align="center" justify="space-between" gap={3} wrap="wrap">
+            <Text color="fg.muted" fontSize="xs">
+              {targets.length} on this page · {result?.page.total ?? 0} matching
+            </Text>
+            <HStack gap={2}>
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={!result?.page.previousCursor || loading}
+                onClick={() => setPageCursor({ filterKey, value: result?.page.previousCursor })}
+              >
+                Previous
+              </Button>
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={!result?.page.nextCursor || loading}
+                onClick={() => setPageCursor({ filterKey, value: result?.page.nextCursor })}
+              >
+                Next
+              </Button>
+            </HStack>
+          </Flex>
+        </>
       )}
     </Box>
   );

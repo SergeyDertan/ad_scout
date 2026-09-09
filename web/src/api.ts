@@ -25,10 +25,21 @@ import type {
   Status,
   Suppression,
   Target,
+  TargetFacets,
+  TargetListRow,
   TargetStatus,
   ThreadReply,
 } from './types';
 import { apiUrl, authHeaders } from './apiBase';
+
+export interface TargetPageQuery {
+  limit?: number;
+  cursor?: string;
+  status?: TargetStatus | '';
+  batchId?: string;
+  unbatched?: boolean;
+  search?: string;
+}
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const auth = await authHeaders();
@@ -75,6 +86,16 @@ export const api = {
     if (batchId) params.set('batchId', batchId);
     const qs = params.toString();
     return req<Target[]>('/targets' + (qs ? `?${qs}` : ''), { signal });
+  },
+  listTargetPage: (query: TargetPageQuery, signal?: AbortSignal) => {
+    const params = new URLSearchParams();
+    if (query.limit) params.set('limit', String(query.limit));
+    if (query.cursor) params.set('cursor', query.cursor);
+    if (query.status) params.set('status', query.status);
+    if (query.batchId) params.set('batchId', query.batchId);
+    if (query.unbatched) params.set('unbatched', 'true');
+    if (query.search) params.set('q', query.search);
+    return req<PageEnvelope<TargetListRow, TargetFacets>>(`/targets/page?${params}`, { signal });
   },
   getTargetThread: (id: string) =>
     req<{

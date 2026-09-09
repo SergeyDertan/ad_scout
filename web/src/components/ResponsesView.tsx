@@ -17,7 +17,7 @@ import {
   isAwaiting,
   isLateMessage,
   needsReview,
-  type BatchRow,
+  type BatchFilterOption,
   type Niche,
   type ResponseFacets,
   type ResponseRow,
@@ -36,13 +36,13 @@ import { AlertTriangleIcon, DownloadIcon, InboxIcon, MegaphoneIcon, SearchIcon }
 const COLS = '1.2fr 1.2fr 130px 96px 96px 120px 190px';
 
 /** A batch's display label: its name, else a short id (manual adds are unnamed). */
-function batchLabel(b: BatchRow): string {
+function batchLabel(b: BatchFilterOption): string {
   return b.name?.trim() || `batch ${b.id.replace(/^batch_/, '').slice(0, 8)}`;
 }
 const ROW_H = 56;
 const MAX_LIST_H = 640;
 const PAGE_SIZE = 50;
-const EMPTY_FACETS: ResponseFacets = { review: 0, awaiting: 0, late: 0, ok: 0 };
+const EMPTY_FACETS: ResponseFacets = { review: 0, awaiting: 0, late: 0, ok: 0, batches: [] };
 
 /** Compact one-line summary of a reply's extraction, shown in the virtualized row.
  *  Full detail (every price, field, reasoning) lives in the Show modal. */
@@ -199,10 +199,6 @@ export function ResponsesView({
   const [showId, setShowId] = useState<string | null>(null);
   const [dealSeed, setDealSeed] = useState<StartDealSeed | null>(null);
   const [exporting, setExporting] = useState(false);
-  const { rows: batches } = useResource(
-    useCallback((signal: AbortSignal) => api.listBatches(signal), []),
-    tick,
-  );
   const { rows: niches } = useResource(
     useCallback((signal: AbortSignal) => api.listNiches(signal), []),
     tick,
@@ -239,6 +235,7 @@ export function ResponsesView({
   );
   const rows = result?.items ?? [];
   const facets = result?.facets ?? EMPTY_FACETS;
+  const batches = facets.batches;
   const editingRow = editId ? rows.find((r) => r.id === editId) : undefined;
   const showingRow = showId ? rows.find((r) => r.id === showId) : undefined;
   // Everything the deal needs is already on the row: who answered, which of our
@@ -285,7 +282,7 @@ export function ResponsesView({
           <NativeSelect.Root size="sm" width="40" variant="plain">
             <NativeSelect.Field value={batchFilter} onChange={(e) => setBatchFilter(e.target.value)} fontWeight="medium">
               <option value="">all batches</option>
-              {(batches as BatchRow[]).map((b) => (
+              {batches.map((b) => (
                 <option key={b.id} value={b.id}>{batchLabel(b)}</option>
               ))}
             </NativeSelect.Field>
@@ -396,7 +393,7 @@ export function ResponsesView({
           rows={rows}
           niches={niches as Niche[]}
           batchName={(() => {
-            const b = (batches as BatchRow[]).find((x) => x.id === batchFilter);
+            const b = batches.find((x) => x.id === batchFilter);
             return b ? batchLabel(b) : undefined;
           })()}
           onClose={() => setExporting(false)}

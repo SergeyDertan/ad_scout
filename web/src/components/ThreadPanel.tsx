@@ -158,7 +158,7 @@ export function ThreadTimeline({ targetId }: { targetId: string }) {
   );
 }
 
-export function ThreadPanel({ target, onClose }: { target: Target; onClose: () => void }) {
+export function ThreadPanel({ target, onClose }: { target: Pick<Target, 'id' | 'websiteUrl' | 'contactEmail'>; onClose: () => void }) {
   return (
     <Box
       bg="bg.panel"

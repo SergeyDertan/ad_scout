@@ -304,6 +304,32 @@ export interface Target {
   createdAt: string;
 }
 
+export interface TargetListRow {
+  id: string;
+  batchId?: string;
+  batchName?: string;
+  websiteUrl: string;
+  contactEmail: string;
+  contactName?: string;
+  status: TargetStatus;
+  followUpCount: number;
+  canPost?: string;
+  createdAt: string;
+}
+
+export interface BatchFilterOption {
+  id: string;
+  name?: string;
+  createdAt: string;
+  count: number;
+}
+
+export interface TargetFacets {
+  byStatus: Partial<Record<TargetStatus, number>>;
+  unbatched: number;
+  batches: BatchFilterOption[];
+}
+
 
 export type SendStatus = 'reserved' | 'sent' | 'failed' | 'needs_review';
 /** 'manual' = a message a person wrote from the Deals view. */
@@ -406,6 +432,7 @@ export interface ResponseFacets {
   awaiting: number;
   late: number;
   ok: number;
+  batches: BatchFilterOption[];
 }
 
 /** An archived system prompt, resolvable from ExtractionProvenance.promptHash. */

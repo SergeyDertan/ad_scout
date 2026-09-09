@@ -8,7 +8,8 @@
 //   PATCH  /api/accounts/:id            { dailyLimitOverride?, maxDailyLimit?, senderName?, signature? }
 //   POST   /api/accounts/:id/pause | /resume
 //   DELETE /api/accounts/:id
-//   GET    /api/targets?status=&batchId=
+//   GET    /api/targets?status=&batchId=  (legacy unpaged)
+//   GET    /api/targets/page              → bounded, filtered target summaries
 //   POST   /api/targets                 { websiteUrl, contactEmail, contactName?, notes?, batchId? }
 //   DELETE /api/targets/:id
 //   GET    /api/batches                 → batches + live { count, byStatus }
@@ -69,6 +70,7 @@ import {
   buildReplyDebug,
   buildResponsePage,
   buildResponseRows,
+  buildTargetPage,
   type ResponseStateFilter,
 } from '../services/read-models';
 import { PageInputError, parsePageLimit } from '../services/pagination';
@@ -599,7 +601,40 @@ async function handle(
       }
     }
 
-    // GET /api/targets?status=&batchId=
+    // GET /api/targets/page?limit=&cursor=&status=&batchId=&unbatched=&q=
+    if (method === 'GET' && seg[1] === 'targets' && seg[2] === 'page' && seg.length === 3) {
+      try {
+        const validStatuses: TargetStatus[] = [
+          'pending', 'reserved', 'contacted', 'replied', 'bounced', 'needs_review', 'excluded',
+        ];
+        const statusRaw = url.searchParams.get('status') ?? undefined;
+        if (statusRaw && !validStatuses.includes(statusRaw as TargetStatus)) {
+          throw new PageInputError('invalid status');
+        }
+        const unbatchedRaw = url.searchParams.get('unbatched');
+        if (unbatchedRaw && unbatchedRaw !== 'true') {
+          throw new PageInputError('unbatched must be true when provided');
+        }
+        if (unbatchedRaw === 'true' && url.searchParams.has('batchId')) {
+          throw new PageInputError('batchId and unbatched cannot be combined');
+        }
+        const search = url.searchParams.get('q')?.trim() || undefined;
+        if (search && search.length > 200) throw new PageInputError('q must be at most 200 characters');
+        return sendJson(res, 200, await buildTargetPage(store, {
+          limit: parsePageLimit(url.searchParams.get('limit')),
+          cursor: url.searchParams.get('cursor') ?? undefined,
+          status: statusRaw as TargetStatus | undefined,
+          batchId: url.searchParams.get('batchId') ?? undefined,
+          unbatched: unbatchedRaw === 'true',
+          search,
+        }));
+      } catch (error) {
+        if (error instanceof PageInputError) return sendJson(res, 400, { error: error.message });
+        throw error;
+      }
+    }
+
+    // GET /api/targets?status=&batchId= (legacy unpaged endpoint)
     if (method === 'GET' && seg[1] === 'targets' && seg.length === 2) {
       const status = url.searchParams.get('status') as TargetStatus | null;
       const batchId = url.searchParams.get('batchId') ?? undefined;

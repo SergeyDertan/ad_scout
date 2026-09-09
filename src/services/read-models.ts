@@ -25,6 +25,8 @@ import type {
   PriceValue,
   PromptSnapshot,
   Reply,
+  Target,
+  TargetStatus,
 } from '../domain/types';
 import type { Store } from '../ports/store';
 import {
@@ -62,6 +64,139 @@ export async function buildBatchRows(store: Store): Promise<BatchRow[]> {
       byStatus: roll.get(b.id)?.byStatus ?? {},
     }))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+// --- Targets ----------------------------------------------------------------
+
+export interface TargetPageQuery {
+  limit: number;
+  cursor?: string;
+  status?: TargetStatus;
+  batchId?: string;
+  unbatched?: boolean;
+  search?: string;
+}
+
+export interface BatchFilterOption {
+  id: string;
+  name?: string;
+  createdAt: string;
+  count: number;
+}
+
+export interface TargetFacets {
+  byStatus: Partial<Record<TargetStatus, number>>;
+  unbatched: number;
+  /** Bounded: enough for the picker without downloading every historical batch. */
+  batches: BatchFilterOption[];
+}
+
+/** Only fields rendered in the table; rich result/notes remain detail data. */
+export interface TargetListRow {
+  id: string;
+  batchId?: string;
+  batchName?: string;
+  websiteUrl: string;
+  contactEmail: string;
+  contactName?: string;
+  status: TargetStatus;
+  followUpCount: number;
+  canPost?: string;
+  createdAt: string;
+}
+
+function toTargetListRow(target: Target, batchName?: string): TargetListRow {
+  return {
+    id: target.id,
+    ...(target.batchId ? { batchId: target.batchId } : {}),
+    ...(batchName ? { batchName } : {}),
+    websiteUrl: target.websiteUrl,
+    contactEmail: target.contactEmail,
+    ...(target.contactName ? { contactName: target.contactName } : {}),
+    status: target.status,
+    followUpCount: target.followUpCount,
+    ...(target.result?.canPost ? { canPost: target.result.canPost } : {}),
+    createdAt: target.createdAt,
+  };
+}
+
+/**
+ * Bounded Targets feed. Batch choices are part of the envelope and capped, so
+ * the client does not replace one unbounded target download with an unbounded
+ * batch download. Step 5 moves the current scans/counts into indexed storage.
+ */
+export async function buildTargetPage(
+  store: Store,
+  query: TargetPageQuery,
+): Promise<PageEnvelope<TargetListRow, TargetFacets>> {
+  const [targets, batches] = await Promise.all([store.listTargets(), store.listBatches()]);
+  const batchById = new Map(batches.map((batch) => [batch.id, batch]));
+  const batchCounts = new Map<string, number>();
+  let unbatched = 0;
+  for (const target of targets) {
+    if (target.batchId) batchCounts.set(target.batchId, (batchCounts.get(target.batchId) ?? 0) + 1);
+    else unbatched++;
+  }
+
+  const selectedBatch = query.batchId ? batchById.get(query.batchId) : undefined;
+  const recentBatches = batches
+    .filter((batch) => (batchCounts.get(batch.id) ?? 0) > 0)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, 100);
+  if (selectedBatch && !recentBatches.some((batch) => batch.id === selectedBatch.id)) {
+    recentBatches.push(selectedBatch);
+  }
+
+  const search = query.search?.trim().toLowerCase() ?? '';
+  const base = targets.filter((target) => {
+    if (
+      search &&
+      !target.websiteUrl.toLowerCase().includes(search) &&
+      !target.contactEmail.toLowerCase().includes(search)
+    ) return false;
+    if (query.unbatched) return !target.batchId;
+    if (query.batchId) return target.batchId === query.batchId;
+    return true;
+  });
+
+  const byStatus: TargetFacets['byStatus'] = {};
+  for (const target of base) byStatus[target.status] = (byStatus[target.status] ?? 0) + 1;
+  const facets: TargetFacets = {
+    byStatus,
+    unbatched,
+    batches: recentBatches.map((batch) => ({
+      id: batch.id,
+      ...(batch.name ? { name: batch.name } : {}),
+      createdAt: batch.createdAt,
+      count: batchCounts.get(batch.id) ?? 0,
+    })),
+  };
+
+  const rows = base
+    .filter((target) => !query.status || target.status === query.status)
+    .map((target) => toTargetListRow(target, target.batchId ? batchById.get(target.batchId)?.name : undefined))
+    .sort((a, b) =>
+      compareStringsDescending(
+        { value: a.createdAt, id: a.id },
+        { value: b.createdAt, id: b.id },
+      ),
+    );
+  const scope = JSON.stringify([
+    'targets',
+    query.status ?? '',
+    query.batchId ?? '',
+    query.unbatched ? 'unbatched' : '',
+    search,
+    'createdAt:desc',
+  ]);
+  return paginateSorted(rows, {
+    limit: query.limit,
+    cursor: query.cursor,
+    scope,
+    keyOf: (row) => ({ value: row.createdAt, id: row.id }),
+    compare: compareStringsDescending,
+    facets,
+  });
 }
 
 // --- Domains ----------------------------------------------------------------
@@ -209,6 +344,7 @@ export interface ResponseFacets {
   awaiting: number;
   late: number;
   ok: number;
+  batches: BatchFilterOption[];
 }
 
 /** The response table never receives source-message content. */
@@ -242,7 +378,7 @@ function hasInvertedPrices(offers: PostOffer[] = []): boolean {
   return false;
 }
 
-function responseState(row: ResponseRow): Record<keyof ResponseFacets, boolean> {
+function responseState(row: ResponseRow): Record<ResponseStateFilter, boolean> {
   const review = (row.review?.length ?? 0) > 0 || hasInvertedPrices(row.parsed?.offers);
   const awaiting = row.parsed?.intent === 'holding' || row.parsed?.intent === 'auto_reply';
   const late = row.extractionStatus === 'skipped';
@@ -280,9 +416,23 @@ export async function buildResponsePage(
 ): Promise<PageEnvelope<ResponseListRow, ResponseFacets>> {
   const niches: Niche[] = allNiches(await store.listNiches());
   const search = query.search?.trim().toLowerCase() ?? '';
-  const enriched = await buildResponseRows(store, query.batchId);
+  const [enriched, batches] = await Promise.all([buildResponseRows(store), store.listBatches()]);
+
+  const replyCountsByBatch = new Map<string, number>();
+  for (const row of enriched) {
+    if (row.batchId) replyCountsByBatch.set(row.batchId, (replyCountsByBatch.get(row.batchId) ?? 0) + 1);
+  }
+  const selectedBatch = query.batchId ? batches.find((batch) => batch.id === query.batchId) : undefined;
+  const recentBatches = batches
+    .filter((batch) => (replyCountsByBatch.get(batch.id) ?? 0) > 0)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, 100);
+  if (selectedBatch && !recentBatches.some((batch) => batch.id === selectedBatch.id)) {
+    recentBatches.push(selectedBatch);
+  }
 
   const base = enriched.filter((row) => {
+    if (query.batchId && row.batchId !== query.batchId) return false;
     if (
       search &&
       !row.fromAddress.toLowerCase().includes(search) &&
@@ -300,7 +450,18 @@ export async function buildResponsePage(
     return true;
   });
 
-  const facets: ResponseFacets = { review: 0, awaiting: 0, late: 0, ok: 0 };
+  const facets: ResponseFacets = {
+    review: 0,
+    awaiting: 0,
+    late: 0,
+    ok: 0,
+    batches: recentBatches.map((batch) => ({
+      id: batch.id,
+      ...(batch.name ? { name: batch.name } : {}),
+      createdAt: batch.createdAt,
+      count: replyCountsByBatch.get(batch.id) ?? 0,
+    })),
+  };
   for (const row of base) {
     const flags = responseState(row);
     if (flags.review) facets.review++;

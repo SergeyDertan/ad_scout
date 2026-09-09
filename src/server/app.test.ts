@@ -527,6 +527,59 @@ test('GET /api/replies/:id returns the source message behind a price record', as
   }
 });
 
+test('GET /api/responses/page bounds, filters, and strips source content', async () => {
+  const h = await start();
+  try {
+    const reply = (id: string, targetId: string, receivedAt: string): Reply => ({
+      id,
+      emailId: `email-${id}`,
+      rfcMessageId: `<${id}@publisher.test>`,
+      fromAddress: `${id}@publisher.test`,
+      targetId,
+      matchMethod: 'fromAddress',
+      receivedAt,
+      text: `private body ${id}`,
+      extractionStatus: 'done',
+    });
+    await h.store.putReply(reply('r1', 't1', '2026-06-01T10:00:00Z'));
+    await h.store.putReply({
+      ...reply('r2', 't2', '2026-06-02T10:00:00Z'),
+      review: ['check attachment'],
+      attachments: [{ filename: 'rates.pdf', mimeType: 'application/pdf', size: 3, contentBase64: 'YWJj' }],
+    });
+
+    const first = await J(`${h.base}/api/responses/page?limit=1`);
+    assert.equal(first.items.length, 1);
+    assert.equal(first.items[0].id, 'r2');
+    assert.equal(first.items[0].hasAttachments, true);
+    assert.equal('text' in first.items[0], false);
+    assert.equal('attachments' in first.items[0], false);
+    assert.equal('emailId' in first.items[0], false);
+    assert.equal(first.page.total, 2);
+    assert.ok(first.page.nextCursor);
+    assert.equal(first.facets.review, 1);
+
+    const second = await J(
+      `${h.base}/api/responses/page?limit=1&cursor=${encodeURIComponent(first.page.nextCursor)}`,
+    );
+    assert.deepEqual(second.items.map((row: Reply) => row.id), ['r1']);
+    assert.ok(second.page.previousCursor);
+
+    const reviewed = await J(`${h.base}/api/responses/page?state=review&q=r2`);
+    assert.deepEqual(reviewed.items.map((row: Reply) => row.id), ['r2']);
+    assert.equal(reviewed.page.total, 1);
+
+    const detail = await J(`${h.base}/api/replies/r2`);
+    assert.equal(detail.text, 'private body r2');
+    assert.equal(detail.attachments[0].contentBase64, 'YWJj');
+
+    const badLimit = await fetch(`${h.base}/api/responses/page?limit=1000`);
+    assert.equal(badLimit.status, 400);
+  } finally {
+    await h.close();
+  }
+});
+
 test('ignore + exclusion CRUD round-trips', async () => {
   const h = await start();
   try {

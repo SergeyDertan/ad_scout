@@ -14,6 +14,7 @@
 //   GET    /api/batches                 → batches + live { count, byStatus }
 //   POST   /api/batches                 { name?, advertised?{url,description} } → creates an import batch
 //   GET    /api/responses?batchId=
+//   GET    /api/responses/page           → bounded, filtered response summaries
 //   GET    /api/suppressions
 //   GET    /api/deals                    → deals + derived domains/paid/live counts
 //   POST   /api/deals                    { counterpartyEmail, accountId, threadIds?, domains?, note? }
@@ -66,8 +67,11 @@ import {
   buildDomainDetail,
   buildDomainRows,
   buildReplyDebug,
+  buildResponsePage,
   buildResponseRows,
+  type ResponseStateFilter,
 } from '../services/read-models';
+import { PageInputError, parsePageLimit } from '../services/pagination';
 import type { Clock } from '../lib/clock';
 import { newId } from '../lib/ids';
 import { draftEmail } from '../services/drafter';
@@ -715,7 +719,7 @@ async function handle(
     // GET /api/replies/:id — one raw reply (source message behind a price record)
     if (method === 'GET' && seg[1] === 'replies' && seg[2] && seg.length === 3) {
       const id = decodeURIComponent(seg[2]);
-      const reply = (await store.listReplies()).find((r) => r.id === id);
+      const reply = await store.getReply(id);
       if (!reply) return sendJson(res, 404, { error: 'reply not found' });
       return sendJson(res, 200, reply);
     }
@@ -727,7 +731,7 @@ async function handle(
     // does not have to make five calls and join them itself.
     if (method === 'GET' && seg[1] === 'replies' && seg[2] && seg[3] === 'debug' && seg.length === 4) {
       const id = decodeURIComponent(seg[2]);
-      const reply = (await store.listReplies()).find((r) => r.id === id);
+      const reply = await store.getReply(id);
       if (!reply) return sendJson(res, 404, { error: 'reply not found' });
       return sendJson(res, 200, await buildReplyDebug(store, reply));
     }
@@ -786,7 +790,7 @@ async function handle(
       // The reply is re-read INSIDE the lock so the edit lands on whatever is
       // current, not on a copy read before waiting for our turn.
       const saved = await deps.writeLock.run(async () => {
-        const reply = (await store.listReplies()).find((r) => r.id === id);
+        const reply = await store.getReply(id);
         if (!reply) return undefined;
 
         const target = reply.targetId ? await store.getTarget(reply.targetId) : undefined;
@@ -828,6 +832,42 @@ async function handle(
       });
       if (!saved) return sendJson(res, 404, { error: 'reply not found' });
       return sendJson(res, 200, saved);
+    }
+
+    // GET /api/responses/page — a bounded summary feed. The older unpaged route
+    // remains below until every non-console consumer has migrated.
+    if (method === 'GET' && seg[1] === 'responses' && seg[2] === 'page' && seg.length === 3) {
+      try {
+        const canPostRaw = url.searchParams.get('canPost') || undefined;
+        if (canPostRaw && canPostRaw !== 'yes' && canPostRaw !== 'no' && canPostRaw !== 'maybe') {
+          return sendJson(res, 400, { error: 'canPost must be yes, no, or maybe' });
+        }
+        const canPost = canPostRaw as CanPost | undefined;
+        const stateRaw = url.searchParams.get('state') || undefined;
+        if (stateRaw && stateRaw !== 'review' && stateRaw !== 'awaiting' && stateRaw !== 'late' && stateRaw !== 'ok') {
+          return sendJson(res, 400, { error: 'unknown response state filter' });
+        }
+        const state = stateRaw as ResponseStateFilter | undefined;
+        const search = url.searchParams.get('q')?.trim() || undefined;
+        if (search && search.length > 200) return sendJson(res, 400, { error: 'q is too long' });
+
+        return sendJson(
+          res,
+          200,
+          await buildResponsePage(store, {
+            limit: parsePageLimit(url.searchParams.get('limit')),
+            ...(url.searchParams.get('cursor') ? { cursor: url.searchParams.get('cursor')! } : {}),
+            ...(url.searchParams.get('batchId') ? { batchId: url.searchParams.get('batchId')! } : {}),
+            ...(url.searchParams.get('niche') ? { niche: url.searchParams.get('niche')! } : {}),
+            ...(canPost ? { canPost } : {}),
+            ...(state ? { state } : {}),
+            ...(search ? { search } : {}),
+          }),
+        );
+      } catch (error) {
+        if (error instanceof PageInputError) return sendJson(res, 400, { error: error.message });
+        throw error;
+      }
     }
 
     // GET /api/responses?batchId= — replies + parsed result, enriched with target

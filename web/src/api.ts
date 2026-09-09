@@ -19,6 +19,8 @@ import type {
   Outreach,
   OutreachLanguage,
   Placement,
+  PageEnvelope,
+  ResponseFacets,
   ResponseRow,
   Status,
   Suppression,
@@ -115,6 +117,16 @@ export const api = {
   ) => req<ResponseRow>(`/replies/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
 
   // read-only feeds
+  listResponsePage: (query: ResponsePageQuery, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ limit: String(query.limit ?? 50) });
+    if (query.cursor) params.set('cursor', query.cursor);
+    if (query.batchId) params.set('batchId', query.batchId);
+    if (query.niche) params.set('niche', query.niche);
+    if (query.canPost) params.set('canPost', query.canPost);
+    if (query.state) params.set('state', query.state);
+    if (query.search) params.set('q', query.search);
+    return req<PageEnvelope<ResponseRow, ResponseFacets>>(`/responses/page?${params}`, { signal });
+  },
   listResponses: (batchId?: string, signal?: AbortSignal) =>
     req<ResponseRow[]>('/responses' + (batchId ? `?batchId=${encodeURIComponent(batchId)}` : ''), { signal }),
   listSuppressions: (signal?: AbortSignal) => req<Suppression[]>('/suppressions', { signal }),
@@ -181,6 +193,16 @@ export const api = {
   runFetch: (opts?: RunPassOpts) => runPass('/run/fetch', opts),
   cancelRun: () => {/* cancellation is client-side via AbortController */},
 };
+
+export interface ResponsePageQuery {
+  limit?: number;
+  cursor?: string;
+  batchId?: string;
+  niche?: string;
+  canPost?: 'yes' | 'no' | 'maybe';
+  state?: 'review' | 'awaiting' | 'late' | 'ok';
+  search?: string;
+}
 
 export interface RunPassOpts {
   signal?: AbortSignal;

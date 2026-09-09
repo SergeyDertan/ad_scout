@@ -384,6 +384,28 @@ export interface ResponseRow {
   /** Which run produced `parsed` — model/provider/prompt, and whether a human
    *  has since corrected it. */
   extraction?: ExtractionProvenance;
+  /** Present on bounded list rows, whose attachment bodies are intentionally omitted. */
+  hasAttachments?: boolean;
+}
+
+export interface PageInfo {
+  limit: number;
+  total: number;
+  nextCursor?: string;
+  previousCursor?: string;
+}
+
+export interface PageEnvelope<T, F> {
+  items: T[];
+  page: PageInfo;
+  facets: F;
+}
+
+export interface ResponseFacets {
+  review: number;
+  awaiting: number;
+  late: number;
+  ok: number;
 }
 
 /** An archived system prompt, resolvable from ExtractionProvenance.promptHash. */

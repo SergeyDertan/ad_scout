@@ -141,6 +141,10 @@ export class MemoryStore implements Store {
   }
 
   // replies
+  async getReply(id: string) {
+    const r = this.replies.get(id);
+    return r ? clone(r) : undefined;
+  }
   async getReplyByEmailId(emailId: string) {
     const id = this.repliesByEmailId.get(emailId);
     if (!id) return undefined;

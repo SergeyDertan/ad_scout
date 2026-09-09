@@ -1,15 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { PageEnvelope } from '../types';
 
-/**
- * Standard list-fetch state shared by the data views: fetches on mount and
- * whenever `tick` (the SSE change counter) bumps, exposes `loading`/`error`,
- * and returns `reload` for refetching after a mutation.
- *
- * `fetcher` must be stable (wrap in `useCallback`) — its identity drives refetch.
- * It receives an AbortSignal so superseded requests can stop transferring data.
- */
-export function useResource<T>(fetcher: (signal: AbortSignal) => Promise<T[]>, tick: number) {
-  const [rows, setRows] = useState<T[]>([]);
+/** Shared abort + last-request-wins state machine for list and page requests. */
+function useLoadable<T>(fetcher: (signal: AbortSignal) => Promise<T>, tick: number, initial: T) {
+  const [data, setData] = useState<T>(initial);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const sequence = useRef(0);
@@ -23,9 +17,9 @@ export function useResource<T>(fetcher: (signal: AbortSignal) => Promise<T[]>, t
     setLoading(true);
     setError(null);
     fetcher(controller.signal)
-      .then((r) => {
+      .then((result) => {
         if (request !== sequence.current) return;
-        setRows(r);
+        setData(result);
         setError(null);
       })
       .catch((e) => {
@@ -48,5 +42,23 @@ export function useResource<T>(fetcher: (signal: AbortSignal) => Promise<T[]>, t
     };
   }, [reload, tick]);
 
-  return { rows, loading, error, reload };
+  return { data, loading, error, reload };
+}
+
+/**
+ * Standard unpaged list state. Kept for small reference collections and for
+ * screens not migrated to the bounded page contract yet.
+ */
+export function useResource<T>(fetcher: (signal: AbortSignal) => Promise<T[]>, tick: number) {
+  const { data, ...state } = useLoadable(fetcher, tick, [] as T[]);
+  return { rows: data, ...state };
+}
+
+/** Bounded list state: one server page is retained in browser memory. */
+export function usePagedResource<T, F>(
+  fetcher: (signal: AbortSignal) => Promise<PageEnvelope<T, F>>,
+  tick: number,
+) {
+  const { data, ...state } = useLoadable<PageEnvelope<T, F> | null>(fetcher, tick, null);
+  return { result: data, ...state };
 }

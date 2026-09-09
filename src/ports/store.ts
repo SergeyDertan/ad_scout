@@ -89,6 +89,7 @@ export interface Store {
   listOutreaches(filter?: OutreachFilter): Promise<Outreach[]>;
 
   // replies (inbound log)
+  getReply(id: string): Promise<Reply | undefined>;
   getReplyByEmailId(emailId: string): Promise<Reply | undefined>;
   putReply(r: Reply): Promise<Reply>;
   listReplies(): Promise<Reply[]>;

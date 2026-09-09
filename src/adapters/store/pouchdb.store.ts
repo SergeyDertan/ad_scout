@@ -208,6 +208,9 @@ export class PouchDbStore implements Store {
   }
 
   // replies
+  getReply(id: string) {
+    return this.get<Reply>('reply', id);
+  }
   async getReplyByEmailId(emailId: string) {
     const list = await this.listByType<Reply>('reply');
     return list.find((r) => r.emailId === emailId);

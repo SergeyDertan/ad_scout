@@ -11,19 +11,27 @@
 // Everything here is read-only and side-effect free.
 
 import { normalizeDomain } from '../domain/domain';
+import { allNiches, offerMatchesFilter } from '../domain/niches';
 import { pitchStyleForBatch } from '../domain/pitch';
 import { buildPriceSheet, knownDomains, type DomainPriceSheet } from '../domain/price-sheet';
 import type {
   Batch,
   CanPost,
   ID,
+  Niche,
   PlacementTerm,
+  PostOffer,
   PriceRecord,
   PriceValue,
   PromptSnapshot,
   Reply,
 } from '../domain/types';
 import type { Store } from '../ports/store';
+import {
+  compareStringsDescending,
+  paginateSorted,
+  type PageEnvelope,
+} from './pagination';
 
 // --- Batches ----------------------------------------------------------------
 
@@ -182,6 +190,151 @@ export async function buildResponseRows(store: Store, batchId?: string): Promise
     };
   });
   return batchId ? out.filter((r) => r.batchId === batchId) : out;
+}
+
+export type ResponseStateFilter = 'review' | 'awaiting' | 'late' | 'ok';
+
+export interface ResponsePageQuery {
+  limit: number;
+  cursor?: string;
+  batchId?: string;
+  niche?: string;
+  canPost?: CanPost;
+  state?: ResponseStateFilter;
+  search?: string;
+}
+
+export interface ResponseFacets {
+  review: number;
+  awaiting: number;
+  late: number;
+  ok: number;
+}
+
+/** The response table never receives source-message content. */
+export type ResponseListRow = Omit<
+  ResponseRow,
+  'text' | 'attachments' | 'emailId' | 'rfcMessageId' | 'subject' | 'extraction' | 'dealId'
+> & { hasAttachments: boolean };
+
+function hasInvertedPrices(offers: PostOffer[] = []): boolean {
+  const priced = offers.filter((offer) => offer.price?.amount !== undefined);
+  if (priced.length < 2) return false;
+  const currencies = new Set(
+    priced.map((offer) => offer.price?.currency).filter((currency): currency is string => Boolean(currency)),
+  );
+  if (currencies.size > 1) return false;
+
+  const bySiteAndTerm = new Map<string, PostOffer[]>();
+  for (const offer of priced) {
+    const key = `${offer.website?.trim().toLowerCase() ?? ''}|${offer.term?.key ?? 'none'}`;
+    const group = bySiteAndTerm.get(key) ?? [];
+    group.push(offer);
+    bySiteAndTerm.set(key, group);
+  }
+  for (const group of bySiteAndTerm.values()) {
+    const sensitive = group.filter((offer) => offer.sensitive);
+    const regular = group.filter((offer) => !offer.sensitive);
+    if (!sensitive.length || !regular.length) continue;
+    const floor = Math.min(...sensitive.map((offer) => offer.price!.amount!));
+    if (regular.some((offer) => offer.price!.amount! > floor)) return true;
+  }
+  return false;
+}
+
+function responseState(row: ResponseRow): Record<keyof ResponseFacets, boolean> {
+  const review = (row.review?.length ?? 0) > 0 || hasInvertedPrices(row.parsed?.offers);
+  const awaiting = row.parsed?.intent === 'holding' || row.parsed?.intent === 'auto_reply';
+  const late = row.extractionStatus === 'skipped';
+  return { review, awaiting, late, ok: !review && !awaiting && !late };
+}
+
+function matchesResponseState(row: ResponseRow, state: ResponseStateFilter | undefined): boolean {
+  if (!state) return true;
+  return responseState(row)[state];
+}
+
+function toResponseListRow(row: ResponseRow): ResponseListRow {
+  const {
+    text: _text,
+    attachments,
+    emailId: _emailId,
+    rfcMessageId: _rfcMessageId,
+    subject: _subject,
+    extraction: _extraction,
+    dealId: _dealId,
+    ...summary
+  } = row;
+  return { ...summary, hasAttachments: Boolean(attachments?.length) };
+}
+
+/**
+ * Bounded Responses feed. Filtering is server-owned so `total` and every page
+ * describe the whole matching dataset, never just the browser's current slice.
+ * The current Store port still supplies arrays; Step 5 moves this boundary into
+ * an indexed adapter without changing the HTTP/client contract.
+ */
+export async function buildResponsePage(
+  store: Store,
+  query: ResponsePageQuery,
+): Promise<PageEnvelope<ResponseListRow, ResponseFacets>> {
+  const niches: Niche[] = allNiches(await store.listNiches());
+  const search = query.search?.trim().toLowerCase() ?? '';
+  const enriched = await buildResponseRows(store, query.batchId);
+
+  const base = enriched.filter((row) => {
+    if (
+      search &&
+      !row.fromAddress.toLowerCase().includes(search) &&
+      !(row.website ?? '').toLowerCase().includes(search) &&
+      !(row.accountEmail ?? '').toLowerCase().includes(search)
+    ) return false;
+    if (query.niche || query.canPost) {
+      const matched = (row.parsed?.offers ?? []).some(
+        (offer) =>
+          (!query.niche || offerMatchesFilter(offer, query.niche, niches)) &&
+          (!query.canPost || offer.canPost === query.canPost),
+      );
+      if (!matched) return false;
+    }
+    return true;
+  });
+
+  const facets: ResponseFacets = { review: 0, awaiting: 0, late: 0, ok: 0 };
+  for (const row of base) {
+    const flags = responseState(row);
+    if (flags.review) facets.review++;
+    if (flags.awaiting) facets.awaiting++;
+    if (flags.late) facets.late++;
+    if (flags.ok) facets.ok++;
+  }
+
+  const rows = base
+    .filter((row) => matchesResponseState(row, query.state))
+    .map(toResponseListRow)
+    .sort((a, b) =>
+      compareStringsDescending(
+        { value: a.receivedAt, id: a.id },
+        { value: b.receivedAt, id: b.id },
+      ),
+    );
+  const scope = JSON.stringify([
+    'responses',
+    query.batchId ?? '',
+    query.niche ?? '',
+    query.canPost ?? '',
+    query.state ?? '',
+    search,
+    'receivedAt:desc',
+  ]);
+  return paginateSorted(rows, {
+    limit: query.limit,
+    cursor: query.cursor,
+    scope,
+    keyOf: (row) => ({ value: row.receivedAt, id: row.id }),
+    compare: compareStringsDescending,
+    facets,
+  });
 }
 
 // --- One extraction, explained ----------------------------------------------

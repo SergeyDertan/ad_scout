@@ -8,7 +8,7 @@ import {
   NativeSelect,
   Text,
 } from '@chakra-ui/react';
-import { useCallback, useState } from 'react';
+import { useCallback, useDeferredValue, useState } from 'react';
 import { List, type RowComponentProps } from 'react-window';
 import { api } from '../api';
 import { useIsManager } from '../role';
@@ -17,9 +17,9 @@ import {
   isAwaiting,
   isLateMessage,
   needsReview,
-  offerMatchesFilter,
   type BatchRow,
   type Niche,
+  type ResponseFacets,
   type ResponseRow,
 } from '../types';
 import { StatusBadge } from './StatusBadge';
@@ -29,7 +29,7 @@ import { EditResponseForm } from './EditResponseForm';
 import { ResponseDetailModal } from './ResponseDetailModal';
 import { ExportDialog } from './ExportDialog';
 import { StartDealDialog, type StartDealSeed } from './StartDealDialog';
-import { useResource } from '../hooks/useResource';
+import { usePagedResource, useResource } from '../hooks/useResource';
 import { AlertTriangleIcon, DownloadIcon, InboxIcon, MegaphoneIcon, SearchIcon } from './icons';
 
 // From | Site | Batch | Match | Answer | Niches | Actions
@@ -41,6 +41,8 @@ function batchLabel(b: BatchRow): string {
 }
 const ROW_H = 56;
 const MAX_LIST_H = 640;
+const PAGE_SIZE = 50;
+const EMPTY_FACETS: ResponseFacets = { review: 0, awaiting: 0, late: 0, ok: 0 };
 
 /** Compact one-line summary of a reply's extraction, shown in the virtualized row.
  *  Full detail (every price, field, reasoning) lives in the Show modal. */
@@ -191,8 +193,8 @@ export function ResponsesView({
   const readOnly = readOnlyProp || isManager;
   const [batchFilter, setBatchFilter] = useState('');
   const [nicheFilter, setNicheFilter] = useState('');
-  const [canPostFilter, setCanPostFilter] = useState('');
-  const [reviewFilter, setReviewFilter] = useState('');
+  const [canPostFilter, setCanPostFilter] = useState<'' | 'yes' | 'no' | 'maybe'>('');
+  const [reviewFilter, setReviewFilter] = useState<'' | 'review' | 'awaiting' | 'late' | 'ok'>('');
   const [editId, setEditId] = useState<string | null>(null);
   const [showId, setShowId] = useState<string | null>(null);
   const [dealSeed, setDealSeed] = useState<StartDealSeed | null>(null);
@@ -205,44 +207,40 @@ export function ResponsesView({
     useCallback((signal: AbortSignal) => api.listNiches(signal), []),
     tick,
   );
-  const { rows: allRows, loading, error, reload } = useResource(
+  const [search, setSearch] = useState('');
+  const deferredSearch = useDeferredValue(search.trim());
+  const filterKey = JSON.stringify([
+    batchFilter,
+    nicheFilter,
+    canPostFilter,
+    reviewFilter,
+    deferredSearch,
+  ]);
+  const [pageCursor, setPageCursor] = useState<{ filterKey: string; value?: string }>({ filterKey: '' });
+  const cursor = pageCursor.filterKey === filterKey ? pageCursor.value : undefined;
+  const { result, loading, error, reload } = usePagedResource(
     useCallback(
-      (signal: AbortSignal) => api.listResponses(batchFilter || undefined, signal),
-      [batchFilter],
+      (signal: AbortSignal) =>
+        api.listResponsePage(
+          {
+            limit: PAGE_SIZE,
+            ...(cursor ? { cursor } : {}),
+            ...(batchFilter ? { batchId: batchFilter } : {}),
+            ...(nicheFilter ? { niche: nicheFilter } : {}),
+            ...(canPostFilter ? { canPost: canPostFilter } : {}),
+            ...(reviewFilter ? { state: reviewFilter } : {}),
+            ...(deferredSearch ? { search: deferredSearch } : {}),
+          },
+          signal,
+        ),
+      [batchFilter, canPostFilter, cursor, deferredSearch, nicheFilter, reviewFilter],
     ),
     tick,
   );
-  const [search, setSearch] = useState('');
-
-  const q = search.trim().toLowerCase();
-  const rows = allRows.filter((r) => {
-    if (
-      q &&
-      !r.fromAddress.toLowerCase().includes(q) &&
-      !(r.website ?? '').toLowerCase().includes(q) &&
-      !(r.accountEmail ?? '').toLowerCase().includes(q)
-    )
-      return false;
-    if (reviewFilter === 'review' && !needsReview(r)) return false;
-    if (reviewFilter === 'awaiting' && !isAwaiting(r)) return false;
-    if (reviewFilter === 'late' && !isLateMessage(r)) return false;
-    if (reviewFilter === 'ok' && (needsReview(r) || isAwaiting(r) || isLateMessage(r))) return false;
-    if (nicheFilter || canPostFilter) {
-      const offers = r.parsed?.offers ?? [];
-      const match = offers.some(
-        (o) =>
-          (!nicheFilter || offerMatchesFilter(o, nicheFilter, niches as Niche[])) &&
-          (!canPostFilter || o.canPost === canPostFilter),
-      );
-      if (!match) return false;
-    }
-    return true;
-  });
-  const reviewCount = allRows.filter(needsReview).length;
-  const awaitingCount = allRows.filter(isAwaiting).length;
-  const lateCount = allRows.filter(isLateMessage).length;
-  const editingRow = editId ? allRows.find((r) => r.id === editId) : undefined;
-  const showingRow = showId ? allRows.find((r) => r.id === showId) : undefined;
+  const rows = result?.items ?? [];
+  const facets = result?.facets ?? EMPTY_FACETS;
+  const editingRow = editId ? rows.find((r) => r.id === editId) : undefined;
+  const showingRow = showId ? rows.find((r) => r.id === showId) : undefined;
   // Everything the deal needs is already on the row: who answered, which of our
   // mailboxes they answered to, the site, and the thread to continue.
   const startDeal = (r: ResponseRow) =>
@@ -309,7 +307,11 @@ export function ResponsesView({
 
         <HStack {...selectWrap}>
           <NativeSelect.Root size="sm" width="28" variant="plain">
-            <NativeSelect.Field value={canPostFilter} onChange={(e) => setCanPostFilter(e.target.value)} fontWeight="medium">
+            <NativeSelect.Field
+              value={canPostFilter}
+              onChange={(e) => setCanPostFilter(e.target.value as typeof canPostFilter)}
+              fontWeight="medium"
+            >
               <option value="">any answer</option>
               <option value="yes">yes</option>
               <option value="maybe">maybe</option>
@@ -321,12 +323,16 @@ export function ResponsesView({
 
         <HStack {...selectWrap}>
           <NativeSelect.Root size="sm" width="36" variant="plain">
-            <NativeSelect.Field value={reviewFilter} onChange={(e) => setReviewFilter(e.target.value)} fontWeight="medium">
+            <NativeSelect.Field
+              value={reviewFilter}
+              onChange={(e) => setReviewFilter(e.target.value as typeof reviewFilter)}
+              fontWeight="medium"
+            >
               <option value="">any state</option>
-              <option value="review">needs review{reviewCount ? ` (${reviewCount})` : ''}</option>
-              <option value="awaiting">awaiting reply{awaitingCount ? ` (${awaitingCount})` : ''}</option>
-              <option value="late">new after answer{lateCount ? ` (${lateCount})` : ''}</option>
-              <option value="ok">no issues</option>
+              <option value="review">needs review{facets.review ? ` (${facets.review})` : ''}</option>
+              <option value="awaiting">awaiting reply{facets.awaiting ? ` (${facets.awaiting})` : ''}</option>
+              <option value="late">new after answer{facets.late ? ` (${facets.late})` : ''}</option>
+              <option value="ok">no issues{facets.ok ? ` (${facets.ok})` : ''}</option>
             </NativeSelect.Field>
             <NativeSelect.Indicator />
           </NativeSelect.Root>
@@ -340,9 +346,9 @@ export function ResponsesView({
           colorPalette="brand"
           onClick={() => setExporting(true)}
           disabled={rows.length === 0}
-          title="Export the filtered responses to XLSX or a self-contained HTML page"
+          title="Export this page of filtered responses"
         >
-          <DownloadIcon /> Export
+          <DownloadIcon /> Export page
         </Button>
       </HStack>
 
@@ -403,9 +409,9 @@ export function ResponsesView({
         empty={
           <Empty
             icon={InboxIcon}
-            title={q ? `No responses match "${search.trim()}"` : 'No responses yet'}
+            title={deferredSearch ? `No responses match "${deferredSearch}"` : 'No responses yet'}
             description={
-              q || nicheFilter || canPostFilter || reviewFilter
+              deferredSearch || nicheFilter || canPostFilter || reviewFilter
                 ? 'Try a different search or filter.'
                 : 'Replies from contacted targets will show up here as they arrive.'
             }
@@ -454,6 +460,34 @@ export function ResponsesView({
           />
         </Box>
       </DataPanel>
+
+      {result && (
+        <HStack justify="space-between" gap={3} mt={3} flexWrap="wrap">
+          <Text fontSize="xs" color="fg.muted">
+            {rows.length} on this page · {result.page.total.toLocaleString()} matching
+          </Text>
+          <HStack gap={2}>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!result.page.previousCursor || loading}
+              onClick={() =>
+                setPageCursor({ filterKey, value: result.page.previousCursor })
+              }
+            >
+              Previous
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!result.page.nextCursor || loading}
+              onClick={() => setPageCursor({ filterKey, value: result.page.nextCursor })}
+            >
+              Next
+            </Button>
+          </HStack>
+        </HStack>
+      )}
     </Box>
   );
 }

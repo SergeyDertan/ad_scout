@@ -160,7 +160,7 @@ export function DealsView({
   onSelect: (id?: string) => void;
 }) {
   const { rows, loading, error, reload } = useResource<DealRow>(
-    useCallback(() => api.listDeals(), []),
+    useCallback((signal: AbortSignal) => api.listDeals(signal), []),
     tick,
   );
   const [accounts, setAccounts] = useState<Account[]>([]);

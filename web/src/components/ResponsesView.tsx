@@ -197,10 +197,19 @@ export function ResponsesView({
   const [showId, setShowId] = useState<string | null>(null);
   const [dealSeed, setDealSeed] = useState<StartDealSeed | null>(null);
   const [exporting, setExporting] = useState(false);
-  const { rows: batches } = useResource(useCallback(() => api.listBatches(), []), tick);
-  const { rows: niches } = useResource(useCallback(() => api.listNiches(), []), tick);
+  const { rows: batches } = useResource(
+    useCallback((signal: AbortSignal) => api.listBatches(signal), []),
+    tick,
+  );
+  const { rows: niches } = useResource(
+    useCallback((signal: AbortSignal) => api.listNiches(signal), []),
+    tick,
+  );
   const { rows: allRows, loading, error, reload } = useResource(
-    useCallback(() => api.listResponses(batchFilter || undefined), [batchFilter]),
+    useCallback(
+      (signal: AbortSignal) => api.listResponses(batchFilter || undefined, signal),
+      [batchFilter],
+    ),
     tick,
   );
   const [search, setSearch] = useState('');

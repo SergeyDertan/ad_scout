@@ -240,7 +240,7 @@ export function AccountsView({ tick }: { tick: number }) {
     loading,
     error,
     reload: load,
-  } = useResource(useCallback(() => api.listAccounts(), []), tick);
+  } = useResource(useCallback((signal: AbortSignal) => api.listAccounts(signal), []), tick);
 
   // Only `active` accounts send. Anything else (paused / cooldown)
   // gets a one-click "Activate"; an active account gets "Pause".

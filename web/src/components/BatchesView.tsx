@@ -27,7 +27,7 @@ function shortId(id: string): string {
 
 export function BatchesView({ tick }: { tick: number }) {
   const { rows: batches, loading, error } = useResource(
-    useCallback(() => api.listBatches(), []),
+    useCallback((signal: AbortSignal) => api.listBatches(signal), []),
     tick,
   );
   const [previewBatch, setPreviewBatch] = useState<BatchRow | null>(null);

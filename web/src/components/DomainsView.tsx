@@ -538,11 +538,17 @@ function VirtualRow({ index, style, rows, onSelect, answerColumn }: RowComponent
 }
 
 export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boolean }) {
-  const { rows, loading, error, reload } = useResource(useCallback(() => api.listDomains(), []), tick);
+  const { rows, loading, error, reload } = useResource(
+    useCallback((signal: AbortSignal) => api.listDomains(signal), []),
+    tick,
+  );
   // The full taxonomy, not just what has been quoted: with same-tier inference,
   // filtering for a niche NOBODY has priced is a meaningful question — every
   // grey-niche site answers it — so it has to be offered in the dropdown.
-  const { rows: niches } = useResource(useCallback(() => api.listNiches(), []), tick);
+  const { rows: niches } = useResource(
+    useCallback((signal: AbortSignal) => api.listNiches(signal), []),
+    tick,
+  );
   const [selected, setSelected] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [stateFilter, setStateFilter] = useState<StateFilter>('all');

@@ -173,14 +173,20 @@ export function TargetsView({ tick }: { tick: number }) {
   const [threadTarget, setThreadTarget] = useState<Target | null>(null);
   const confirm = useConfirm();
 
-  const { rows: batchList } = useResource(useCallback(() => api.listBatches(), []), tick);
+  const { rows: batchList } = useResource(
+    useCallback((signal: AbortSignal) => api.listBatches(signal), []),
+    tick,
+  );
   const {
     rows: allTargets,
     loading,
     error,
     reload: load,
   } = useResource(
-    useCallback(() => api.listTargets(statusFilter), [statusFilter]),
+    useCallback(
+      (signal: AbortSignal) => api.listTargets(statusFilter, undefined, signal),
+      [statusFilter],
+    ),
     tick,
   );
 

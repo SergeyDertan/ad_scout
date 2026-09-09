@@ -1307,7 +1307,18 @@ async function serveStatic(webDir: string, pathname: string, res: ServerResponse
   }
   try {
     const data = await readFile(full);
-    res.writeHead(200, { 'Content-Type': MIME[extname(full)] ?? 'application/octet-stream' });
+    // Vite fingerprints everything under /assets, so those URLs can be cached
+    // forever. HTML must revalidate so a deployment can point the browser at
+    // the new fingerprints instead of keeping an obsolete application shell.
+    const cacheControl = pathname.startsWith('/assets/')
+      ? 'public, max-age=31536000, immutable'
+      : extname(full) === '.html'
+        ? 'no-cache'
+        : 'public, max-age=86400';
+    res.writeHead(200, {
+      'Content-Type': MIME[extname(full)] ?? 'application/octet-stream',
+      'Cache-Control': cacheControl,
+    });
     res.end(data);
   } catch {
     // SPA fallback: the UI uses real paths (/deals/<id>), so a refresh or a
@@ -1319,7 +1330,7 @@ async function serveStatic(webDir: string, pathname: string, res: ServerResponse
     if (!extname(full)) {
       try {
         const html = await readFile(join(base, 'index.html'));
-        res.writeHead(200, { 'Content-Type': MIME['.html']! });
+        res.writeHead(200, { 'Content-Type': MIME['.html']!, 'Cache-Control': 'no-cache' });
         res.end(html);
         return;
       } catch {

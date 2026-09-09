@@ -21,7 +21,7 @@ function fmtDate(iso: string): string {
 
 export function SuppressionsView({ tick }: { tick: number }) {
   const { rows, loading, error } = useResource(
-    useCallback(() => api.listSuppressions(), []),
+    useCallback((signal: AbortSignal) => api.listSuppressions(signal), []),
     tick,
   );
 

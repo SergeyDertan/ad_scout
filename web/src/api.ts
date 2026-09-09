@@ -55,7 +55,7 @@ export const api = {
     req<{ subject: string; body: string; senderName: string; senderEmail: string }>('/preview', { method: 'POST', body: JSON.stringify(body) }),
 
   // accounts
-  listAccounts: () => req<Account[]>('/accounts'),
+  listAccounts: (signal?: AbortSignal) => req<Account[]>('/accounts', { signal }),
   createAccount: (body: NewAccount) =>
     req<Account>('/accounts', { method: 'POST', body: JSON.stringify(body) }),
   patchAccount: (id: string, body: Partial<Account>) =>
@@ -67,12 +67,12 @@ export const api = {
   getOAuthUrl: (accountId: string) => req<{ authUrl: string }>(`/oauth/start?accountId=${accountId}`),
 
   // targets
-  listTargets: (status?: TargetStatus | '', batchId?: string) => {
+  listTargets: (status?: TargetStatus | '', batchId?: string, signal?: AbortSignal) => {
     const params = new URLSearchParams();
     if (status) params.set('status', status);
     if (batchId) params.set('batchId', batchId);
     const qs = params.toString();
-    return req<Target[]>('/targets' + (qs ? `?${qs}` : ''));
+    return req<Target[]>('/targets' + (qs ? `?${qs}` : ''), { signal });
   },
   getTargetThread: (id: string) =>
     req<{
@@ -87,7 +87,7 @@ export const api = {
   deleteTarget: (id: string) => req<{ ok: boolean }>(`/targets/${id}`, { method: 'DELETE' }),
 
   // batches
-  listBatches: () => req<BatchRow[]>('/batches'),
+  listBatches: (signal?: AbortSignal) => req<BatchRow[]>('/batches', { signal }),
   createBatch: (body: NewBatch) =>
     req<Batch>('/batches', { method: 'POST', body: JSON.stringify(body) }),
 
@@ -115,17 +115,17 @@ export const api = {
   ) => req<ResponseRow>(`/replies/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
 
   // read-only feeds
-  listResponses: (batchId?: string) =>
-    req<ResponseRow[]>('/responses' + (batchId ? `?batchId=${encodeURIComponent(batchId)}` : '')),
-  listSuppressions: () => req<Suppression[]>('/suppressions'),
-  listNiches: () => req<Niche[]>('/niches'),
+  listResponses: (batchId?: string, signal?: AbortSignal) =>
+    req<ResponseRow[]>('/responses' + (batchId ? `?batchId=${encodeURIComponent(batchId)}` : ''), { signal }),
+  listSuppressions: (signal?: AbortSignal) => req<Suppression[]>('/suppressions', { signal }),
+  listNiches: (signal?: AbortSignal) => req<Niche[]>('/niches', { signal }),
 
   // per-domain price history
-  listDomains: () => req<DomainSummary[]>('/domains'),
+  listDomains: (signal?: AbortSignal) => req<DomainSummary[]>('/domains', { signal }),
   getDomain: (domain: string) => req<DomainDetail>(`/domains/${encodeURIComponent(domain)}`),
 
   // ignore list (inbound skip)
-  listIgnore: () => req<IgnoreEntry[]>('/ignore'),
+  listIgnore: (signal?: AbortSignal) => req<IgnoreEntry[]>('/ignore', { signal }),
   addIgnore: (body: { kind: 'email' | 'domain'; value: string; reason?: string }) =>
     req<IgnoreEntry>('/ignore', { method: 'POST', body: JSON.stringify(body) }),
   deleteIgnore: (id: string) => req<{ ok: boolean }>(`/ignore/${encodeURIComponent(id)}`, { method: 'DELETE' }),
@@ -138,7 +138,7 @@ export const api = {
     req<{ ok: boolean }>(`/exclusions/${encodeURIComponent(domain)}`, { method: 'DELETE' }),
 
   // deals (human-operated negotiations)
-  listDeals: () => req<DealRow[]>('/deals'),
+  listDeals: (signal?: AbortSignal) => req<DealRow[]>('/deals', { signal }),
   getDeal: (id: string) => req<DealDetail>(`/deals/${id}`),
   openDeal: (body: {
     counterpartyEmail: string;

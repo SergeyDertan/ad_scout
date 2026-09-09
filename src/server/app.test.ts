@@ -1001,8 +1001,21 @@ test('GET / serves the static web UI', async () => {
   try {
     const res = await fetch(`${h.base}/`);
     assert.equal(res.status, 200);
+    assert.equal(res.headers.get('cache-control'), 'no-cache');
     const html = await res.text();
     assert.match(html, /<title>AdScout<\/title>/);
+  } finally {
+    await h.close();
+  }
+});
+
+test('fingerprinted static assets are cached immutably', async () => {
+  const h = await start();
+  try {
+    const res = await fetch(`${h.base}/assets/app-abc123.js`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type') ?? '', /javascript/);
+    assert.equal(res.headers.get('cache-control'), 'public, max-age=31536000, immutable');
   } finally {
     await h.close();
   }

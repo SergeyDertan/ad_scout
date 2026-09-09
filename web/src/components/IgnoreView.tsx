@@ -16,7 +16,10 @@ function fmtDate(iso: string): string {
 export function IgnoreView({ tick }: { tick: number }) {
   // POST/DELETE /api/ignore are operator routes — a manager reads the list only.
   const isManager = useIsManager();
-  const { rows, loading, error, reload } = useResource(useCallback(() => api.listIgnore(), []), tick);
+  const { rows, loading, error, reload } = useResource(
+    useCallback((signal: AbortSignal) => api.listIgnore(signal), []),
+    tick,
+  );
   const [kind, setKind] = useState<'domain' | 'email'>('domain');
   const [value, setValue] = useState('');
   const [reason, setReason] = useState('');

@@ -104,6 +104,14 @@ verification notes in the same commit as each step.
 - Root/web typechecks, focused API tests, the production web build, and the full
   437-test suite passed.
 
+### 2026-09-09 — Tab visibility regression
+
+- Lazy views now have independent Suspense boundaries. Previously visited
+  panels remain mounted to preserve filters, but inactive panels are explicitly
+  `display:none`, preventing Domains → Batches → Run from stacking all three.
+- A server-rendered component regression test asserts inactive and active panel
+  visibility independently; the full 438-test suite passed.
+
 ## Acceptance targets
 
 - No list response contains more than 100 rows.

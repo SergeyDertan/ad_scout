@@ -2,19 +2,17 @@ import {
   Badge,
   Box,
   Button,
-  Center,
   Circle,
   Flex,
   Heading,
   HStack,
-  Spinner,
   Span,
   Square,
   Tabs,
   Text,
   Tooltip,
 } from '@chakra-ui/react';
-import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
+import { lazy, useCallback, useEffect, useState } from 'react';
 import { api } from './api';
 import { useRoute } from './hooks/useRoute';
 import { useIsManager, useRole } from './role';
@@ -35,6 +33,7 @@ import {
 } from './components/icons';
 import type { IconProps } from '@chakra-ui/react';
 import type { ComponentType } from 'react';
+import { LazyTabContent } from './components/LazyTabContent';
 
 // A tab's implementation is not part of the initial console bundle. Chakra's
 // lazyMount means the corresponding import is requested only when that tab is
@@ -50,14 +49,6 @@ const SuppressionsView = lazy(() => import('./components/SuppressionsView').then
 const LabelsView = lazy(() => import('./components/LabelsView').then((m) => ({ default: m.LabelsView })));
 const RunView = lazy(() => import('./components/RunView').then((m) => ({ default: m.RunView })));
 const OverviewView = lazy(() => import('./components/OverviewView').then((m) => ({ default: m.OverviewView })));
-
-function ViewFallback() {
-  return (
-    <Center minH="12rem" aria-label="Loading view">
-      <Spinner color="brand.solid" />
-    </Center>
-  );
-}
 
 /** The order the sections appear in the rail: the screen you land on, then the
  *  funnel, then the record it produces, then the things you set once and forget. */
@@ -447,54 +438,52 @@ export function App() {
             </Box>
           )}
 
-          <Suspense fallback={<ViewFallback />}>
-            <Tabs.Content value="overview">
+          <LazyTabContent value="overview" active={tab === 'overview'}>
               <OverviewView
                 tick={ticks.target + ticks.reply + ticks.deal + ticks.account + ticks.batch}
                 onNavigate={(t) => navigate(t)}
                 onOpenDeal={(id) => navigate('deals', id)}
               />
-            </Tabs.Content>
-            <Tabs.Content value="accounts">
-              <AccountsView tick={ticks.account} />
-            </Tabs.Content>
-            <Tabs.Content value="targets">
-              <TargetsView tick={ticks.target} />
-            </Tabs.Content>
-            <Tabs.Content value="batches">
-              <BatchesView tick={ticks.batch + ticks.target} />
-            </Tabs.Content>
-            <Tabs.Content value="responses">
-              <ResponsesView tick={ticks.reply} onOpenDeal={(id) => navigate('deals', id)} />
-            </Tabs.Content>
-            <Tabs.Content value="domains">
-              <DomainsView tick={ticks.reply + ticks.target} />
-            </Tabs.Content>
-            <Tabs.Content value="deals">
-              {/* A publisher's answer arrives as a `reply`, not a `deal` — without
-                  it in the tick the open conversation would sit stale until
-                  something else touched the deal. */}
-              <DealsView
-                tick={ticks.deal + ticks.reply}
-                dealId={route.tab === 'deals' ? route.id : undefined}
-                onSelect={(id) => navigate('deals', id)}
-              />
-            </Tabs.Content>
-            <Tabs.Content value="suppressions">
-              <SuppressionsView tick={ticks.suppression} />
-            </Tabs.Content>
-            <Tabs.Content value="ignore">
-              <IgnoreView tick={ticks.reply} />
-            </Tabs.Content>
-            <Tabs.Content value="labels">
-              <LabelsView />
-            </Tabs.Content>
-            {!isManager && (
-              <Tabs.Content value="run">
-                <RunView status={status} />
-              </Tabs.Content>
-            )}
-          </Suspense>
+          </LazyTabContent>
+          <LazyTabContent value="accounts" active={tab === 'accounts'}>
+            <AccountsView tick={ticks.account} />
+          </LazyTabContent>
+          <LazyTabContent value="targets" active={tab === 'targets'}>
+            <TargetsView tick={ticks.target} />
+          </LazyTabContent>
+          <LazyTabContent value="batches" active={tab === 'batches'}>
+            <BatchesView tick={ticks.batch + ticks.target} />
+          </LazyTabContent>
+          <LazyTabContent value="responses" active={tab === 'responses'}>
+            <ResponsesView tick={ticks.reply} onOpenDeal={(id) => navigate('deals', id)} />
+          </LazyTabContent>
+          <LazyTabContent value="domains" active={tab === 'domains'}>
+            <DomainsView tick={ticks.reply + ticks.target} />
+          </LazyTabContent>
+          <LazyTabContent value="deals" active={tab === 'deals'}>
+            {/* A publisher's answer arrives as a `reply`, not a `deal` — without
+                it in the tick the open conversation would sit stale until
+                something else touched the deal. */}
+            <DealsView
+              tick={ticks.deal + ticks.reply}
+              dealId={route.tab === 'deals' ? route.id : undefined}
+              onSelect={(id) => navigate('deals', id)}
+            />
+          </LazyTabContent>
+          <LazyTabContent value="suppressions" active={tab === 'suppressions'}>
+            <SuppressionsView tick={ticks.suppression} />
+          </LazyTabContent>
+          <LazyTabContent value="ignore" active={tab === 'ignore'}>
+            <IgnoreView tick={ticks.reply} />
+          </LazyTabContent>
+          <LazyTabContent value="labels" active={tab === 'labels'}>
+            <LabelsView />
+          </LazyTabContent>
+          {!isManager && (
+            <LazyTabContent value="run" active={tab === 'run'}>
+              <RunView status={status} />
+            </LazyTabContent>
+          )}
         </Box>
       </Box>
     </Tabs.Root>

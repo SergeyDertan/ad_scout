@@ -46,6 +46,8 @@ verification notes in the same commit as each step.
       bounded client page, and export behavior made explicit.
 - [x] Step 3 — Targets: server filtering/paging/counts and bounded client page.
 - [x] Step 4 — Domains: server filtering/sorting/paging and bounded client page.
+- [ ] Follow-up — paginate the Batches screen and cap the Overview batch
+      selector; the final consumer audit found both still call `/api/batches`.
 - [ ] Step 5 — replace transitional scans with indexed/materialized reads.
 - [ ] Step 6 — type-aware SSE invalidation for the active query only.
 - [ ] Step 7 — server-side streaming/background exports.
@@ -59,6 +61,8 @@ verification notes in the same commit as each step.
   includes them for current UI parity; Step 5 may maintain them incrementally.
 - Any page migrated before Step 7 can still be refetched by the existing broad
   SSE tick wiring, though each response is bounded.
+- The three high-volume pages are bounded, but Batches and Overview remain
+  unbounded when the number of batches itself is large.
 
 ## Verification log
 

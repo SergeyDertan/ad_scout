@@ -541,6 +541,32 @@ test('GET /api/domains + /api/domains/:domain expose the derived price sheet', a
     // site2.com is known via the seeded target even with no records.
     assert.ok(domains.some((d: any) => d.domain === 'site2.com'));
 
+    const firstPage = await J(`${h.base}/api/domains/page?limit=1&sort=domain&dir=asc`);
+    assert.equal(firstPage.items.length, 1);
+    assert.equal(firstPage.items[0].domain, 'site1.com');
+    assert.equal(firstPage.page.total, 2);
+    assert.ok(firstPage.page.nextCursor);
+    assert.ok(firstPage.facets.categories.some((option: any) => option.value === 'vpn'));
+    assert.deepEqual(firstPage.facets.tiers.map((option: any) => option.value), ['reg', 'sens']);
+
+    const nextPage = await J(
+      `${h.base}/api/domains/page?limit=1&sort=domain&dir=asc&cursor=${encodeURIComponent(firstPage.page.nextCursor)}`,
+    );
+    assert.equal(nextPage.items[0].domain, 'site2.com');
+    assert.ok(nextPage.page.previousCursor);
+
+    const vpn = await J(`${h.base}/api/domains/page?category=vpn&answer=maybe`);
+    assert.equal(vpn.page.total, 1);
+    assert.equal(vpn.items[0].domain, 'site1.com');
+    assert.equal(vpn.items[0].answer.verdict, 'maybe');
+    assert.equal(vpn.items[0].answer.inferred, true);
+    assert.equal(vpn.items[0].answer.price, '600');
+
+    const noMatch = await J(`${h.base}/api/domains/page?q=site2&tier=sens`);
+    assert.equal(noMatch.page.total, 0);
+    const badSort = await fetch(`${h.base}/api/domains/page?sort=wat`);
+    assert.equal(badSort.status, 400);
+
     const detail = await J(`${h.base}/api/domains/site1.com`);
     const regular = detail.sheet.cells.find((c: any) => c.category === 'regular');
     const sensitive = detail.sheet.cells.find((c: any) => c.category === 'sensitive');

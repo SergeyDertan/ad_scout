@@ -548,6 +548,24 @@ export interface DomainSummary {
   cells?: DomainCell[];
 }
 
+export type DomainSortKey = 'domain' | 'standingCells' | 'activeSpecials' | 'recordCount' | 'lastObservedAt';
+export type DomainStateFilter = 'all' | 'excluded' | 'optedOut' | 'active' | 'specials';
+export type DomainAnswerFilter = 'open' | 'yes' | 'maybe' | 'no';
+
+export interface DomainNicheAnswer {
+  verdict: 'yes' | 'maybe' | 'no' | 'unknown';
+  inferred: boolean;
+  sources: string[];
+  price: string;
+}
+
+export type DomainListRow = DomainSummary & { answer?: DomainNicheAnswer };
+
+export interface DomainFacets {
+  tiers: { value: Tier; label: string }[];
+  categories: { value: string; label: string }[];
+}
+
 /** A folded standing/special price cell (GET /api/domains/:domain). */
 export interface PriceCell {
   category: string;

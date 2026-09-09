@@ -8,6 +8,11 @@ import type {
   DealStatus,
   DomainDetail,
   DomainExclusion,
+  DomainFacets,
+  DomainListRow,
+  DomainAnswerFilter,
+  DomainSortKey,
+  DomainStateFilter,
   DomainSummary,
   EmailAttachment,
   ExtractionDebug,
@@ -39,6 +44,18 @@ export interface TargetPageQuery {
   batchId?: string;
   unbatched?: boolean;
   search?: string;
+}
+
+export interface DomainPageQuery {
+  limit?: number;
+  cursor?: string;
+  search?: string;
+  state?: DomainStateFilter;
+  tier?: 'reg' | 'sens';
+  category?: string;
+  answer?: DomainAnswerFilter;
+  sort?: DomainSortKey;
+  direction?: 'asc' | 'desc';
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -154,6 +171,19 @@ export const api = {
   listNiches: (signal?: AbortSignal) => req<Niche[]>('/niches', { signal }),
 
   // per-domain price history
+  listDomainPage: (query: DomainPageQuery, signal?: AbortSignal) => {
+    const params = new URLSearchParams();
+    if (query.limit) params.set('limit', String(query.limit));
+    if (query.cursor) params.set('cursor', query.cursor);
+    if (query.search) params.set('q', query.search);
+    if (query.state && query.state !== 'all') params.set('state', query.state);
+    if (query.tier) params.set('tier', query.tier);
+    if (query.category) params.set('category', query.category);
+    if (query.answer) params.set('answer', query.answer);
+    if (query.sort) params.set('sort', query.sort);
+    if (query.direction) params.set('dir', query.direction);
+    return req<PageEnvelope<DomainListRow, DomainFacets>>(`/domains/page?${params}`, { signal });
+  },
   listDomains: (signal?: AbortSignal) => req<DomainSummary[]>('/domains', { signal }),
   getDomain: (domain: string) => req<DomainDetail>(`/domains/${encodeURIComponent(domain)}`),
 

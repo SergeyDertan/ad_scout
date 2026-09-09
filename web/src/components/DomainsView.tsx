@@ -14,34 +14,33 @@ import {
   Text,
   VStack,
 } from '@chakra-ui/react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useState } from 'react';
 import { List, type RowComponentProps } from 'react-window';
 import { api } from '../api';
 import { useIsManager } from '../role';
 import { Attachments } from './Attachments';
 import { DataPanel } from './DataPanel';
 import { Empty } from './Empty';
-import { useResource } from '../hooks/useResource';
+import { usePagedResource } from '../hooks/useResource';
 import { ChevronDownIcon, DownloadIcon, SearchIcon, TagIcon } from './icons';
 import { DomainsExportDialog } from './DomainsExportDialog';
 import { ExtractionDebugModal } from './ExtractionDebugModal';
 import { TierBadge } from './TierBadge';
-import { answerForNiche, type NicheAnswer, type NicheVerdict } from '../niche-answer';
 import {
   formatPrice,
   formatProvenance,
   formatTerm,
-  tierOf,
-  TIER_LABEL,
-  type DomainCell,
   type DomainDetail,
-  type DomainSummary,
-  type Niche,
+  type DomainAnswerFilter,
+  type DomainFacets,
+  type DomainListRow,
+  type DomainNicheAnswer,
+  type DomainSortKey,
+  type DomainStateFilter,
   type PostOffer,
   type PriceCell,
   type PriceRecordRow,
   type ResponseRow,
-  type Tier,
 } from '../types';
 
 function fmtDate(iso?: string): string {
@@ -386,39 +385,16 @@ function DomainDetailModal({
 
 // --- Sortable domains list ----------------------------------------------------
 
-type SortKey = 'domain' | 'standingCells' | 'activeSpecials' | 'recordCount' | 'lastObservedAt';
-type StateFilter = 'all' | 'excluded' | 'optedOut' | 'active' | 'specials';
-
 /** Which niche verdicts to keep. 'open' — the default — is the question the page
  *  was built to answer ("where could this run?"), so it stays the landing state;
  *  the single-verdict options split that into certainty vs extrapolation, and
  *  'no' turns the page around into "who has ruled this out?". */
-type AnswerFilter = 'open' | 'yes' | 'maybe' | 'no';
-
-const ANSWER_FILTERS: { value: AnswerFilter; label: string }[] = [
+const ANSWER_FILTERS: { value: DomainAnswerFilter; label: string }[] = [
   { value: 'open', label: 'yes + maybe' },
   { value: 'yes', label: 'yes — will post' },
   { value: 'maybe', label: 'maybe — fallback' },
   { value: 'no', label: 'no — refused' },
 ];
-
-/** 'unknown' matches nothing: a domain with no evidence either way is not an
- *  answer to any of the four questions above. */
-function matchesAnswer(verdict: NicheVerdict, filter: AnswerFilter): boolean {
-  if (filter === 'open') return verdict === 'yes' || verdict === 'maybe';
-  return verdict === filter;
-}
-
-// --- Offer filters (mutually exclusive): tier = sensitivity, category = niche.
-// A cell counts as "on offer" only when the publisher said yes.
-const canOffer = (c: DomainCell) => c.canPost === 'yes';
-
-/** Regular first: it is the default case and the bulk of the list. */
-const TIER_ORDER: Tier[] = ['reg', 'sens'];
-function tierRank(value: string): number {
-  const i = TIER_ORDER.indexOf(value as Tier);
-  return i < 0 ? TIER_ORDER.length : i;
-}
 
 // Domain | Prices | Specials | Records | Last quote | State
 const COLS = '1fr 90px 90px 90px 150px 170px';
@@ -426,12 +402,14 @@ const COLS = '1fr 90px 90px 90px 150px 170px';
 const COLS_WITH_ANSWER = '1fr 200px 90px 90px 90px 150px 170px';
 const ROW_H = 52;
 const MAX_LIST_H = 640;
+const PAGE_SIZE = 50;
+const EMPTY_FACETS: DomainFacets = { tiers: [], categories: [] };
 
 function SortHeader({
   label, col, sortKey, dir, onSort,
 }: {
-  label: string; col: SortKey; sortKey: SortKey; dir: 'asc' | 'desc';
-  onSort: (c: SortKey) => void;
+  label: string; col: DomainSortKey; sortKey: DomainSortKey; dir: 'asc' | 'desc';
+  onSort: (c: DomainSortKey) => void;
 }) {
   const active = sortKey === col;
   return (
@@ -459,25 +437,22 @@ function SortHeader({
   );
 }
 
-/** A list row plus, when a niche filter is on, that niche's resolved answer. */
-type DomainRowView = DomainSummary & { answer?: NicheAnswer };
-
 interface RowData {
-  rows: DomainRowView[];
+  rows: DomainListRow[];
   onSelect: (domain: string) => void;
   /** Set while a niche filter is active — drives the extra column. */
   answerColumn?: boolean;
 }
 
-const VERDICT_PALETTE: Record<NicheVerdict, string> = {
+const VERDICT_PALETTE: Record<DomainNicheAnswer['verdict'], string> = {
   yes: 'green', maybe: 'gray', no: 'red', unknown: 'gray',
 };
 
-function AnswerCell({ answer }: { answer: NicheAnswer }) {
+function AnswerCell({ answer }: { answer: DomainNicheAnswer }) {
   // What they'd charge, and how much of that is their word vs our inference.
   // One niche can contribute several cells (one per placement term), so name the
   // sources once each — "inferred from casino, casino" reads like a bug.
-  const sources = [...new Set(answer.from.map((c) => c.label || c.category))];
+  const sources = answer.sources;
   const title =
     answer.verdict === 'no'
       ? answer.inferred
@@ -538,114 +513,47 @@ function VirtualRow({ index, style, rows, onSelect, answerColumn }: RowComponent
 }
 
 export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boolean }) {
-  const { rows, loading, error, reload } = useResource(
-    useCallback((signal: AbortSignal) => api.listDomains(signal), []),
-    tick,
-  );
-  // The full taxonomy, not just what has been quoted: with same-tier inference,
-  // filtering for a niche NOBODY has priced is a meaningful question — every
-  // grey-niche site answers it — so it has to be offered in the dropdown.
-  const { rows: niches } = useResource(
-    useCallback((signal: AbortSignal) => api.listNiches(signal), []),
-    tick,
-  );
   const [selected, setSelected] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const [stateFilter, setStateFilter] = useState<StateFilter>('all');
+  const [stateFilter, setStateFilter] = useState<DomainStateFilter>('all');
   const [tierFilter, setTierFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
-  const [answerFilter, setAnswerFilter] = useState<AnswerFilter>('open');
-  const [sortKey, setSortKey] = useState<SortKey>('lastObservedAt');
+  const [answerFilter, setAnswerFilter] = useState<DomainAnswerFilter>('open');
+  const [sortKey, setSortKey] = useState<DomainSortKey>('lastObservedAt');
   const [dir, setDir] = useState<'asc' | 'desc'>('desc');
   const [showExport, setShowExport] = useState(false);
+  const deferredSearch = useDeferredValue(search.trim());
+  const filterKey = JSON.stringify([
+    stateFilter, tierFilter, categoryFilter, answerFilter, sortKey, dir, deferredSearch,
+  ]);
+  const [pageCursor, setPageCursor] = useState<{ filterKey: string; value?: string }>({ filterKey: '' });
+  const cursor = pageCursor.filterKey === filterKey ? pageCursor.value : undefined;
+  const { result, loading, error, reload } = usePagedResource(
+    useCallback(
+      (signal: AbortSignal) => api.listDomainPage({
+        limit: PAGE_SIZE,
+        ...(cursor ? { cursor } : {}),
+        ...(deferredSearch ? { search: deferredSearch } : {}),
+        state: stateFilter,
+        ...(tierFilter ? { tier: tierFilter as 'reg' | 'sens' } : {}),
+        ...(categoryFilter ? { category: categoryFilter, answer: answerFilter } : {}),
+        sort: sortKey,
+        direction: dir,
+      }, signal),
+      [answerFilter, categoryFilter, cursor, deferredSearch, dir, sortKey, stateFilter, tierFilter],
+    ),
+    tick,
+  );
+  const rows = result?.items ?? [];
+  const facets = result?.facets ?? EMPTY_FACETS;
+  const tierOptions = facets.tiers;
+  const categoryOptions = facets.categories;
 
-  const onSort = (col: SortKey) => {
+  const onSort = (col: DomainSortKey) => {
     if (col === sortKey) setDir((d) => (d === 'asc' ? 'desc' : 'asc'));
     else { setSortKey(col); setDir(col === 'domain' ? 'asc' : 'desc'); }
   };
-
-  // Offer-filter dropdown options, derived from what the domains actually offer
-  // (canPost === 'yes'). Tier = sensitivity; category = niche.
-  const tierOptions = useMemo(() => {
-    const seen = new Map<string, string>();
-    for (const d of rows as DomainSummary[]) {
-      for (const c of d.cells ?? []) {
-        if (!canOffer(c)) continue;
-        const value = tierOf(c);
-        if (!seen.has(value)) seen.set(value, TIER_LABEL[value]);
-      }
-    }
-    return [...seen.entries()]
-      .map(([value, label]) => ({ value, label }))
-      .sort((a, b) => tierRank(a.value) - tierRank(b.value));
-  }, [rows]);
-
-  // Every niche's tier, read off the cells that DO carry it. Needed because the
-  // interesting case is a domain with no cell for the filtered niche at all —
-  // there is nothing local to read the tier from.
-  const tierByCategory = useMemo(() => {
-    const map = new Map<string, Tier>();
-    for (const n of niches as Niche[]) map.set(n.key, tierOf(n));
-    for (const d of rows as DomainSummary[]) {
-      for (const c of d.cells ?? []) if (!map.has(c.category)) map.set(c.category, tierOf(c));
-    }
-    return map;
-  }, [rows, niches]);
-
-  const categoryOptions = useMemo(() => {
-    const seen = new Map<string, string>();
-    for (const n of niches as Niche[]) seen.set(n.key, n.label || n.key);
-    // Plus anything quoted that the taxonomy hasn't caught up with yet. Includes
-    // niches only ever REFUSED: "who else might take a VPN post?" is precisely
-    // the question the refusal answers for one site and inference answers for
-    // the rest.
-    for (const d of rows as DomainSummary[]) {
-      for (const c of d.cells ?? []) if (!seen.has(c.category)) seen.set(c.category, c.label || c.category);
-    }
-    return [...seen.entries()]
-      .map(([value, label]) => ({ value, label }))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [rows, niches]);
-
-  const visible = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    // undefined = we could not establish a tier for the filtered niche, which
-    // makes inference impossible rather than merely unhelpful. Only reachable
-    // in the gap after `rows`/`niches` refetch and drop a category that is
-    // still selected; answerForNiche then reports quotes and infers nothing.
-    const filterTier = categoryFilter ? tierByCategory.get(categoryFilter) : undefined;
-    const filtered: DomainRowView[] = [];
-    for (const d of rows as DomainSummary[]) {
-      if (q && !d.domain.toLowerCase().includes(q)) continue;
-      switch (stateFilter) {
-        case 'excluded': if (!d.excluded) continue; break;
-        case 'optedOut': if (!d.optedOut) continue; break;
-        case 'specials': if (d.activeSpecials <= 0) continue; break;
-        case 'active': if (d.excluded || d.optedOut) continue; break;
-        default: break;
-      }
-      if (tierFilter && !(d.cells ?? []).some((c) => canOffer(c) && tierOf(c) === tierFilter)) continue;
-      if (categoryFilter) {
-        // Not a key match: what would a post in this niche cost here? A domain
-        // that never mentioned it still answers, from its same-tier prices; one
-        // that refused it answers 'no'; one with nothing to go on drops out
-        // whatever the answer filter says. See niche-answer.ts.
-        const answer = answerForNiche(d.cells ?? [], categoryFilter, filterTier);
-        if (!matchesAnswer(answer.verdict, answerFilter)) continue;
-        filtered.push({ ...d, answer });
-        continue;
-      }
-      filtered.push(d);
-    }
-    const factor = dir === 'asc' ? 1 : -1;
-    return filtered.sort((a, b) => {
-      if (sortKey === 'domain') return factor * a.domain.localeCompare(b.domain);
-      if (sortKey === 'lastObservedAt') return factor * (a.lastObservedAt ?? '').localeCompare(b.lastObservedAt ?? '');
-      return factor * ((a[sortKey] as number) - (b[sortKey] as number));
-    });
-  }, [rows, search, stateFilter, tierFilter, categoryFilter, answerFilter, tierByCategory, sortKey, dir]);
-
-  const listHeight = Math.min(visible.length * ROW_H, MAX_LIST_H);
+  const listHeight = Math.min(rows.length * ROW_H, MAX_LIST_H);
 
   if (error) return <Text color="red.fg" fontSize="sm" pt={4}>{error}</Text>;
 
@@ -671,7 +579,7 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
           />
         </InputGroup>
         <NativeSelect.Root size="sm" width="44" variant="plain">
-          <NativeSelect.Field value={stateFilter} onChange={(e) => setStateFilter(e.target.value as StateFilter)} fontWeight="medium">
+          <NativeSelect.Field value={stateFilter} onChange={(e) => setStateFilter(e.target.value as DomainStateFilter)} fontWeight="medium">
             <option value="all">all domains</option>
             <option value="active">active (contactable)</option>
             <option value="specials">has active specials</option>
@@ -718,7 +626,7 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
         <NativeSelect.Root size="sm" width="48" variant="plain" disabled={!categoryFilter}>
           <NativeSelect.Field
             value={answerFilter}
-            onChange={(e) => setAnswerFilter(e.target.value as AnswerFilter)}
+            onChange={(e) => setAnswerFilter(e.target.value as DomainAnswerFilter)}
             fontWeight="medium"
             title={categoryFilter ? undefined : 'Pick a niche first'}
           >
@@ -732,22 +640,27 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
           variant="outline"
           ml="auto"
           onClick={() => setShowExport(true)}
-          disabled={visible.length === 0}
+          disabled={rows.length === 0}
+          title="Exports only the rows on the current bounded page"
         >
-          <DownloadIcon /> Export
+          <DownloadIcon /> Export page
         </Button>
         <Text fontSize="xs" color="fg.subtle">
-          {visible.length} of {rows.length} domain{rows.length === 1 ? '' : 's'}
+          {rows.length} on this page · {result?.page.total ?? 0} matching
         </Text>
       </HStack>
 
       <DataPanel
         loading={loading}
-        isEmpty={rows.length === 0}
-        empty={<Empty icon={TagIcon} title="No domains yet" description="Price records appear here as publishers reply with quotes." />}
+        isEmpty={false}
+        empty={null}
       >
-        {visible.length === 0 ? (
-          <Text fontSize="sm" color="fg.muted" py={6} textAlign="center">No domains match the current filter.</Text>
+        {rows.length === 0 ? (
+          deferredSearch || stateFilter !== 'all' || tierFilter || categoryFilter ? (
+            <Text fontSize="sm" color="fg.muted" py={6} textAlign="center">No domains match the current filter.</Text>
+          ) : (
+            <Empty icon={TagIcon} title="No domains yet" description="Price records appear here as publishers reply with quotes." />
+          )
         ) : (
           <Box>
             {/* Header row (matches the virtualized grid columns) */}
@@ -781,19 +694,37 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
 
             <List
               style={{ height: listHeight }}
-              rowCount={visible.length}
+              rowCount={rows.length}
               rowHeight={ROW_H}
               rowComponent={VirtualRow}
-              rowProps={{ rows: visible, onSelect: setSelected, answerColumn: !!categoryFilter } satisfies RowData}
+              rowProps={{ rows, onSelect: setSelected, answerColumn: !!categoryFilter } satisfies RowData}
               overscanCount={5}
             />
+            <HStack mt={3} justify="flex-end" gap={2}>
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={!result?.page.previousCursor || loading}
+                onClick={() => setPageCursor({ filterKey, value: result?.page.previousCursor })}
+              >
+                Previous
+              </Button>
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={!result?.page.nextCursor || loading}
+                onClick={() => setPageCursor({ filterKey, value: result?.page.nextCursor })}
+              >
+                Next
+              </Button>
+            </HStack>
           </Box>
         )}
       </DataPanel>
 
       {showExport && (
         <DomainsExportDialog
-          domains={visible}
+          domains={rows}
           defaultIncludeExcluded={stateFilter === 'excluded'}
           onClose={() => setShowExport(false)}
         />

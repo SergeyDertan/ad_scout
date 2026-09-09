@@ -30,6 +30,7 @@ import type {
 } from '../domain/types';
 import type { Store } from '../ports/store';
 import {
+  compareStrings,
   compareStringsDescending,
   paginateSorted,
   type PageEnvelope,
@@ -261,6 +262,189 @@ export async function buildDomainRows(store: Store, now: Date): Promise<DomainRo
         term: c.term,
       })),
     };
+  });
+}
+
+export type DomainSortKey = 'domain' | 'standingCells' | 'activeSpecials' | 'recordCount' | 'lastObservedAt';
+export type DomainStateFilter = 'all' | 'excluded' | 'optedOut' | 'active' | 'specials';
+export type DomainAnswerFilter = 'open' | 'yes' | 'maybe' | 'no';
+export type DomainTier = 'reg' | 'sens';
+export type DomainNicheVerdict = 'yes' | 'maybe' | 'no' | 'unknown';
+
+export interface DomainNicheAnswer {
+  verdict: DomainNicheVerdict;
+  inferred: boolean;
+  sources: string[];
+  price: string;
+}
+
+export interface DomainPageQuery {
+  limit: number;
+  cursor?: string;
+  search?: string;
+  state: DomainStateFilter;
+  tier?: DomainTier;
+  category?: string;
+  answer: DomainAnswerFilter;
+  sort: DomainSortKey;
+  direction: 'asc' | 'desc';
+}
+
+export interface DomainFacets {
+  tiers: { value: DomainTier; label: string }[];
+  categories: { value: string; label: string }[];
+}
+
+export type DomainListRow = DomainRow & { answer?: DomainNicheAnswer };
+
+function domainTier(cell: DomainCellRow): DomainTier {
+  return cell.sensitive ? 'sens' : 'reg';
+}
+
+function domainPriceLabel(cells: DomainCellRow[]): string {
+  const byCurrency = new Map<string, Map<string, number>>();
+  const rawOnly: string[] = [];
+  for (const cell of cells) {
+    const price = cell.price;
+    if (!price) continue;
+    if (price.amount === undefined) {
+      if (price.raw) rawOnly.push(price.raw);
+      continue;
+    }
+    const currency = price.currency ?? price.currencyRaw ?? '';
+    let perNiche = byCurrency.get(currency);
+    if (!perNiche) byCurrency.set(currency, (perNiche = new Map()));
+    const cheapest = perNiche.get(cell.category);
+    if (cheapest === undefined || price.amount < cheapest) perNiche.set(cell.category, price.amount);
+  }
+  if (byCurrency.size === 0) return rawOnly[0] ?? '—';
+  return [...byCurrency.keys()]
+    .sort((a, b) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b)))
+    .map((currency) => {
+      const amounts = [...byCurrency.get(currency)!.values()];
+      const low = Math.min(...amounts);
+      const high = Math.max(...amounts);
+      const span = low === high ? `${low}` : `${low}–${high}`;
+      return currency ? `${span} ${currency}` : span;
+    })
+    .join(' / ');
+}
+
+function domainAnswer(cells: DomainCellRow[], category: string, tier?: DomainTier): DomainNicheAnswer {
+  const summarize = (
+    verdict: DomainNicheVerdict,
+    inferred: boolean,
+    from: DomainCellRow[],
+  ): DomainNicheAnswer => ({
+    verdict,
+    inferred,
+    sources: [...new Set(from.map((cell) => cell.label || cell.category))],
+    price: verdict === 'no' ? '—' : domainPriceLabel(from),
+  });
+  const named = cells.filter((cell) => cell.category === category);
+  if (named.length) {
+    const open = named.filter((cell) => cell.canPost !== 'no');
+    if (!open.length) return summarize('no', false, named);
+    return summarize(open.some((cell) => cell.canPost === 'yes') ? 'yes' : 'maybe', false, open);
+  }
+  const umbrella = cells.filter((cell) => cell.category === 'sensitive');
+  if (tier === 'sens' && umbrella.length && umbrella.every((cell) => cell.canPost === 'no')) {
+    return summarize('no', true, umbrella);
+  }
+  if (!tier) return summarize('unknown', false, []);
+  const sameTier = cells.filter(
+    (cell) => domainTier(cell) === tier || (cell.category === 'sensitive' && tier === 'sens'),
+  );
+  const siblings = sameTier.filter((cell) => cell.canPost === 'yes' && cell.category !== category);
+  if (siblings.length) return summarize('maybe', true, siblings);
+  if (sameTier.length && sameTier.every((cell) => cell.canPost === 'no')) {
+    return summarize('no', true, sameTier);
+  }
+  return summarize('unknown', false, []);
+}
+
+function matchesDomainAnswer(verdict: DomainNicheVerdict, filter: DomainAnswerFilter): boolean {
+  return filter === 'open' ? verdict === 'yes' || verdict === 'maybe' : verdict === filter;
+}
+
+function domainSortValue(row: DomainRow, key: DomainSortKey): string {
+  if (key === 'domain') return row.domain;
+  if (key === 'lastObservedAt') return row.lastObservedAt ?? '';
+  return String(row[key]).padStart(16, '0');
+}
+
+/** Bounded Domains feed with server-owned state/offer/niche filters and sorting. */
+export async function buildDomainPage(
+  store: Store,
+  now: Date,
+  query: DomainPageQuery,
+): Promise<PageEnvelope<DomainListRow, DomainFacets>> {
+  const [rows, niches] = await Promise.all([
+    buildDomainRows(store, now),
+    store.listNiches().then(allNiches),
+  ]);
+  const categories = new Map(niches.map((niche) => [niche.key, niche.label || niche.key]));
+  for (const row of rows) {
+    for (const cell of row.cells) {
+      if (!categories.has(cell.category)) categories.set(cell.category, cell.label || cell.category);
+    }
+  }
+  const selectedCategory = query.category ? categories.get(query.category) : undefined;
+  const categoryOptions = [...categories.entries()]
+    .map(([value, label]) => ({ value, label }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+    .slice(0, 500);
+  if (
+    query.category &&
+    selectedCategory &&
+    !categoryOptions.some((option) => option.value === query.category)
+  ) categoryOptions.push({ value: query.category, label: selectedCategory });
+  const categoryTier = query.category
+    ? niches.find((niche) => niche.key === query.category)?.sensitive
+      ? 'sens'
+      : niches.some((niche) => niche.key === query.category)
+        ? 'reg'
+        : rows.flatMap((row) => row.cells).find((cell) => cell.category === query.category)
+          ? domainTier(rows.flatMap((row) => row.cells).find((cell) => cell.category === query.category)!)
+          : undefined
+    : undefined;
+  const search = query.search?.trim().toLowerCase() ?? '';
+  const filtered: DomainListRow[] = [];
+  for (const row of rows) {
+    if (search && !row.domain.toLowerCase().includes(search)) continue;
+    if (query.state === 'excluded' && !row.excluded) continue;
+    if (query.state === 'optedOut' && !row.optedOut) continue;
+    if (query.state === 'specials' && row.activeSpecials <= 0) continue;
+    if (query.state === 'active' && (row.excluded || row.optedOut)) continue;
+    if (query.tier && !row.cells.some((cell) => cell.canPost === 'yes' && domainTier(cell) === query.tier)) continue;
+    if (query.category) {
+      const answer = domainAnswer(row.cells, query.category, categoryTier);
+      if (!matchesDomainAnswer(answer.verdict, query.answer)) continue;
+      filtered.push({ ...row, answer });
+    } else filtered.push(row);
+  }
+  const compare = query.direction === 'asc' ? compareStrings : compareStringsDescending;
+  filtered.sort((a, b) => compare(
+    { value: domainSortValue(a, query.sort), id: a.domain },
+    { value: domainSortValue(b, query.sort), id: b.domain },
+  ));
+  const scope = JSON.stringify([
+    'domains', query.state, query.tier ?? '', query.category ?? '', query.answer,
+    search, query.sort, query.direction,
+  ]);
+  return paginateSorted(filtered, {
+    limit: query.limit,
+    cursor: query.cursor,
+    scope,
+    keyOf: (row) => ({ value: domainSortValue(row, query.sort), id: row.domain }),
+    compare,
+    facets: {
+      tiers: [
+        { value: 'reg', label: 'Regular' },
+        { value: 'sens', label: 'Sensitive' },
+      ],
+      categories: categoryOptions,
+    },
   });
 }
 

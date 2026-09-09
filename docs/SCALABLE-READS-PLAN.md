@@ -45,7 +45,7 @@ verification notes in the same commit as each step.
 - [x] Step 2 — Responses: server filtering/paging, slim rows, direct detail read,
       bounded client page, and export behavior made explicit.
 - [x] Step 3 — Targets: server filtering/paging/counts and bounded client page.
-- [ ] Step 4 — Domains: server filtering/sorting/paging and bounded client page.
+- [x] Step 4 — Domains: server filtering/sorting/paging and bounded client page.
 - [ ] Step 5 — replace transitional scans with indexed/materialized reads.
 - [ ] Step 6 — type-aware SSE invalidation for the active query only.
 - [ ] Step 7 — server-side streaming/background exports.
@@ -87,6 +87,18 @@ verification notes in the same commit as each step.
   currently selected batch), eliminating their unbounded `/api/batches` reads.
 - Root/web typechecks, the production web build, and the full 437-test suite
   passed.
+
+### 2026-09-09 — Step 4
+
+- Domains UI retains one 50-row page. Domain search, state, sensitivity tier,
+  niche answer/inference, and all table sorting now run through
+  `GET /api/domains/page`.
+- Opaque cursors include the complete filter and sort scope. The endpoint caps
+  taxonomy filter choices at 500 while preserving an older selected niche.
+- Domain detail/history remains a point read. Until Step 7, the existing export
+  is explicitly labeled “Export page” and cannot grow with the full dataset.
+- Root/web typechecks, focused API tests, the production web build, and the full
+  437-test suite passed.
 
 ## Acceptance targets
 

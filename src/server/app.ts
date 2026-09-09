@@ -16,6 +16,7 @@
 //   POST   /api/batches                 { name?, advertised?{url,description} } → creates an import batch
 //   GET    /api/responses?batchId=
 //   GET    /api/responses/page           → bounded, filtered response summaries
+//   GET    /api/domains/page             → bounded, filtered domain summaries
 //   GET    /api/suppressions
 //   GET    /api/deals                    → deals + derived domains/paid/live counts
 //   POST   /api/deals                    { counterpartyEmail, accountId, threadIds?, domains?, note? }
@@ -66,11 +67,16 @@ import { isOutreachLanguage, resolveProfile } from '../domain/pitch';
 import {
   buildBatchRows,
   buildDomainDetail,
+  buildDomainPage,
   buildDomainRows,
   buildReplyDebug,
   buildResponsePage,
   buildResponseRows,
   buildTargetPage,
+  type DomainAnswerFilter,
+  type DomainSortKey,
+  type DomainStateFilter,
+  type DomainTier,
   type ResponseStateFilter,
 } from '../services/read-models';
 import { PageInputError, parsePageLimit } from '../services/pagination';
@@ -936,6 +942,44 @@ async function handle(
     // GET /api/niches — seed + learned post-category registry (drives the response filter)
     if (method === 'GET' && seg[1] === 'niches' && seg.length === 2) {
       return sendJson(res, 200, allNiches(await store.listNiches()));
+    }
+
+    // GET /api/domains/page?limit=&cursor=&state=&tier=&category=&answer=&sort=&dir=&q=
+    if (method === 'GET' && seg[1] === 'domains' && seg[2] === 'page' && seg.length === 3) {
+      try {
+        const state = (url.searchParams.get('state') ?? 'all') as DomainStateFilter;
+        if (!['all', 'excluded', 'optedOut', 'active', 'specials'].includes(state)) {
+          throw new PageInputError('invalid domain state');
+        }
+        const tier = url.searchParams.get('tier') as DomainTier | null;
+        if (tier && tier !== 'reg' && tier !== 'sens') throw new PageInputError('invalid tier');
+        const answer = (url.searchParams.get('answer') ?? 'open') as DomainAnswerFilter;
+        if (!['open', 'yes', 'maybe', 'no'].includes(answer)) throw new PageInputError('invalid answer');
+        const sort = (url.searchParams.get('sort') ?? 'lastObservedAt') as DomainSortKey;
+        if (!['domain', 'standingCells', 'activeSpecials', 'recordCount', 'lastObservedAt'].includes(sort)) {
+          throw new PageInputError('invalid domain sort');
+        }
+        const direction = url.searchParams.get('dir') ?? 'desc';
+        if (direction !== 'asc' && direction !== 'desc') throw new PageInputError('dir must be asc or desc');
+        const search = url.searchParams.get('q')?.trim() || undefined;
+        if (search && search.length > 200) throw new PageInputError('q must be at most 200 characters');
+        const category = url.searchParams.get('category')?.trim() || undefined;
+        if (category && category.length > 100) throw new PageInputError('category must be at most 100 characters');
+        return sendJson(res, 200, await buildDomainPage(store, deps.clock.now(), {
+          limit: parsePageLimit(url.searchParams.get('limit')),
+          cursor: url.searchParams.get('cursor') ?? undefined,
+          search,
+          state,
+          tier: tier ?? undefined,
+          category,
+          answer,
+          sort,
+          direction,
+        }));
+      } catch (error) {
+        if (error instanceof PageInputError) return sendJson(res, 400, { error: error.message });
+        throw error;
+      }
     }
 
     // GET /api/domains — known domains (record ∪ target sites) with a light summary

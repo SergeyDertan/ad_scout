@@ -2,7 +2,7 @@
 // attachment Read). Not part of `pnpm test` — it hits the network and shells out
 // to the real `claude` CLI. Run with:
 //
-//   CLAUDE_CODE_MODEL=sonnet tsx src/scripts/e2e-research-extract.ts
+//   CLAUDE_CODE_MODEL=claude-sonnet-5 tsx src/scripts/e2e-research-extract.ts
 //
 // Files it reads come from E2E_DIR (defaults to the scratchpad path below).
 

@@ -14,9 +14,10 @@
 // below, since either would silently switch the CLI to pay-per-token API
 // billing instead of the subscription session). `--allowedTools ''` strips
 // every tool (Bash/Read/Write/...) from the session so this is a pure
-// text-in/JSON-out completion with no filesystem or shell side effects.
+// text-in/JSON-out completion with no filesystem or shell side effects. The CLI
+// runs from a private temp directory, never the repo — see neutral-cwd.ts.
 
-import { execFile } from 'node:child_process';
+import { execFile, type ExecFileOptions } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -28,9 +29,17 @@ import type {
 } from '../../ports/llm-provider';
 import { detectUsageLimit, type UsageLimitError } from '../../lib/errors';
 import { logger } from '../../lib/logger';
+import { neutralCwd } from './neutral-cwd';
 import { stageAttachments } from './stage-attachments';
 
-const execFileAsync = promisify(execFile);
+/** How the CLI is launched: execFile's promise form, injectable for tests. */
+export type ExecFileFn = (
+  file: string,
+  args: string[],
+  options: ExecFileOptions,
+) => Promise<{ stdout: string; stderr: string }>;
+
+const execFileAsync: ExecFileFn = promisify(execFile);
 
 // Structured JSON extraction can be slow even without tools — a large price
 // list (many niche cells) is a lot of constrained output — and slower
@@ -42,6 +51,8 @@ interface ClaudeCodeOptions {
   /** Model alias ("sonnet" | "opus" | "haiku") or a full model id. */
   model: string;
   timeoutMs?: number;
+  /** Test seam; defaults to node's execFile. */
+  execFile?: ExecFileFn;
 }
 
 interface ClaudeCliResult {
@@ -83,11 +94,14 @@ export class ClaudeCodeLlmProvider implements LlmProvider {
     const env = { ...process.env };
     delete env.ANTHROPIC_API_KEY;
     delete env.ANTHROPIC_AUTH_TOKEN;
+    const exec = this.opts.execFile ?? execFileAsync;
+    const cwd = await neutralCwd();
 
     const t0 = Date.now();
     let stdout: string;
     try {
-      ({ stdout } = await execFileAsync('claude', args, {
+      ({ stdout } = await exec('claude', args, {
+        cwd,
         env,
         timeout: timeoutMs ?? this.opts.timeoutMs ?? 120_000,
         maxBuffer: 16 * 1024 * 1024,

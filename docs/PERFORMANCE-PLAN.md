@@ -3,9 +3,17 @@
 Why the operator console takes a few seconds to show most screens, what was
 measured, and the ranked fix list.
 
-> Status: **not started** — this is the survey only. Nothing here has been
-> implemented. Measured 2026-09-07 against the live VPS store
-> (95.216.149.252, `/opt/adscout`).
+> Status: **partly done; kept as a record, not maintained.** Measured 2026-09-07
+> against the live VPS store (95.216.149.252, `/opt/adscout`). Line numbers below
+> are from that date. Read performance is now tracked in
+> [SCALABLE-READS-PLAN.md](./SCALABLE-READS-PLAN.md). Of the fixes in §4:
+> - **Done:** fix 2 (the responses list is paged and slim) and fix 4 (static
+>   assets cached immutably).
+> - **Not done:** fix 1 (read cache in `PouchDbStore`) and fix 5 (index price
+>   records by domain in `buildDomainRows`).
+> - **Decided the other way:** fix 3. Visited tabs deliberately stay mounted
+>   (hidden) to keep their filters, so the refetch fan-out in §3.4 still
+>   applies.
 
 ---
 

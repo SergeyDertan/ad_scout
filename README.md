@@ -1,123 +1,67 @@
 # AdScout
 
-Local AI outreach agent.
+A cold-outreach agent. It:
+- emails website owners asking for their guest-post rates
+- reads the replies and extracts the prices with Claude into a per-domain price
+  history
+- gives a person a console to run the negotiations that follow
+
+**The deployed server is the VPS.** It is the only instance that sends email. A
+laptop is for development and for the extraction worker, and a local run must
+never send real email: keep `EMAIL_PROVIDER` unset locally, even against a copy
+of the live data.
 
 ## Documentation
 
-- [**docs/CHEATSHEET.md**](./docs/CHEATSHEET.md) — terse quick reference
-  (commands, env, gotchas) for when you already know the project.
-- [**docs/USAGE.md**](./docs/USAGE.md) — install, configure providers, manage
-  Gmail accounts, queue targets, and operate the outreach loop.
-- [**docs/ARCHITECTURE.md**](./docs/ARCHITECTURE.md) — code structure, the logic
-  in each layer, data model, and key flows.
-- [**docs/RELEASE-SETUP.md**](./docs/RELEASE-SETUP.md) — one-time setup for
-  `just release`: the deploy key, the GitHub secrets, the sudoers rule, and what
-  to do when a deploy goes wrong.
-- [**docs/VPS-DEPLOY.md**](./docs/VPS-DEPLOY.md) — moving the agent off the
-  laptop onto a VPS: automated deploys, the dump/load data migration, systemd +
-  Hestia nginx, the timezone trap, backups, and the one-account-first cutover.
-- [**docs/REMOTE-ADMIN-PLAN.md**](./docs/REMOTE-ADMIN-PLAN.md) — giving a
-  second person write access to deals: the code survey, the options weighed,
-  and the agreed shape (Firebase auth + a VPS host).
-- [`overview.md`](./overview.md) — the original design document.
+| read | for |
+|---|---|
+| [docs/USAGE.md](./docs/USAGE.md) | operating the console: accounts, imports, sending, replies, deals |
+| [docs/REMOTE-QUICKSTART.md](./docs/REMOTE-QUICKSTART.md) | running the extraction worker on a machine with a Claude subscription (background: [REMOTE-EXTRACTION.md](./docs/REMOTE-EXTRACTION.md)) |
+| [docs/VPS-DEPLOY.md](./docs/VPS-DEPLOY.md) | the production box: systemd, nginx/TLS, secrets, the data migration |
+| [docs/RELEASE-SETUP.md](./docs/RELEASE-SETUP.md) | one-time setup for `just release`, and what to do when a deploy fails |
+| [CLAUDE.md](./CLAUDE.md) + [docs/claude/](./docs/claude) | how the code works: storage, pipeline, server, web. Written for Claude Code, readable by anyone. |
+
+Also:
+- **Active tracker:** [docs/SCALABLE-READS-PLAN.md](./docs/SCALABLE-READS-PLAN.md).
+- **Design records** (historical, not maintained):
+  [overview.md](./overview.md),
+  [PRICE-HISTORY-PLAN](./docs/PRICE-HISTORY-PLAN.md),
+  [REMOTE-ADMIN-PLAN](./docs/REMOTE-ADMIN-PLAN.md),
+  [PERFORMANCE-PLAN](./docs/PERFORMANCE-PLAN.md).
 
 ## Quick start
 
-Everything routine is a `just` recipe — `just` on its own lists them:
+Needs Node 26 and pnpm 11 (`.tool-versions`). `just` on its own lists every
+recipe.
 
 ```bash
 just install     # pnpm install, whole workspace
-just check       # typecheck + web:typecheck + test (what CI runs)
-just dev         # API on :8787 and Vite on :5173
-just release     # gate, push, watch the deploy, verify the live site
+just dev-seed    # API :8787 + Vite :5173 on a throwaway seeded store — can't persist or send
+just dev         # the same, on whatever .env configures
+just check       # typecheck + web:typecheck + test — what CI runs
+just release     # gate, push, watch the deploy, verify the live site (setup: RELEASE-SETUP.md)
 ```
 
-`release` and the VPS recipes need one-time setup — see
-[docs/RELEASE-SETUP.md](./docs/RELEASE-SETUP.md).
+Open http://localhost:5173 in dev. `pnpm build && pnpm serve` serves the built
+console from the API itself on http://localhost:8787.
 
+## Layout
 
-This is a **pnpm workspace** (`pnpm-workspace.yaml`): the root is the server
-package `adscout`; the front-end is the `adscout-web` package under `web/`. One
-`pnpm install` at the root installs both.
+A pnpm workspace:
+- The root package `adscout` is the server (`src/`), run from TypeScript with
+  `tsx`.
+- `web/` is the console (`adscout-web`: React + Chakra UI). It is built to
+  `web/dist` and served by the server.
+- `pnpm test` runs the server tests and the web logic tests with `node:test`.
 
-```bash
-pnpm install           # installs the whole workspace (server + web)
-pnpm typecheck         # tsc --noEmit
-pnpm test              # node --test via tsx  (377 tests)
-pnpm demo              # end-to-end pipeline demo (dummy adapters, in-memory)
-pnpm build             # build the web/ front-end into web/dist
-pnpm serve             # boot the HTTP/SSE server + drip scheduler, open localhost:8787
-```
+## Configuration
 
-`demo` seeds a campaign + account + targets, runs a send-pass, simulates a
-reply, runs a poll-pass, and prints the extracted result — all in-memory.
+Copy `.env.example` to `.env`. The defaults are safe: an in-memory store, dummy
+email and a dummy LLM, so nothing persists and nothing is sent.
+- Real data needs `STORE=pouchdb`.
+- Real mail needs `EMAIL_PROVIDER` plus a connected Gmail account. Set it on the
+  VPS only.
+- Extraction uses `LLM_PROVIDER=claude-code` with a logged-in `claude` CLI.
 
-`serve` does lock → reconcile → HTTP server (default port `8787`, set `PORT`) →
-drip scheduler → extraction hub (port `8788`, needs `REMOTE_TOKEN`; `REMOTE_HUB=off`
-disables). The hub lets a worker on another machine run extraction against a
-`claude` subscription the server itself cannot hold — see
-[docs/VPS-DEPLOY.md](./docs/VPS-DEPLOY.md). It serves the built dashboard from `web/dist` — run
-`pnpm build` once first (or `WEB_DIR=...` to point elsewhere).
-
-### Front-end (separate module)
-
-The UI is its own Vite + React + **Chakra UI** module under [`web/`](./web),
-independent of the server (own `package.json`, build, dependency tree). Its deps
-install with the workspace `pnpm install`.
-
-```bash
-pnpm web:build         # production build → web/dist (served by `pnpm serve`)
-pnpm web:dev           # Vite dev server on :5173, proxies /api → :8787 (run `pnpm dev` too)
-```
-
-For local development run the API (`pnpm dev`) and the Vite dev server
-(`pnpm web:dev`) side by side, then open `http://localhost:5173` — edits hot-reload
-and `/api` (REST + SSE) is proxied to the backend. For a single-port deploy,
-`pnpm build` then `pnpm serve` and open `http://localhost:8787`.
-
-## Architecture (ports & adapters)
-
-- **Pure domain core** (`src/domain/`) — warmup, limits, health, reply-matching,
-  extraction parsing. No I/O, fully unit-tested.
-- **Ports** (`src/ports/`) — `EmailProvider`, `Store`, `LlmProvider`.
-- **Adapters** (`src/adapters/`):
-  - LLM: `dummy` (default, deterministic) · `ollama` · `openai` (both via `fetch`) ·
-    `claude` (official `@anthropic-ai/sdk`, lazy-loaded).
-  - Email: `dummy` (default) · `smtp-imap` (nodemailer + imapflow, lazy-loaded).
-  - Store: `memory` (default) · `pouchdb` (lazy-loaded).
-- **Pipeline** (`src/pipeline/`) — `reconcile`, `send-pass`, `poll-pass`.
-- **Server** (`src/server/app.ts`) — `node:http` API mirroring the Store port +
-  SSE change feed (`GET /api/stream`); serves the built dashboard from `web/dist`.
-  CRUD for accounts (create / pause / resume / patch / delete), targets
-  (create / delete / filter), and campaigns (list / create).
-- **Scheduler** (`src/scheduler/`) — in-process drip: spreads each account's
-  daily quota across the send window with jittered gaps; independent poll loop.
-  Timers + randomness are injected so the loops are deterministically tested.
-- **Web UI** (`web/`) — separate **Vite + React + Chakra UI** module. Tabs:
-  Accounts (add/manage Gmail accounts, daily-limit override, pause/resume/delete),
-  Targets (add to queue / filter / remove), Responses, Suppressions, Run — all
-  with live SSE updates.
-- **Factory** (`src/lib/factory.ts`) — the only place that knows concrete adapters.
-
-The real provider/store/email code is fully written; the lazy `import()` boundary
-means the project builds and tests with **zero external packages installed**. To
-activate a real one, install its package and flip the env var.
-
-## Switching providers
-
-Copy `.env.example` → `.env` and set:
-
-| Var | Values | To activate, also run |
-|---|---|---|
-| `LLM_PROVIDER` | `dummy` (default) · `ollama` · `openai` · `claude` | `pnpm add @anthropic-ai/sdk` (claude only) |
-| `EMAIL_PROVIDER` | `dummy` (default) · `smtp-imap` | `pnpm add nodemailer imapflow` |
-| `STORE` | `memory` (default) · `pouchdb` | `pnpm add pouchdb` |
-
-Account credentials live in `.env` and are referenced by `Account.credentialRef`
-(the env var **name**, never the secret).
-
-## What's not built yet
-
-CLI scripts (`add-account`, `import-targets`) and a real persistence smoke test
-against PouchDB. (Accounts and targets are now managed from the web UI, which
-adds them via the JSON API.)
+Every variable is listed in `.env.example` and, grouped by purpose, in
+[docs/claude/server.md](./docs/claude/server.md) (section "Config").

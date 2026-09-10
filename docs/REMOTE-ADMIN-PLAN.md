@@ -4,6 +4,9 @@ Giving a second person **write** access to deals — read the negotiation, see e
 email on the thread, answer, and record the link/price/paid — from wherever they
 are, without handing over the mailboxes.
 
+> **Decision record, not maintained.** Current auth and roles are described in
+> `docs/claude/server.md`.
+>
 > Status: **partly implemented** — items 7.1–7.7 are built; see §7 for what is
 > done and what is left. The migration runbook that came out of this is
 > [VPS-DEPLOY.md](./VPS-DEPLOY.md). This document remains the survey and the

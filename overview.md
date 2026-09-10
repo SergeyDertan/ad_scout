@@ -1,5 +1,11 @@
 # AdScout — Design Document
 
+> **Historical: not maintained.** This is the original design (June 2026). It
+> is kept because code comments cite its sections ("overview.md §8"). Much has
+> changed since: no campaigns, Claude instead of Ollama, a VPS instead of a
+> laptop, deals, auth. For how the system works today, read `CLAUDE.md` and
+> `docs/claude/`.
+
 A local AI agent that does outreach to website admins (asking whether they'll publish
 an ad/article and at what price), monitors replies, and extracts structured results.
 Runs on-demand on a MacBook Pro M1 Max (32GB), with a small local web UI.

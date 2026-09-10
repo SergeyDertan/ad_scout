@@ -597,8 +597,15 @@ as a header and verifying it with the Admin SDK, which is a separate decision.
 
 ## 9. The worker, on the Mac
 
-The half that keeps the Claude subscription. Pick one of two ways to reach the
-hub.
+The half that keeps the Claude subscription. There are three ways to reach the
+hub:
+- an SSH tunnel (A, recommended)
+- the `/hub` path on the main domain, which §7 already proxies:
+  `REMOTE_HUB_URL=https://adscout.dva-lymona.biz.ua/hub`. No extra setup; use
+  `https://`, because a redirected POST fails.
+- a separate hub hostname (B)
+
+Day-to-day commands are in [REMOTE-QUICKSTART.md](./REMOTE-QUICKSTART.md).
 
 ### Option A — SSH tunnel (recommended)
 

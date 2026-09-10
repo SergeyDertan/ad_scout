@@ -1,82 +1,53 @@
 # Remote extraction — quickstart
 
-Run extraction on a second machine's Claude subscription. Copy-paste in order.
+Extraction needs a logged-in `claude` CLI (a Claude subscription), and the VPS
+doesn't have one. So the VPS runs the **hub** inside `pnpm serve`. A **worker** on
+your Mac claims unextracted replies, reads them with its own `claude`, and sends
+the results back. Copy-paste in order.
+
 Background and guarantees: [REMOTE-EXTRACTION.md](REMOTE-EXTRACTION.md).
 
 ---
 
-## A. This machine (the one with the database)
+## A. Worker → VPS (the normal case)
 
-**1. Stop the server.** The hub replaces it — same dashboard, same port. Two
-writers on one PouchDB corrupts it, so the hub refuses to start otherwise.
+The hub is already running on the VPS whenever `REMOTE_TOKEN` is set in the VPS
+`.env`. Nothing needs starting there. `just boot-log` shows a `remote extraction
+hub on :8788` line, or `hub NOT started` if the token is missing.
 
-```bash
-# Ctrl-C whatever is running `pnpm serve`
-```
-
-**2. Pick a token once** and put it in `.env` (any random string):
-
-```bash
-REMOTE_TOKEN=choose-a-long-random-string
-```
-
-**3. Start the hub:**
-
-```bash
-pnpm remote:hub
-```
-
-```
-  dashboard: http://localhost:8787  — watch replies land here as workers finish them
-
-AdScout remote hub on http://localhost:8788  ·  store=pouchdb  ·  412 reply(ies) pending
-
-  1. publish it:   ngrok http 8788   (this port ONLY — never the dashboard)
-```
-
-**4. In a second terminal, publish port 8788:**
-
-```bash
-ngrok http 8788
-```
-
-ngrok prints a public URL. Copy it:
-
-```
-Forwarding  https://abc123.ngrok-free.app -> http://localhost:8788
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this
-```
-
-> ⚠️ **8788, never 8787.** The dashboard has no password. Tunnel only the hub port.
-
----
-
-## B. The other machine (the one that does the work)
-
-**1. Install once:**
+**1. Install once, on the Mac:**
 
 ```bash
 git clone https://github.com/SergeyDertan/ad_scout.git
 cd ad_scout
-pnpm install                 # needs Node >= 26 and pnpm >= 11
-claude login                 # subscription login — do NOT set ANTHROPIC_API_KEY
+pnpm install        # Node >= 26, pnpm >= 11
+claude login        # subscription login — do NOT set ANTHROPIC_API_KEY
 ```
 
-No `.env`, no database, no Gmail setup needed here.
+No `.env`, no database and no Gmail setup are needed on this machine.
 
-**2. Run the worker** with the URL from step A.4 and the token from A.2:
+**2. Connect.** Recommended: an SSH tunnel. The hub stays on the box's loopback
+and the token never crosses the public internet.
 
 ```bash
-REMOTE_HUB_URL=https://abc123.ngrok-free.app \
-REMOTE_TOKEN=choose-a-long-random-string \
+# terminal 1 — keep it open (autossh -M 0 -N … for unattended runs)
+ssh -N -L 8788:127.0.0.1:8788 <user>@adscout.dva-lymona.biz.ua
+
+# terminal 2
+REMOTE_HUB_URL=http://127.0.0.1:8788 \
+REMOTE_TOKEN=<REMOTE_TOKEN from the VPS .env> \
 CLAUDE_CODE_MODEL=claude-sonnet-5 \
 pnpm remote:worker
 ```
 
-It checks the URL and token immediately, then starts working:
+No tunnel? nginx also proxies the hub at `/hub` on the main domain:
+`REMOTE_HUB_URL=https://adscout.dva-lymona.biz.ua/hub`. Use `https://`: an
+`http://` URL gets redirected, and a redirected POST fails.
+
+It checks the URL and token right away, then starts working:
 
 ```
-AdScout remote worker "mac-mini" → https://abc123.ngrok-free.app
+AdScout remote worker "mac-mini" → http://127.0.0.1:8788
   provider=claude-code  model=claude-sonnet-5  concurrency=1
   hub has 412 reply(ies) pending
 
@@ -84,32 +55,42 @@ AdScout remote worker "mac-mini" → https://abc123.ngrok-free.app
 [22:30:32] ✓ techbriefdaily.com — 4 offer(s) in 26s · stored · 4 offer(s)
 ```
 
-**Test it with one reply first:** add `--once`. Speed it up later with
-`--concurrency 3`.
+Try one reply first with `--once`. Speed up later with `--concurrency 3`.
+
+**Watching:** the dashboard updates live (replies flip to extracted, prices
+appear). `just logs` shows `remote claim` / `remote extracted` lines.
 
 ---
 
-## Watching it
+## B. A local hub (bulk re-extract on a copy of the data)
 
-- **Browser** → `http://localhost:8787` on the host. Replies flip to extracted,
-  prices appear, live. (Run `pnpm build` once if the page is blank.)
-- **Hub terminal** → one line per claim/result, plus a status line every 60s.
-- **Worker terminal** → one line per reply, plus a `… still on <site>` tick every
-  30s during long extractions.
+For a one-off run against a store on your own machine, for example
+`data/pouch-prod` from `scripts/fetch-prod-db.sh`:
+
+```bash
+# stop `pnpm serve` first — the hub takes the same single-writer lock
+STORE=pouchdb POUCH_DIR=./data/pouch-prod REMOTE_TOKEN=<any long secret> pnpm remote:hub
+```
+
+It serves the dashboard on :8787 and the worker port on :8788. Run a worker on
+the same machine against `http://127.0.0.1:8788`. For another machine, publish
+**8788 only** (`ngrok http 8788`), never 8787. Flags are listed in
+REMOTE-EXTRACTION.md.
+
+---
 
 ## Stopping
 
-Ctrl-C either side, any time. A reply is only ever marked done once its result is
-stored, so anything in flight simply stays pending and gets picked up next run.
-Take the ngrok tunnel down when you're finished.
+Press Ctrl-C on either side, any time. A reply is marked done only once its
+result is stored, so anything in flight stays pending and is picked up next time.
 
 ## If something is wrong
 
 | Symptom | Cause |
 |---|---|
-| `agent already running (pid …)` | `pnpm serve` is still up on the host — stop it. |
-| Worker: `REMOTE_TOKEN does not match the hub` | Tokens differ. The hub prints the one it is using at startup. |
-| Worker: `cannot reach the hub` | Wrong URL, or ngrok was restarted (its URL changes each run). |
-| Worker: `WARNING: the dummy provider…` | `LLM_PROVIDER` is set to `dummy` in the environment — set `claude-code`. |
-| Hub log: `LIMIT … usage window` | Normal. The reply was re-queued, nothing lost; the worker sleeps until reset. |
-| Hub log: `ABORT … failed every attempt`, worker exits | A reply failed every try, so the hub stopped rather than spend the queue on a non-transient fault. Check the log, fix it, re-run. |
+| Worker: `REMOTE_TOKEN does not match the hub` | Tokens differ. Copy the one from the hub's `.env`. |
+| Worker: `cannot reach the hub` | Tunnel down, wrong URL, `http://` against `/hub`, or a restarted ngrok (new URL). |
+| Worker: `WARNING: the dummy provider…` | `LLM_PROVIDER=dummy` in the worker's environment. Unset it or set `claude-code`. |
+| Hub log: `LIMIT … usage window` | Normal. The reply was re-queued and nothing was lost; the worker sleeps until the reset. |
+| Hub log: `STOPPED handing out work` / `ABORT` | Replies failed every attempt, so the hub stopped rather than burn the queue: 10 in `serve` (`REMOTE_MAX_FAILED`), 1 for a local hub. Check the log, fix the cause, restart (`just restart` on the VPS). |
+| Local hub: `agent already running (pid …)` | `pnpm serve` is still running on that machine. Stop it. |

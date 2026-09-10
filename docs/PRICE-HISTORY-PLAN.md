@@ -1,8 +1,9 @@
 # Per-Domain Price History — Implementation Plan
 
-> Status: **IMPLEMENTED (all 7 phases).** This document is the source of truth for
-> the feature. It survives session boundaries — anyone (human or agent) can resume
-> from here without re-deriving the design. Update it as decisions change.
+> Status: **IMPLEMENTED (all 7 phases).** It is kept as the design record because
+> code comments cite its decisions (D1–D11) and sections. It is not maintained.
+> Current behaviour is described in `docs/claude/store.md` and
+> `docs/claude/pipeline.md`: update those, not this plan.
 >
 > ## Build notes / decisions taken during implementation
 > - **`deletePriceRecord(id)` added to the Store** (port + both adapters). Not in

@@ -51,6 +51,9 @@ export interface DomainPageQuery {
   cursor?: string;
   search?: string;
   state?: DomainStateFilter;
+  batchId?: string;
+  /** Domains no batch covers. Cannot be combined with batchId (400). */
+  unbatched?: boolean;
   tier?: 'reg' | 'sens';
   category?: string;
   answer?: DomainAnswerFilter;
@@ -177,6 +180,8 @@ export const api = {
     if (query.cursor) params.set('cursor', query.cursor);
     if (query.search) params.set('q', query.search);
     if (query.state && query.state !== 'all') params.set('state', query.state);
+    if (query.batchId) params.set('batchId', query.batchId);
+    if (query.unbatched) params.set('unbatched', 'true');
     if (query.tier) params.set('tier', query.tier);
     if (query.category) params.set('category', query.category);
     if (query.answer) params.set('answer', query.answer);

@@ -74,6 +74,10 @@ strings. Subdomains are kept (`casik.com` ≠ `ultra.casik.com`).
     with `id` as the tie-break
 - List rows are slim: no reply bodies, no attachment base64. Detail is a point
   read (`GET /api/replies/:id`).
+- A domain has no batch of its own. `buildDomainRows` joins it to batches through
+  targets (`normalizeDomain(websiteUrl)`), so it is many-to-many: a re-imported
+  site is in several batches, and a site only named inside a reply is in none —
+  which is what the Domains "no batch" filter selects.
 
 ## Writes and concurrency
 

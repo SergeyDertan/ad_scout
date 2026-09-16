@@ -27,6 +27,7 @@ import { DomainsExportDialog } from './DomainsExportDialog';
 import { ExtractionDebugModal } from './ExtractionDebugModal';
 import { TierBadge } from './TierBadge';
 import {
+  batchLabel,
   formatPrice,
   formatProvenance,
   formatTerm,
@@ -403,7 +404,11 @@ const COLS_WITH_ANSWER = '1fr 200px 90px 90px 90px 150px 170px';
 const ROW_H = 52;
 const MAX_LIST_H = 640;
 const PAGE_SIZE = 50;
-const EMPTY_FACETS: DomainFacets = { tiers: [], categories: [] };
+const EMPTY_FACETS: DomainFacets = { tiers: [], categories: [], batches: [], unbatched: 0 };
+
+// Sentinel batch-filter value for domains no batch covers — a site named inside
+// a reply, or a target imported before batches carried an id.
+const NO_BATCH = '__none__';
 
 function SortHeader({
   label, col, sortKey, dir, onSort,
@@ -516,6 +521,7 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
   const [selected, setSelected] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [stateFilter, setStateFilter] = useState<DomainStateFilter>('all');
+  const [batchFilter, setBatchFilter] = useState('');
   const [tierFilter, setTierFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [answerFilter, setAnswerFilter] = useState<DomainAnswerFilter>('open');
@@ -524,7 +530,7 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
   const [showExport, setShowExport] = useState(false);
   const deferredSearch = useDeferredValue(search.trim());
   const filterKey = JSON.stringify([
-    stateFilter, tierFilter, categoryFilter, answerFilter, sortKey, dir, deferredSearch,
+    stateFilter, batchFilter, tierFilter, categoryFilter, answerFilter, sortKey, dir, deferredSearch,
   ]);
   const [pageCursor, setPageCursor] = useState<{ filterKey: string; value?: string }>({ filterKey: '' });
   const cursor = pageCursor.filterKey === filterKey ? pageCursor.value : undefined;
@@ -535,12 +541,14 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
         ...(cursor ? { cursor } : {}),
         ...(deferredSearch ? { search: deferredSearch } : {}),
         state: stateFilter,
+        ...(batchFilter && batchFilter !== NO_BATCH ? { batchId: batchFilter } : {}),
+        ...(batchFilter === NO_BATCH ? { unbatched: true } : {}),
         ...(tierFilter ? { tier: tierFilter as 'reg' | 'sens' } : {}),
         ...(categoryFilter ? { category: categoryFilter, answer: answerFilter } : {}),
         sort: sortKey,
         direction: dir,
       }, signal),
-      [answerFilter, categoryFilter, cursor, deferredSearch, dir, sortKey, stateFilter, tierFilter],
+      [answerFilter, batchFilter, categoryFilter, cursor, deferredSearch, dir, sortKey, stateFilter, tierFilter],
     ),
     tick,
   );
@@ -548,6 +556,8 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
   const facets = result?.facets ?? EMPTY_FACETS;
   const tierOptions = facets.tiers;
   const categoryOptions = facets.categories;
+  const batchOptions = facets.batches;
+  const selectedBatch = batchOptions.find((b) => b.id === batchFilter);
 
   const onSort = (col: DomainSortKey) => {
     if (col === sortKey) setDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -585,6 +595,24 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
             <option value="specials">has active specials</option>
             <option value="optedOut">opted out</option>
             <option value="excluded">excluded</option>
+          </NativeSelect.Field>
+          <NativeSelect.Indicator />
+        </NativeSelect.Root>
+
+        {/* Which import a site came in with. A domain can sit in more than one
+            batch (a re-import, another contact), so batches overlap here in a
+            way they never do on Targets. */}
+        <NativeSelect.Root size="sm" width="44" variant="plain">
+          <NativeSelect.Field
+            value={batchFilter}
+            onChange={(e) => setBatchFilter(e.target.value)}
+            fontWeight="medium"
+          >
+            <option value="">all batches</option>
+            {batchOptions.map((b) => (
+              <option key={b.id} value={b.id} title={b.id}>{batchLabel(b)} · {b.count}</option>
+            ))}
+            {facets.unbatched > 0 && <option value={NO_BATCH}>— no batch — · {facets.unbatched}</option>}
           </NativeSelect.Field>
           <NativeSelect.Indicator />
         </NativeSelect.Root>
@@ -656,7 +684,7 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
         empty={null}
       >
         {rows.length === 0 ? (
-          deferredSearch || stateFilter !== 'all' || tierFilter || categoryFilter ? (
+          deferredSearch || stateFilter !== 'all' || batchFilter || tierFilter || categoryFilter ? (
             <Text fontSize="sm" color="fg.muted" py={6} textAlign="center">No domains match the current filter.</Text>
           ) : (
             <Empty icon={TagIcon} title="No domains yet" description="Price records appear here as publishers reply with quotes." />
@@ -725,6 +753,13 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
       {showExport && (
         <DomainsExportDialog
           domains={rows}
+          scopeLabel={
+            batchFilter === NO_BATCH
+              ? 'No batch'
+              : selectedBatch
+                ? batchLabel(selectedBatch)
+                : undefined
+          }
           defaultIncludeExcluded={stateFilter === 'excluded'}
           onClose={() => setShowExport(false)}
         />

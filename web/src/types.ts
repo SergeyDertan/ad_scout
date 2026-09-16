@@ -324,6 +324,12 @@ export interface BatchFilterOption {
   count: number;
 }
 
+/** A batch as a person names it: its own name, else a short form of the id —
+ *  manual and legacy imports are unnamed, and a raw uuid reads as noise. */
+export function batchLabel(batch: { id: string; name?: string }): string {
+  return batch.name?.trim() || `batch ${batch.id.replace(/^batch_/, '').slice(0, 8)}`;
+}
+
 export interface TargetFacets {
   byStatus: Partial<Record<TargetStatus, number>>;
   unbatched: number;
@@ -544,6 +550,9 @@ export interface DomainSummary {
   lastObservedAt?: string;
   optedOut: boolean;
   excluded: boolean;
+  /** The imports this site came in with — empty when no batched target covers it
+   *  (a site named inside a reply). Omitted on legacy responses → treat as []. */
+  batches?: { id: string; name?: string }[];
   /** Folded standing cells (omitted on legacy responses → treat as []). */
   cells?: DomainCell[];
 }
@@ -564,6 +573,9 @@ export type DomainListRow = DomainSummary & { answer?: DomainNicheAnswer };
 export interface DomainFacets {
   tiers: { value: Tier; label: string }[];
   categories: { value: string; label: string }[];
+  /** Bounded batch choices; `count` is domains, not targets. */
+  batches: BatchFilterOption[];
+  unbatched: number;
 }
 
 /** A folded standing/special price cell (GET /api/domains/:domain). */

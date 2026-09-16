@@ -581,6 +581,57 @@ test('GET /api/domains + /api/domains/:domain expose the derived price sheet', a
   }
 });
 
+test('GET /api/domains/page filters by the batch a site was imported in', async () => {
+  const h = await start(); // seeds b1 with t1 (site1.com) + t2 (site2.com)
+  try {
+    await h.store.putBatch({ id: 'b2', source: 'import', createdAt: '2026-05-02T00:00:00Z' });
+    await h.store.putTarget({
+      id: 't3', batchId: 'b2', websiteUrl: 'site3.com', contactEmail: 'c@site3.com',
+      status: 'pending', followUpCount: 0, createdAt: '2026-06-02T00:00:00Z',
+    });
+    // site1.com re-imported in b2 under another contact: one domain, two batches.
+    await h.store.putTarget({
+      id: 't4', batchId: 'b2', websiteUrl: 'https://site1.com/', contactEmail: 'editor@site1.com',
+      status: 'pending', followUpCount: 0, createdAt: '2026-06-03T00:00:00Z',
+    });
+    // A site named inside a reply: priced, but no target and so no batch.
+    await h.store.putPriceRecord({
+      id: 'pr9', domain: 'named.com', attribution: 'named', sourceEmail: 'a@site1.com',
+      sourceMessageId: '<N>', observedAt: '2026-04-05T00:00:00Z',
+      offers: [{ category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', term: TERM_NONE, price: { amount: 300, raw: '300' } }],
+    });
+
+    const all = await J(`${h.base}/api/domains/page`);
+    assert.equal(all.page.total, 4);
+    assert.equal(all.facets.unbatched, 1);
+    // Newest batch first, counted in DOMAINS: b2 covers site3.com and site1.com.
+    assert.deepEqual(
+      all.facets.batches.map((b: any) => [b.id, b.name, b.count]),
+      [['b2', undefined, 2], ['b1', 'casino import', 2]],
+    );
+
+    const b2 = await J(`${h.base}/api/domains/page?batchId=b2&sort=domain&dir=asc`);
+    assert.deepEqual(b2.items.map((d: any) => d.domain), ['site1.com', 'site3.com']);
+    assert.deepEqual(
+      b2.items[0].batches.map((ref: any) => ref.id).sort(),
+      ['b1', 'b2'],
+    );
+
+    const none = await J(`${h.base}/api/domains/page?unbatched=true`);
+    assert.deepEqual(none.items.map((d: any) => d.domain), ['named.com']);
+    assert.deepEqual(none.items[0].batches, []);
+
+    // The batch narrows the same list the other filters do, not a separate one.
+    assert.equal((await J(`${h.base}/api/domains/page?batchId=b2&q=site3`)).page.total, 1);
+    assert.equal((await J(`${h.base}/api/domains/page?batchId=b1&q=site3`)).page.total, 0);
+
+    assert.equal((await fetch(`${h.base}/api/domains/page?batchId=b1&unbatched=true`)).status, 400);
+    assert.equal((await fetch(`${h.base}/api/domains/page?unbatched=1`)).status, 400);
+  } finally {
+    await h.close();
+  }
+});
+
 test('GET /api/replies/:id returns the source message behind a price record', async () => {
   const h = await start();
   try {

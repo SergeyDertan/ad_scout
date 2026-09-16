@@ -38,16 +38,21 @@ const PREVIEW_ROWS = 8;
  */
 export function DomainsExportDialog({
   domains,
+  scopeLabel,
   defaultIncludeExcluded = false,
   onClose,
 }: {
   domains: DomainSummary[];
+  /** The batch the list is filtered to, if any — titles the sheet and its file. */
+  scopeLabel?: string;
   /** Start with excluded domains kept — used when the list is already filtered to them. */
   defaultIncludeExcluded?: boolean;
   onClose: () => void;
 }) {
   const [scope, setScope] = useState<DomainExportScope>('both');
-  const [header, setHeader] = useState(() => defaultDomainsHeader());
+  // Only the initial value: a title the user has edited is theirs to keep, and
+  // this dialog is closed and rebuilt whenever the filters change anyway.
+  const [header, setHeader] = useState(() => defaultDomainsHeader(scopeLabel));
   const [includeExcluded, setIncludeExcluded] = useState(defaultIncludeExcluded);
   const [busy, setBusy] = useState(false);
 

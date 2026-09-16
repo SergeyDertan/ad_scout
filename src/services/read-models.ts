@@ -213,6 +213,13 @@ export interface DomainCellRow {
   term?: PlacementTerm;
 }
 
+/** An import a domain arrived with. One site can be imported more than once —
+ *  another batch, another contact — so a row carries every batch it is in. */
+export interface DomainBatchRef {
+  id: string;
+  name?: string;
+}
+
 export interface DomainRow {
   domain: string;
   recordCount: number;
@@ -222,14 +229,32 @@ export interface DomainRow {
   lastObservedAt?: string;
   optedOut: boolean;
   excluded: boolean;
+  /** Empty for a domain no batched target covers: a site named inside a reply,
+   *  or a target from before batches carried an id. */
+  batches: DomainBatchRef[];
   cells: DomainCellRow[];
 }
 
 /** Every known domain (priced ∪ contacted) with a light price summary. */
 export async function buildDomainRows(store: Store, now: Date): Promise<DomainRow[]> {
   const records = await store.listPriceRecords();
-  const targetDomains = (await store.listTargets()).map((t) => normalizeDomain(t.websiteUrl));
+  const targets = await store.listTargets();
+  const targetDomains = targets.map((t) => normalizeDomain(t.websiteUrl));
   const excluded = new Set((await store.listDomainExclusions()).map((e) => e.domain));
+  // Which imports a domain came in with. The join is through targets: a price
+  // record has no batch of its own, so a domain only named inside a reply
+  // belongs to none.
+  const batchNames = new Map((await store.listBatches()).map((b) => [b.id, b.name]));
+  const batchesByDomain = new Map<string, Map<string, DomainBatchRef>>();
+  for (const target of targets) {
+    if (!target.batchId) continue;
+    const domain = normalizeDomain(target.websiteUrl);
+    if (!domain) continue;
+    let byId = batchesByDomain.get(domain);
+    if (!byId) batchesByDomain.set(domain, (byId = new Map()));
+    const name = batchNames.get(target.batchId);
+    byId.set(target.batchId, { id: target.batchId, ...(name ? { name } : {}) });
+  }
   // Distinct sender addresses that have priced each domain — >1 flags a domain
   // whose quotes come from more than one email source (cross-check / conflict).
   const sourcesByDomain = new Map<string, Set<string>>();
@@ -250,6 +275,7 @@ export async function buildDomainRows(store: Store, now: Date): Promise<DomainRo
       ...(sheet.lastObservedAt ? { lastObservedAt: sheet.lastObservedAt } : {}),
       optedOut: sheet.optedOut,
       excluded: excluded.has(domain),
+      batches: [...(batchesByDomain.get(domain)?.values() ?? [])],
       cells: sheet.cells.map((c) => ({
         category: c.category,
         label: c.label,
@@ -283,6 +309,8 @@ export interface DomainPageQuery {
   cursor?: string;
   search?: string;
   state: DomainStateFilter;
+  batchId?: string;
+  unbatched?: boolean;
   tier?: DomainTier;
   category?: string;
   answer: DomainAnswerFilter;
@@ -293,6 +321,11 @@ export interface DomainPageQuery {
 export interface DomainFacets {
   tiers: { value: DomainTier; label: string }[];
   categories: { value: string; label: string }[];
+  /** Bounded like the Targets picker: recent batches that cover a domain, plus
+   *  the selected one. `count` is domains, not targets. */
+  batches: BatchFilterOption[];
+  /** Domains no batch covers — the size of the "no batch" choice. */
+  unbatched: number;
 }
 
 export type DomainListRow = DomainRow & { answer?: DomainNicheAnswer };
@@ -373,16 +406,33 @@ function domainSortValue(row: DomainRow, key: DomainSortKey): string {
   return String(row[key]).padStart(16, '0');
 }
 
-/** Bounded Domains feed with server-owned state/offer/niche filters and sorting. */
+/** Bounded Domains feed with server-owned state/batch/offer/niche filters and sorting. */
 export async function buildDomainPage(
   store: Store,
   now: Date,
   query: DomainPageQuery,
 ): Promise<PageEnvelope<DomainListRow, DomainFacets>> {
-  const [rows, niches] = await Promise.all([
+  const [rows, niches, batches] = await Promise.all([
     buildDomainRows(store, now),
     store.listNiches().then(allNiches),
+    store.listBatches(),
   ]);
+  // Domains per batch, not targets: two contacts for one site are one domain
+  // here, so the Targets count would over-report what the picker will show.
+  const domainsPerBatch = new Map<string, number>();
+  let unbatched = 0;
+  for (const row of rows) {
+    if (!row.batches.length) unbatched++;
+    for (const ref of row.batches) domainsPerBatch.set(ref.id, (domainsPerBatch.get(ref.id) ?? 0) + 1);
+  }
+  const recentBatches = batches
+    .filter((batch) => (domainsPerBatch.get(batch.id) ?? 0) > 0)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, 100);
+  const selectedBatch = query.batchId ? batches.find((batch) => batch.id === query.batchId) : undefined;
+  if (selectedBatch && !recentBatches.some((batch) => batch.id === selectedBatch.id)) {
+    recentBatches.push(selectedBatch);
+  }
   const categories = new Map(niches.map((niche) => [niche.key, niche.label || niche.key]));
   for (const row of rows) {
     for (const cell of row.cells) {
@@ -412,6 +462,8 @@ export async function buildDomainPage(
   const filtered: DomainListRow[] = [];
   for (const row of rows) {
     if (search && !row.domain.toLowerCase().includes(search)) continue;
+    if (query.unbatched && row.batches.length) continue;
+    if (query.batchId && !row.batches.some((ref) => ref.id === query.batchId)) continue;
     if (query.state === 'excluded' && !row.excluded) continue;
     if (query.state === 'optedOut' && !row.optedOut) continue;
     if (query.state === 'specials' && row.activeSpecials <= 0) continue;
@@ -430,6 +482,7 @@ export async function buildDomainPage(
   ));
   const scope = JSON.stringify([
     'domains', query.state, query.tier ?? '', query.category ?? '', query.answer,
+    query.batchId ?? '', query.unbatched ? 'unbatched' : '',
     search, query.sort, query.direction,
   ]);
   return paginateSorted(filtered, {
@@ -444,6 +497,13 @@ export async function buildDomainPage(
         { value: 'sens', label: 'Sensitive' },
       ],
       categories: categoryOptions,
+      batches: recentBatches.map((batch) => ({
+        id: batch.id,
+        ...(batch.name ? { name: batch.name } : {}),
+        createdAt: batch.createdAt,
+        count: domainsPerBatch.get(batch.id) ?? 0,
+      })),
+      unbatched,
     },
   });
 }

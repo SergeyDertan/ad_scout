@@ -112,6 +112,20 @@ verification notes in the same commit as each step.
 - A server-rendered component regression test asserts inactive and active panel
   visibility independently; the full 438-test suite passed.
 
+### 2026-09-16 — Domains batch filter
+
+- The Domains page takes `batchId` / `unbatched` like Targets, and the envelope
+  carries the batch choices (100 most recent covering a domain, plus an older
+  selected one) and an `unbatched` count, so the filter adds no `/api/batches`
+  read. The cursor scope includes both, so a cursor cannot cross batches.
+- Domains join to batches through targets, many-to-many: list rows carry every
+  batch that imported the site, and the counts in the picker are domains, not
+  targets.
+- The page-scoped export inherits the filter with no change (it exports the rows
+  on screen); the selected batch titles the sheet and each shape gained a Batch
+  column, so a cross-batch export can still be grouped by import.
+- Root/web typechecks and the full 443-test suite passed.
+
 ## Acceptance targets
 
 - No list response contains more than 100 rows.

@@ -51,7 +51,10 @@ sign-in, or exports.
   `StatCards`, `icons`). `DealsView.tsx` is the largest: a messenger-style deal
   thread with placements.
 - `export/`: client-side exports (xlsx, html, a standalone template). The domains
-  export is page-scoped until server-side exports exist (read plan, Step 7).
+  export is page-scoped until server-side exports exist (read plan, Step 7). It
+  takes the rows the page already holds, so every server filter is already
+  applied; the selected batch only titles the sheet (`defaultDomainsHeader`) and
+  every shape carries a `Batch` column.
 - Pure helpers with tests: `niche-answer.ts`, `quoted-text.ts`, `attachments.ts`.
 
 ## Live updates
@@ -76,6 +79,9 @@ sign-in, or exports.
   to and dropped when filters change (see `pageCursor` in `ResponsesView.tsx`).
 - Search goes through `useDeferredValue`. The server caps filter choice lists
   (100 recent batches, 500 niches, plus the currently selected one).
+- Targets and Domains both offer a `__none__` sentinel option ("no batch") that
+  sends `unbatched=true`; sending it together with `batchId` is a 400. On Domains
+  the batch counts are DOMAINS, not targets.
 - Still unpaged: the Batches screen and the Overview batch selector
   (`/api/batches`), a known follow-up in `docs/SCALABLE-READS-PLAN.md`.
 

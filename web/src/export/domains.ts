@@ -7,11 +7,22 @@
 //   • 'all'     — Domain + Records/Specials/Last quote + one column per niche,
 //                 the full price matrix
 //
+// Every shape carries the batch(es) the site was imported in, so a sheet exported
+// across batches can still be grouped by import.
+//
 // A price shows only when the publisher will post it (canPost === 'yes'), so the
 // collapsed columns read as an actionable rate card rather than raw quotes.
 
 import { fileStem } from './model';
-import { canonicalTerm, compareTerms, formatTerm, type DomainCell, type DomainSummary, type PriceValue } from '../types';
+import {
+  batchLabel,
+  canonicalTerm,
+  compareTerms,
+  formatTerm,
+  type DomainCell,
+  type DomainSummary,
+  type PriceValue,
+} from '../types';
 
 export type DomainExportScope = 'regular' | 'both' | 'all';
 
@@ -91,6 +102,14 @@ function pickTermMonths(cells: DomainCell[], sensitive: boolean): string | numbe
   return pickCell(cells, sensitive)?.term?.months ?? '';
 }
 
+/** The imports a site came in with. Usually one; a re-imported site carries
+ *  several, and all of them are named — a sheet that showed only the first would
+ *  read as "this domain is not in that batch". Blank for a site no batch covers
+ *  (one named inside a reply), which is exactly the "no batch" filter choice. */
+function batchesLabel(d: DomainSummary): string {
+  return (d.batches ?? []).map(batchLabel).join('; ');
+}
+
 /** Marks a domain whose prices come from more than one email source: the distinct
  *  sender count when >1, blank otherwise (so multi-source rows stand out). */
 function sourcesMark(d: DomainSummary): string | number {
@@ -103,8 +122,8 @@ export function buildDomainsExport(domains: DomainSummary[], scope: DomainExport
     // Term/Months sit next to the price they qualify: blank on the ordinary
     // one-off guest post, filled when the quote buys a fixed-length placement.
     const columns = scope === 'regular'
-      ? ['Domain', 'Regular price', 'Term', 'Months', 'Currency', 'Price sources']
-      : ['Domain', 'Regular price', 'Term', 'Months', 'Sensitive price', 'Currency', 'Price sources'];
+      ? ['Domain', 'Regular price', 'Term', 'Months', 'Currency', 'Price sources', 'Batch']
+      : ['Domain', 'Regular price', 'Term', 'Months', 'Sensitive price', 'Currency', 'Price sources', 'Batch'];
     const body = domains.map((d) => {
       const cells = d.cells ?? [];
       const row: (string | number)[] = [
@@ -116,6 +135,7 @@ export function buildDomainsExport(domains: DomainSummary[], scope: DomainExport
       if (scope === 'both') row.push(pickPrice(cells, true));
       row.push(domainCurrency(cells));
       row.push(sourcesMark(d));
+      row.push(batchesLabel(d));
       return row;
     });
     return { columns, body };
@@ -145,7 +165,10 @@ export function buildDomainsExport(domains: DomainSummary[], scope: DomainExport
       compareTerms(a.cell.term, b.cell.term),
   );
 
-  const columns = ['Domain', 'Records', 'Price sources', 'Specials', 'Last quote', 'Currency', ...combos.map((c) => c.label)];
+  const columns = [
+    'Domain', 'Records', 'Price sources', 'Specials', 'Last quote', 'Currency', 'Batch',
+    ...combos.map((c) => c.label),
+  ];
   const body = domains.map((d) => {
     const byKey = new Map<string, string | number>();
     for (const c of d.cells ?? []) byKey.set(cellKey(c), priceValue(c.price));
@@ -156,6 +179,7 @@ export function buildDomainsExport(domains: DomainSummary[], scope: DomainExport
       d.activeSpecials || '',
       d.lastObservedAt ? new Date(d.lastObservedAt).toLocaleDateString() : '',
       domainCurrency(d.cells ?? []),
+      batchesLabel(d),
       ...combos.map((c) => byKey.get(c.key) ?? ''),
     ];
   });
@@ -175,8 +199,11 @@ function colWidths(aoa: (string | number | null)[][]): { wch: number }[] {
   });
 }
 
-export function defaultDomainsHeader(): string {
-  return `AdScout — domains export (${new Date().toLocaleDateString()})`;
+/** Names the batch the list is filtered to, so a file saved from one batch and a
+ *  file saved from another are told apart by their title and filename. */
+export function defaultDomainsHeader(scopeLabel?: string): string {
+  const scope = scopeLabel?.trim() || 'All batches';
+  return `AdScout — ${scope} — domains export (${new Date().toLocaleDateString()})`;
 }
 
 export async function exportDomainsXlsx(

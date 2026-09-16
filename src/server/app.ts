@@ -944,7 +944,7 @@ async function handle(
       return sendJson(res, 200, allNiches(await store.listNiches()));
     }
 
-    // GET /api/domains/page?limit=&cursor=&state=&tier=&category=&answer=&sort=&dir=&q=
+    // GET /api/domains/page?limit=&cursor=&state=&batchId=&unbatched=&tier=&category=&answer=&sort=&dir=&q=
     if (method === 'GET' && seg[1] === 'domains' && seg[2] === 'page' && seg.length === 3) {
       try {
         const state = (url.searchParams.get('state') ?? 'all') as DomainStateFilter;
@@ -965,11 +965,20 @@ async function handle(
         if (search && search.length > 200) throw new PageInputError('q must be at most 200 characters');
         const category = url.searchParams.get('category')?.trim() || undefined;
         if (category && category.length > 100) throw new PageInputError('category must be at most 100 characters');
+        const unbatchedRaw = url.searchParams.get('unbatched');
+        if (unbatchedRaw && unbatchedRaw !== 'true') {
+          throw new PageInputError('unbatched must be true when provided');
+        }
+        if (unbatchedRaw === 'true' && url.searchParams.has('batchId')) {
+          throw new PageInputError('batchId and unbatched cannot be combined');
+        }
         return sendJson(res, 200, await buildDomainPage(store, deps.clock.now(), {
           limit: parsePageLimit(url.searchParams.get('limit')),
           cursor: url.searchParams.get('cursor') ?? undefined,
           search,
           state,
+          batchId: url.searchParams.get('batchId') ?? undefined,
+          unbatched: unbatchedRaw === 'true',
           tier: tier ?? undefined,
           category,
           answer,

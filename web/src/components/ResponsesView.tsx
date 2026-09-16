@@ -13,11 +13,11 @@ import { List, type RowComponentProps } from 'react-window';
 import { api } from '../api';
 import { useIsManager } from '../role';
 import {
+  batchLabel,
   invertedPriceOffers,
   isAwaiting,
   isLateMessage,
   needsReview,
-  type BatchFilterOption,
   type Niche,
   type ResponseFacets,
   type ResponseRow,
@@ -35,10 +35,6 @@ import { AlertTriangleIcon, DownloadIcon, InboxIcon, MegaphoneIcon, SearchIcon }
 // From | Site | Batch | Match | Answer | Niches | Actions
 const COLS = '1.2fr 1.2fr 130px 96px 96px 120px 190px';
 
-/** A batch's display label: its name, else a short id (manual adds are unnamed). */
-function batchLabel(b: BatchFilterOption): string {
-  return b.name?.trim() || `batch ${b.id.replace(/^batch_/, '').slice(0, 8)}`;
-}
 const ROW_H = 56;
 const MAX_LIST_H = 640;
 const PAGE_SIZE = 50;

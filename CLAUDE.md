@@ -33,7 +33,7 @@ asked.
 | wiring (the only place that picks adapters) | `src/lib/factory.ts` |
 | passes: send, fetch, poll, reconcile, deals | `src/pipeline/` |
 | drip scheduler, send window | `src/scheduler/` |
-| drafting, extraction, read models, backup | `src/services/` |
+| drafting, extraction, read models, exports, backup | `src/services/` |
 | HTTP API + SSE, auth, remote hub | `src/server/` |
 | boot | `src/serve.ts` · env: `src/config.ts`, `.env.example` |
 | one-off maintenance scripts | `src/scripts/` |

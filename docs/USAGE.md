@@ -48,7 +48,7 @@ running deals. For how the code works, see [`CLAUDE.md`](../CLAUDE.md) and
 | **Batches** | Each import: its language, advertised site, size and status breakdown, and a preview of its email. |
 | **Run** | Start a pass now: **Send pass**, **Poll pass** (fetch + extract), **Fetch responses** (fetch only). Admin only. |
 | **Responses** | Every inbound reply: match method, extraction result, review flags. **Edit extraction** / **Debug extraction** / **Start a deal on this thread**. |
-| **Domains** | The price sheet per domain (current price per niche and duration), its history, and specials. Filter by batch, state, tier or niche, and export the page to a spreadsheet. |
+| **Domains** | The price sheet per domain (current price per niche and duration), its history, and specials. Filter by batch, state, tier or niche, and export everything that matches to a spreadsheet. |
 | **Deals** | Human-run negotiations: the thread, placements, payment and publishing. |
 | **Accounts** | Sending mailboxes: status, today's count and rate, results, limits, Gmail connection. |
 | **Labels** | Legend for the `AS/…` labels the system applies in Gmail. |
@@ -167,8 +167,12 @@ domains are skipped automatically.
   alongside the standing price.
 - Narrow it to one import with the batch filter — a site imported twice appears
   under both batches, and **— no batch —** is the sites that were only named
-  inside a reply. **Export page** writes the rows you are looking at to XLSX,
-  titled after the batch and with a Batch column on every sheet shape.
+  inside a reply. **Export** writes EVERY domain matching the current filters to
+  XLSX — not just the page on screen — titled after the batch, with a Batch
+  column on every sheet shape. The dialog previews the real columns and says how
+  many rows the file will have; excluded domains are left out unless you tick
+  them back in. A filter matching more than 50,000 domains is refused rather than
+  quietly cut short: narrow it and export again.
 
 ---
 

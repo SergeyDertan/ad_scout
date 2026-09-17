@@ -304,9 +304,10 @@ export interface DomainNicheAnswer {
   price: string;
 }
 
-export interface DomainPageQuery {
-  limit: number;
-  cursor?: string;
+/** What the Domains screen is currently showing, minus the page window. The
+ *  export answers the same question over every matching row, so it takes exactly
+ *  this — one definition, no chance of the two drifting apart. */
+export interface DomainFilterQuery {
   search?: string;
   state: DomainStateFilter;
   batchId?: string;
@@ -316,6 +317,11 @@ export interface DomainPageQuery {
   answer: DomainAnswerFilter;
   sort: DomainSortKey;
   direction: 'asc' | 'desc';
+}
+
+export interface DomainPageQuery extends DomainFilterQuery {
+  limit: number;
+  cursor?: string;
 }
 
 export interface DomainFacets {
@@ -406,12 +412,22 @@ function domainSortValue(row: DomainRow, key: DomainSortKey): string {
   return String(row[key]).padStart(16, '0');
 }
 
-/** Bounded Domains feed with server-owned state/batch/offer/niche filters and sorting. */
-export async function buildDomainPage(
+interface DomainSelection {
+  /** Filtered and sorted, every matching row — the export writes these. */
+  rows: DomainListRow[];
+  facets: DomainFacets;
+  /** The cursor scope: every filter that decides which rows these are. */
+  scope: string;
+  compare: typeof compareStrings;
+}
+
+/** Everything the Domains screen asks of the store, in one place: the rows that
+ *  match, the filter choices to offer, and the cursor scope that pins them. */
+async function selectDomains(
   store: Store,
   now: Date,
-  query: DomainPageQuery,
-): Promise<PageEnvelope<DomainListRow, DomainFacets>> {
+  query: DomainFilterQuery,
+): Promise<DomainSelection> {
   const [rows, niches, batches] = await Promise.all([
     buildDomainRows(store, now),
     store.listNiches().then(allNiches),
@@ -480,16 +496,13 @@ export async function buildDomainPage(
     { value: domainSortValue(a, query.sort), id: a.domain },
     { value: domainSortValue(b, query.sort), id: b.domain },
   ));
-  const scope = JSON.stringify([
-    'domains', query.state, query.tier ?? '', query.category ?? '', query.answer,
-    query.batchId ?? '', query.unbatched ? 'unbatched' : '',
-    search, query.sort, query.direction,
-  ]);
-  return paginateSorted(filtered, {
-    limit: query.limit,
-    cursor: query.cursor,
-    scope,
-    keyOf: (row) => ({ value: domainSortValue(row, query.sort), id: row.domain }),
+  return {
+    rows: filtered,
+    scope: JSON.stringify([
+      'domains', query.state, query.tier ?? '', query.category ?? '', query.answer,
+      query.batchId ?? '', query.unbatched ? 'unbatched' : '',
+      search, query.sort, query.direction,
+    ]),
     compare,
     facets: {
       tiers: [
@@ -505,7 +518,39 @@ export async function buildDomainPage(
       })),
       unbatched,
     },
+  };
+}
+
+/** Bounded Domains feed with server-owned state/batch/offer/niche filters and sorting. */
+export async function buildDomainPage(
+  store: Store,
+  now: Date,
+  query: DomainPageQuery,
+): Promise<PageEnvelope<DomainListRow, DomainFacets>> {
+  const { rows, facets, scope, compare } = await selectDomains(store, now, query);
+  return paginateSorted(rows, {
+    limit: query.limit,
+    cursor: query.cursor,
+    scope,
+    keyOf: (row) => ({ value: domainSortValue(row, query.sort), id: row.domain }),
+    compare,
+    facets,
   });
+}
+
+/**
+ * Every domain matching the filters, in the order the screen shows them — the
+ * rows the export writes. Deliberately unpaged: an export that stopped at a page
+ * boundary is how this started, and a spreadsheet that quietly omits rows is
+ * worse than no spreadsheet. The caller caps the count (see MAX_EXPORT_ROWS in
+ * the server) rather than truncating here.
+ */
+export async function buildDomainExportRows(
+  store: Store,
+  now: Date,
+  query: DomainFilterQuery,
+): Promise<DomainListRow[]> {
+  return (await selectDomains(store, now, query)).rows;
 }
 
 export interface DomainDetail {

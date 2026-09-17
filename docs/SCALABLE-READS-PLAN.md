@@ -50,7 +50,8 @@ verification notes in the same commit as each step.
       selector; the final consumer audit found both still call `/api/batches`.
 - [ ] Step 5 — replace transitional scans with indexed/materialized reads.
 - [ ] Step 6 — type-aware SSE invalidation for the active query only.
-- [ ] Step 7 — server-side streaming/background exports.
+- [~] Step 7 — server-side exports. Domains is done (the server builds the
+      table and writes the .xlsx). Responses still exports from the browser.
 - [ ] Step 8 — remove legacy unpaged list APIs and remeasure production p50/p95.
 
 ## Current caveats
@@ -99,8 +100,9 @@ verification notes in the same commit as each step.
   `GET /api/domains/page`.
 - Opaque cursors include the complete filter and sort scope. The endpoint caps
   taxonomy filter choices at 500 while preserving an older selected niche.
-- Domain detail/history remains a point read. Until Step 7, the existing export
-  is explicitly labeled “Export page” and cannot grow with the full dataset.
+- Domain detail/history remains a point read. The export was explicitly labeled
+  “Export page” at this step and could not grow with the full dataset; Step 7
+  (2026-09-17 below) replaced it.
 - Root/web typechecks, focused API tests, the production web build, and the full
   437-test suite passed.
 
@@ -125,6 +127,27 @@ verification notes in the same commit as each step.
   on screen); the selected batch titles the sheet and each shape gained a Batch
   column, so a cross-batch export can still be grouped by import.
 - Root/web typechecks and the full 443-test suite passed.
+
+### 2026-09-17 — Step 7 (Domains)
+
+- `GET /api/domains/export` writes the .xlsx for EVERY domain matching the
+  filters. `&preview=N` returns the same table as JSON, which is what the dialog
+  shows: in the 'all' shape the column set depends on the whole result, so a
+  preview built from one page would promise a different sheet from the one that
+  downloads.
+- Both routes parse the filters through one `parseDomainFilters`, and the row
+  selection behind them is one `selectDomains`. The export cannot read a filter
+  differently from the list it was started from.
+- Capped at 50,000 rows with a 400 naming the count; it refuses rather than
+  truncating, because a rate card that silently stops short gets believed.
+- The table moved to `src/services/domains-export.ts`; `web/src/export/domains.ts`
+  keeps only the scope labels and the default title. `xlsx` is now a server
+  dependency too, imported lazily so a send pass never loads it.
+- The browser no longer holds the dataset, but the server still builds the whole
+  table in memory before writing — true streaming waits for Step 5's indexed
+  reads, which is what would make a row-at-a-time export worth having.
+- Root/web typechecks, the production web build, and the full 448-test suite
+  passed; a round-trip test reads the generated workbook back.
 
 ## Acceptance targets
 

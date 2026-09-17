@@ -17,6 +17,8 @@
 //   GET    /api/responses?batchId=
 //   GET    /api/responses/page           → bounded, filtered response summaries
 //   GET    /api/domains/page             → bounded, filtered domain summaries
+//   GET    /api/domains/export            → EVERY matching domain as .xlsx
+//                                        (&preview=N returns the table as JSON)
 //   GET    /api/suppressions
 //   GET    /api/deals                    → deals + derived domains/paid/live counts
 //   POST   /api/deals                    { counterpartyEmail, accountId, threadIds?, domains?, note? }
@@ -67,6 +69,7 @@ import { isOutreachLanguage, resolveProfile } from '../domain/pitch';
 import {
   buildBatchRows,
   buildDomainDetail,
+  buildDomainExportRows,
   buildDomainPage,
   buildDomainRows,
   buildReplyDebug,
@@ -74,12 +77,19 @@ import {
   buildResponseRows,
   buildTargetPage,
   type DomainAnswerFilter,
+  type DomainFilterQuery,
   type DomainSortKey,
   type DomainStateFilter,
   type DomainTier,
   type ResponseStateFilter,
 } from '../services/read-models';
 import { PageInputError, parsePageLimit } from '../services/pagination';
+import {
+  buildDomainsExport,
+  domainsExportWorkbook,
+  fileStem,
+  type DomainExportScope,
+} from '../services/domains-export';
 import type { Clock } from '../lib/clock';
 import { newId } from '../lib/ids';
 import { draftEmail } from '../services/drafter';
@@ -149,6 +159,11 @@ const MIME: Record<string, string> = {
   '.ico': 'image/x-icon',
 };
 
+/** Refuse rather than truncate: a rate card that quietly stops short is worse
+ *  than no file. Generous enough that only a genuinely unfiltered export of a
+ *  very large store hits it. */
+const MAX_EXPORT_ROWS = 50_000;
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
@@ -157,6 +172,70 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
     'Content-Length': Buffer.byteLength(payload),
   });
   res.end(payload);
+}
+
+/** A file download: named, never cached, and readable by a console served from
+ *  another origin (VITE_API_ORIGIN) — which needs the filename header exposed. */
+function sendFile(
+  res: ServerResponse,
+  body: Buffer,
+  contentType: string,
+  filename: string,
+): void {
+  res.writeHead(200, {
+    'Content-Type': contentType,
+    'Content-Length': body.length,
+    // The quotes matter: a title can contain spaces and commas.
+    'Content-Disposition': `attachment; filename="${filename.replace(/"/g, '')}"`,
+    'Cache-Control': 'no-store',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Expose-Headers': 'Content-Disposition',
+  });
+  res.end(body);
+}
+
+/**
+ * The Domains screen's filters, parsed once. The page and the export MUST read
+ * them identically — an export that quietly filtered differently from the list
+ * it was started from would be believed, and it would be wrong.
+ */
+function parseDomainFilters(url: URL): DomainFilterQuery {
+  const state = (url.searchParams.get('state') ?? 'all') as DomainStateFilter;
+  if (!['all', 'excluded', 'optedOut', 'active', 'specials'].includes(state)) {
+    throw new PageInputError('invalid domain state');
+  }
+  const tier = url.searchParams.get('tier') as DomainTier | null;
+  if (tier && tier !== 'reg' && tier !== 'sens') throw new PageInputError('invalid tier');
+  const answer = (url.searchParams.get('answer') ?? 'open') as DomainAnswerFilter;
+  if (!['open', 'yes', 'maybe', 'no'].includes(answer)) throw new PageInputError('invalid answer');
+  const sort = (url.searchParams.get('sort') ?? 'lastObservedAt') as DomainSortKey;
+  if (!['domain', 'standingCells', 'activeSpecials', 'recordCount', 'lastObservedAt'].includes(sort)) {
+    throw new PageInputError('invalid domain sort');
+  }
+  const direction = url.searchParams.get('dir') ?? 'desc';
+  if (direction !== 'asc' && direction !== 'desc') throw new PageInputError('dir must be asc or desc');
+  const search = url.searchParams.get('q')?.trim() || undefined;
+  if (search && search.length > 200) throw new PageInputError('q must be at most 200 characters');
+  const category = url.searchParams.get('category')?.trim() || undefined;
+  if (category && category.length > 100) throw new PageInputError('category must be at most 100 characters');
+  const unbatchedRaw = url.searchParams.get('unbatched');
+  if (unbatchedRaw && unbatchedRaw !== 'true') {
+    throw new PageInputError('unbatched must be true when provided');
+  }
+  if (unbatchedRaw === 'true' && url.searchParams.has('batchId')) {
+    throw new PageInputError('batchId and unbatched cannot be combined');
+  }
+  return {
+    search,
+    state,
+    batchId: url.searchParams.get('batchId') ?? undefined,
+    unbatched: unbatchedRaw === 'true',
+    tier: tier ?? undefined,
+    category,
+    answer,
+    sort,
+    direction,
+  };
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -944,47 +1023,68 @@ async function handle(
       return sendJson(res, 200, allNiches(await store.listNiches()));
     }
 
-    // GET /api/domains/page?limit=&cursor=&state=&batchId=&unbatched=&tier=&category=&answer=&sort=&dir=&q=
+    // GET /api/domains/page?limit=&cursor=&<domain filters>
     if (method === 'GET' && seg[1] === 'domains' && seg[2] === 'page' && seg.length === 3) {
       try {
-        const state = (url.searchParams.get('state') ?? 'all') as DomainStateFilter;
-        if (!['all', 'excluded', 'optedOut', 'active', 'specials'].includes(state)) {
-          throw new PageInputError('invalid domain state');
-        }
-        const tier = url.searchParams.get('tier') as DomainTier | null;
-        if (tier && tier !== 'reg' && tier !== 'sens') throw new PageInputError('invalid tier');
-        const answer = (url.searchParams.get('answer') ?? 'open') as DomainAnswerFilter;
-        if (!['open', 'yes', 'maybe', 'no'].includes(answer)) throw new PageInputError('invalid answer');
-        const sort = (url.searchParams.get('sort') ?? 'lastObservedAt') as DomainSortKey;
-        if (!['domain', 'standingCells', 'activeSpecials', 'recordCount', 'lastObservedAt'].includes(sort)) {
-          throw new PageInputError('invalid domain sort');
-        }
-        const direction = url.searchParams.get('dir') ?? 'desc';
-        if (direction !== 'asc' && direction !== 'desc') throw new PageInputError('dir must be asc or desc');
-        const search = url.searchParams.get('q')?.trim() || undefined;
-        if (search && search.length > 200) throw new PageInputError('q must be at most 200 characters');
-        const category = url.searchParams.get('category')?.trim() || undefined;
-        if (category && category.length > 100) throw new PageInputError('category must be at most 100 characters');
-        const unbatchedRaw = url.searchParams.get('unbatched');
-        if (unbatchedRaw && unbatchedRaw !== 'true') {
-          throw new PageInputError('unbatched must be true when provided');
-        }
-        if (unbatchedRaw === 'true' && url.searchParams.has('batchId')) {
-          throw new PageInputError('batchId and unbatched cannot be combined');
-        }
         return sendJson(res, 200, await buildDomainPage(store, deps.clock.now(), {
+          ...parseDomainFilters(url),
           limit: parsePageLimit(url.searchParams.get('limit')),
           cursor: url.searchParams.get('cursor') ?? undefined,
-          search,
-          state,
-          batchId: url.searchParams.get('batchId') ?? undefined,
-          unbatched: unbatchedRaw === 'true',
-          tier: tier ?? undefined,
-          category,
-          answer,
-          sort,
-          direction,
         }));
+      } catch (error) {
+        if (error instanceof PageInputError) return sendJson(res, 400, { error: error.message });
+        throw error;
+      }
+    }
+
+    // GET /api/domains/export?scope=&title=&includeExcluded=&preview=N&<domain filters>
+    //
+    // EVERY domain matching the filters, not the page the operator happens to be
+    // looking at. `preview=N` returns the first N rows as JSON so the dialog can
+    // show the real columns — in the 'all' shape the column set depends on the
+    // whole result, so a preview built from one page would promise the wrong sheet.
+    if (method === 'GET' && seg[1] === 'domains' && seg[2] === 'export' && seg.length === 3) {
+      try {
+        const scope = (url.searchParams.get('scope') ?? 'both') as DomainExportScope;
+        if (!['regular', 'both', 'all'].includes(scope)) throw new PageInputError('invalid export scope');
+        const title = url.searchParams.get('title')?.trim() ?? '';
+        if (title.length > 200) throw new PageInputError('title must be at most 200 characters');
+        const previewRaw = url.searchParams.get('preview');
+        let preview: number | undefined;
+        if (previewRaw !== null) {
+          preview = Number(previewRaw);
+          if (!Number.isInteger(preview) || preview < 1 || preview > 50) {
+            throw new PageInputError('preview must be an integer between 1 and 50');
+          }
+        }
+
+        const all = await buildDomainExportRows(store, deps.clock.now(), parseDomainFilters(url));
+        // An export is an outreach/buying list, and excluded domains are exactly
+        // the ones we don't want on it. Opt in when the list IS the excluded ones.
+        const includeExcluded = url.searchParams.get('includeExcluded') === 'true';
+        const rows = includeExcluded ? all : all.filter((row) => !row.excluded);
+        if (rows.length > MAX_EXPORT_ROWS) {
+          throw new PageInputError(
+            `${rows.length} domains match — narrow the filters: an export is capped at ${MAX_EXPORT_ROWS} rows`,
+          );
+        }
+
+        const table = buildDomainsExport(rows, scope);
+        if (preview !== undefined) {
+          return sendJson(res, 200, {
+            columns: table.columns,
+            body: table.body.slice(0, preview),
+            total: table.body.length,
+            excluded: all.length - rows.length,
+          });
+        }
+        const book = await domainsExportWorkbook(table, title);
+        return sendFile(
+          res,
+          book,
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          `${fileStem(title || 'adscout-domains')}.xlsx`,
+        );
       } catch (error) {
         if (error instanceof PageInputError) return sendJson(res, 400, { error: error.message });
         throw error;

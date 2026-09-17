@@ -16,7 +16,8 @@ sign-in, or exports.
 - `pnpm web:typecheck` is separate from the root typecheck. `just check` and CI
   run both; CI also runs `pnpm web:build`.
 - Dependencies worth knowing: `react-window` (virtualized lists), `xlsx`
-  (exports), `firebase` (sign-in).
+  (the responses exports — the server has its own copy for the domains one),
+  `firebase` (sign-in).
 
 ## Files
 
@@ -50,11 +51,12 @@ sign-in, or exports.
   primitives (`Panel`, `Confirm`, `Toaster`, `Empty`, `StatusBadge`, `TierBadge`,
   `StatCards`, `icons`). `DealsView.tsx` is the largest: a messenger-style deal
   thread with placements.
-- `export/`: client-side exports (xlsx, html, a standalone template). The domains
-  export is page-scoped until server-side exports exist (read plan, Step 7). It
-  takes the rows the page already holds, so every server filter is already
-  applied; the selected batch only titles the sheet (`defaultDomainsHeader`) and
-  every shape carries a `Batch` column.
+- `export/`: the responses exports (xlsx, html, a standalone template) are built
+  in the browser. The DOMAINS export is not: `export/domains.ts` is now only the
+  scope labels and the default title, and `DomainsExportDialog` asks
+  `GET /api/domains/export` for both the preview and the file. That is what makes
+  it cover every matching domain instead of the 50 on screen; the server owns the
+  table (`src/services/domains-export.ts`), so the two cannot disagree.
 - Pure helpers with tests: `niche-answer.ts`, `quoted-text.ts`, `attachments.ts`.
 
 ## Live updates

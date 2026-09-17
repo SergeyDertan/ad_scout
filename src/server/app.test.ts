@@ -632,6 +632,66 @@ test('GET /api/domains/page filters by the batch a site was imported in', async 
   }
 });
 
+test('GET /api/domains/export writes every matching domain, not just a page', async () => {
+  const h = await start(); // seeds b1 with t1 (site1.com) + t2 (site2.com)
+  try {
+    for (const n of [3, 4, 5]) {
+      await h.store.putTarget({
+        id: `t${n}`, batchId: 'b1', websiteUrl: `site${n}.com`, contactEmail: `c@site${n}.com`,
+        status: 'pending', followUpCount: 0, createdAt: '2026-06-02T00:00:00Z',
+      });
+    }
+    await h.store.putPriceRecord({
+      id: 'pr1', domain: 'site1.com', attribution: 'sender', sourceEmail: 'a@site1.com',
+      sourceMessageId: '<A>', observedAt: '2026-04-04T00:00:00Z',
+      offers: [{ category: 'regular', label: 'Regular', sensitive: false, canPost: 'yes', term: TERM_NONE, price: { amount: 550, raw: '550' } }],
+    });
+
+    // The page is bounded; the export is not. That is the whole point of it.
+    const page = await J(`${h.base}/api/domains/page?limit=2&sort=domain&dir=asc`);
+    assert.equal(page.items.length, 2);
+    const preview = await J(`${h.base}/api/domains/export?preview=3&sort=domain&dir=asc`);
+    assert.equal(preview.total, 5);
+    assert.equal(preview.body.length, 3);
+    assert.deepEqual(preview.body.map((row: any) => row[0]), ['site1.com', 'site2.com', 'site3.com']);
+    assert.deepEqual(
+      preview.columns,
+      ['Domain', 'Regular price', 'Term', 'Months', 'Sensitive price', 'Currency', 'Price sources', 'Batch'],
+    );
+    assert.equal(preview.body[0][1], 550);
+
+    // The same filters the list takes, applied identically.
+    const filtered = await J(`${h.base}/api/domains/export?preview=5&q=site1`);
+    assert.equal(filtered.total, 1);
+    assert.equal((await J(`${h.base}/api/domains/export?preview=5&batchId=b1`)).total, 5);
+    assert.equal((await J(`${h.base}/api/domains/export?preview=5&unbatched=true`)).total, 0);
+    assert.equal((await J(`${h.base}/api/domains/export?preview=5&scope=regular`)).columns.length, 7);
+
+    // Excluded domains are off a buying list unless they are what you asked for.
+    await h.store.putDomainExclusion({ id: 'site2.com', domain: 'site2.com', reason: 'manual', at: '2026-06-05T00:00:00Z' });
+    assert.equal((await J(`${h.base}/api/domains/export?preview=5`)).total, 4);
+    const kept = await J(`${h.base}/api/domains/export?preview=5&includeExcluded=true`);
+    assert.equal(kept.total, 5);
+    assert.equal((await J(`${h.base}/api/domains/export?preview=5`)).excluded, 1);
+
+    // The file itself: a real xlsx (a zip, so it starts with PK), named and uncached.
+    const file = await fetch(`${h.base}/api/domains/export?title=Casino%20sheet`);
+    assert.equal(file.status, 200);
+    assert.match(file.headers.get('content-type') ?? '', /spreadsheetml\.sheet/);
+    assert.equal(file.headers.get('content-disposition'), 'attachment; filename="casino-sheet.xlsx"');
+    assert.equal(file.headers.get('cache-control'), 'no-store');
+    const bytes = Buffer.from(await file.arrayBuffer());
+    assert.equal(bytes.subarray(0, 2).toString(), 'PK');
+    assert.ok(bytes.length > 500);
+
+    assert.equal((await fetch(`${h.base}/api/domains/export?scope=wat`)).status, 400);
+    assert.equal((await fetch(`${h.base}/api/domains/export?preview=0`)).status, 400);
+    assert.equal((await fetch(`${h.base}/api/domains/export?sort=wat`)).status, 400);
+  } finally {
+    await h.close();
+  }
+});
+
 test('GET /api/replies/:id returns the source message behind a price record', async () => {
   const h = await start();
   try {

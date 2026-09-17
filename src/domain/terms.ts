@@ -183,6 +183,42 @@ export function termLabel(term: PlacementTerm | undefined): string {
   return term.key;
 }
 
+/**
+ * Canonical label for a term — derived from the PARSED duration, never from the
+ * raw phrase. Use this to name anything SHARED by many offers (a column header,
+ * a group heading); `termLabel` is for a single offer, where the publisher's own
+ * phrasing is the point.
+ *
+ * Two offers with the same `key` are the same duration, but their raw phrases
+ * differ wildly ("per year per article", "at least 1 year", "twelve month
+ * terms"). Labelling a shared column with whichever landed first gives headers
+ * that contradict their own contents; a canonical label cannot.
+ *
+ * Mirrored by `canonicalTerm` in `web/src/types.ts`.
+ */
+export function canonicalTerm(term: PlacementTerm | undefined): string {
+  if (!term || term.key === 'none') return '—';
+  if (term.key === TERM_PERM_KEY) return 'permanent';
+  if (term.months != null) {
+    // Whole years read as years — "2 years" beats "24 months" on a header.
+    if (term.months >= 12 && term.months % 12 === 0) {
+      const years = term.months / 12;
+      return `${years} year${years === 1 ? '' : 's'}`;
+    }
+    return `${term.months} month${term.months === 1 ? '' : 's'}`;
+  }
+  if (term.days != null) {
+    if (term.days % 7 === 0) {
+      const weeks = term.days / 7;
+      return `${weeks} week${weeks === 1 ? '' : 's'}`;
+    }
+    return `${term.days} day${term.days === 1 ? '' : 's'}`;
+  }
+  // An other:* term has no parse to render, so the raw phrase is the honest
+  // label — and a signal that terms.ts should learn the phrasing.
+  return term.raw || term.key;
+}
+
 /** Sort by duration: shortest first, then the indefinite terms (unstated,
  *  permanent, unparseable) at the far end. */
 export function compareTerms(a: PlacementTerm | undefined, b: PlacementTerm | undefined): number {

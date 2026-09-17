@@ -30,6 +30,14 @@ loopback). Unset means all interfaces, which is right for a laptop.
   comment lists the routes; keep it current.
 - Responses go through `sendJson(res, status, body)`; errors are `{ error }`.
   Input validation throws `PageInputError` → 400.
+- A file download goes through `sendFile(...)` (`Content-Disposition`, `no-store`,
+  and that header exposed for a cross-origin console). `GET /api/domains/export`
+  is the only one: it writes an .xlsx of EVERY domain matching the filters
+  (`&preview=N` returns the same table as JSON for the dialog). Its filters are
+  parsed by `parseDomainFilters`, which `domains/page` uses too — an export that
+  read a filter differently from the list it was started from would be believed
+  and be wrong. Above `MAX_EXPORT_ROWS` (50,000) it refuses with a 400 rather
+  than truncating.
 - Writes run inside `deps.writeLock.run(...)` (the shared `passLock`).
 - Route groups:
 
@@ -39,7 +47,7 @@ loopback). Unset means all interfaces, which is right for a laptop.
 | accounts | `accounts` (+ PATCH, DELETE, `pause`, `resume`, `rollback-cursor`), `oauth/start`, `oauth/callback` |
 | targets, batches | `targets` (legacy list), `targets/page`, `targets/:id/thread`, `batches`, `preview` (renders the outreach template) |
 | replies | `replies/:id` (GET, PATCH hand edit, DELETE), `replies/:id/debug`, `responses` (legacy), `responses/page` |
-| domains, prices | `domains`, `domains/page`, `domains/:domain`, `niches`, `prompts`, `prompts/:hash` |
+| domains, prices | `domains`, `domains/page`, `domains/export`, `domains/:domain`, `niches`, `prompts`, `prompts/:hash` |
 | lists | `suppressions`, `ignore`, `exclusions` |
 | deals | `deals`, `deals/:id` (+ PATCH, DELETE), `deals/:id/threads`, `deals/:id/placements`, `deals/:id/messages`, `placements/:id` |
 | passes | `POST run/send`, `run/poll`, `run/fetch` |

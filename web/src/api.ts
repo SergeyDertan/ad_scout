@@ -46,6 +46,26 @@ export interface TargetPageQuery {
   search?: string;
 }
 
+export type DomainExportScope = 'regular' | 'both' | 'all';
+
+export interface DomainExportQuery {
+  /** Exactly what the list is filtered by — the export answers the same question. */
+  filters: DomainPageQuery;
+  scope: DomainExportScope;
+  title?: string;
+  includeExcluded?: boolean;
+}
+
+/** GET /api/domains/export&preview=N — the sheet's real shape, before downloading. */
+export interface DomainExportPreview {
+  columns: string[];
+  body: (string | number)[][];
+  /** Rows the file will have. */
+  total: number;
+  /** Excluded domains dropped from it (0 when they are being kept). */
+  excluded: number;
+}
+
 export interface DomainPageQuery {
   limit?: number;
   cursor?: string;
@@ -59,6 +79,35 @@ export interface DomainPageQuery {
   answer?: DomainAnswerFilter;
   sort?: DomainSortKey;
   direction?: 'asc' | 'desc';
+}
+
+/** The Domains filters as query params. Shared by the list and the export so the
+ *  export cannot quietly read a filter differently from the list it started in. */
+function domainParams(query: DomainPageQuery): URLSearchParams {
+  const params = new URLSearchParams();
+  if (query.search) params.set('q', query.search);
+  if (query.state && query.state !== 'all') params.set('state', query.state);
+  if (query.batchId) params.set('batchId', query.batchId);
+  if (query.unbatched) params.set('unbatched', 'true');
+  if (query.tier) params.set('tier', query.tier);
+  if (query.category) params.set('category', query.category);
+  if (query.answer) params.set('answer', query.answer);
+  if (query.sort) params.set('sort', query.sort);
+  if (query.direction) params.set('dir', query.direction);
+  return params;
+}
+
+function exportParams({ filters, scope, title, includeExcluded }: DomainExportQuery): URLSearchParams {
+  const params = domainParams(filters);
+  params.set('scope', scope);
+  if (title?.trim()) params.set('title', title.trim());
+  if (includeExcluded) params.set('includeExcluded', 'true');
+  return params;
+}
+
+/** The server names the file; honour it rather than rebuilding the name here. */
+function filenameFrom(header: string | null): string | undefined {
+  return header?.match(/filename="([^"]+)"/)?.[1];
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -175,19 +224,40 @@ export const api = {
 
   // per-domain price history
   listDomainPage: (query: DomainPageQuery, signal?: AbortSignal) => {
-    const params = new URLSearchParams();
+    const params = domainParams(query);
     if (query.limit) params.set('limit', String(query.limit));
     if (query.cursor) params.set('cursor', query.cursor);
-    if (query.search) params.set('q', query.search);
-    if (query.state && query.state !== 'all') params.set('state', query.state);
-    if (query.batchId) params.set('batchId', query.batchId);
-    if (query.unbatched) params.set('unbatched', 'true');
-    if (query.tier) params.set('tier', query.tier);
-    if (query.category) params.set('category', query.category);
-    if (query.answer) params.set('answer', query.answer);
-    if (query.sort) params.set('sort', query.sort);
-    if (query.direction) params.set('dir', query.direction);
     return req<PageEnvelope<DomainListRow, DomainFacets>>(`/domains/page?${params}`, { signal });
+  },
+
+  /** The first rows of the export the server would write, with its real columns.
+   *  `total` is every matching domain, not just the page on screen. */
+  previewDomainsExport: (options: DomainExportQuery, rows: number, signal?: AbortSignal) =>
+    req<DomainExportPreview>(`/domains/export?${exportParams(options)}&preview=${rows}`, { signal }),
+
+  /** Downloads the .xlsx the server builds. Not an `<a href>`: the console sends
+   *  a bearer token on every call, and a plain link cannot carry one. */
+  downloadDomainsExport: async (options: DomainExportQuery): Promise<void> => {
+    const res = await fetch(apiUrl(`/domains/export?${exportParams(options)}`), {
+      headers: await authHeaders(),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      let message = `${res.status} ${res.statusText}`;
+      try { message = JSON.parse(text).error ?? message; } catch { /* not JSON: keep the status */ }
+      throw new Error(message);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filenameFrom(res.headers.get('Content-Disposition')) ?? 'adscout-domains.xlsx';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    // Revoked on the next frame, not immediately: Safari cancels a download whose
+    // object URL disappears in the same tick as the click.
+    setTimeout(() => URL.revokeObjectURL(url), 0);
   },
   listDomains: (signal?: AbortSignal) => req<DomainSummary[]>('/domains', { signal }),
   getDomain: (domain: string) => req<DomainDetail>(`/domains/${encodeURIComponent(domain)}`),

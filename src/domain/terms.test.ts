@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { compareTerms, parseTerm, termLabel, TERM_NONE } from './terms';
+import { canonicalTerm, compareTerms, parseTerm, termLabel, TERM_NONE } from './terms';
 
 test('an unstated duration is its own term, distinct from an explicit permanent', () => {
   // The common case: "we can do a guest post for $50" — no duration named.
@@ -99,6 +99,22 @@ test('termLabel prefers the publisher own words', () => {
   assert.equal(termLabel(parseTerm('')), '—');
   assert.equal(termLabel({ key: '3m', days: 90, months: 3, raw: '' }), '3 months');
   assert.equal(termLabel({ key: '1m', days: 30, months: 1, raw: '' }), '1 month');
+});
+
+test('canonicalTerm names a shared column from the parse, not the phrasing', () => {
+  // The point of it: two offers at the same duration disagree wildly on wording,
+  // and a column headed with whichever landed first contradicts its contents.
+  assert.equal(canonicalTerm(parseTerm('twelve month terms')), '1 year');
+  assert.equal(canonicalTerm(parseTerm('at least 1 year')), '1 year');
+  assert.equal(canonicalTerm(parseTerm('24 months')), '2 years');
+  assert.equal(canonicalTerm(parseTerm('3 months')), '3 months');
+  assert.equal(canonicalTerm(parseTerm('2 weeks')), '2 weeks');
+  assert.equal(canonicalTerm(parseTerm('45 days')), '45 days');
+  assert.equal(canonicalTerm(parseTerm('permanent')), 'permanent');
+  assert.equal(canonicalTerm(TERM_NONE), '—');
+  // No parse to render: the raw phrase is the honest label, and a hint that
+  // terms.ts should learn the wording.
+  assert.equal(canonicalTerm({ key: 'other:till christmas', raw: 'till christmas' }), 'till christmas');
 });
 
 test('a hyphen between count and unit does not swallow the count', () => {

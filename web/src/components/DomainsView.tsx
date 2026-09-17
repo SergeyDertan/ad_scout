@@ -14,9 +14,9 @@ import {
   Text,
   VStack,
 } from '@chakra-ui/react';
-import { useCallback, useDeferredValue, useEffect, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { List, type RowComponentProps } from 'react-window';
-import { api } from '../api';
+import { api, type DomainPageQuery } from '../api';
 import { useIsManager } from '../role';
 import { Attachments } from './Attachments';
 import { DataPanel } from './DataPanel';
@@ -534,21 +534,25 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
   ]);
   const [pageCursor, setPageCursor] = useState<{ filterKey: string; value?: string }>({ filterKey: '' });
   const cursor = pageCursor.filterKey === filterKey ? pageCursor.value : undefined;
+  // One object for the list and the export: the export answers the same question
+  // over every matching row, so it must not be able to read a filter differently.
+  const filters = useMemo<DomainPageQuery>(() => ({
+    ...(deferredSearch ? { search: deferredSearch } : {}),
+    state: stateFilter,
+    ...(batchFilter && batchFilter !== NO_BATCH ? { batchId: batchFilter } : {}),
+    ...(batchFilter === NO_BATCH ? { unbatched: true } : {}),
+    ...(tierFilter ? { tier: tierFilter as 'reg' | 'sens' } : {}),
+    ...(categoryFilter ? { category: categoryFilter, answer: answerFilter } : {}),
+    sort: sortKey,
+    direction: dir,
+  }), [answerFilter, batchFilter, categoryFilter, deferredSearch, dir, sortKey, stateFilter, tierFilter]);
   const { result, loading, error, reload } = usePagedResource(
     useCallback(
-      (signal: AbortSignal) => api.listDomainPage({
-        limit: PAGE_SIZE,
-        ...(cursor ? { cursor } : {}),
-        ...(deferredSearch ? { search: deferredSearch } : {}),
-        state: stateFilter,
-        ...(batchFilter && batchFilter !== NO_BATCH ? { batchId: batchFilter } : {}),
-        ...(batchFilter === NO_BATCH ? { unbatched: true } : {}),
-        ...(tierFilter ? { tier: tierFilter as 'reg' | 'sens' } : {}),
-        ...(categoryFilter ? { category: categoryFilter, answer: answerFilter } : {}),
-        sort: sortKey,
-        direction: dir,
-      }, signal),
-      [answerFilter, batchFilter, categoryFilter, cursor, deferredSearch, dir, sortKey, stateFilter, tierFilter],
+      (signal: AbortSignal) => api.listDomainPage(
+        { ...filters, limit: PAGE_SIZE, ...(cursor ? { cursor } : {}) },
+        signal,
+      ),
+      [cursor, filters],
     ),
     tick,
   );
@@ -669,9 +673,9 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
           ml="auto"
           onClick={() => setShowExport(true)}
           disabled={rows.length === 0}
-          title="Exports only the rows on the current bounded page"
+          title="Exports every domain matching these filters, not just this page"
         >
-          <DownloadIcon /> Export page
+          <DownloadIcon /> Export
         </Button>
         <Text fontSize="xs" color="fg.subtle">
           {rows.length} on this page · {result?.page.total ?? 0} matching
@@ -752,7 +756,7 @@ export function DomainsView({ tick, readOnly }: { tick: number; readOnly?: boole
 
       {showExport && (
         <DomainsExportDialog
-          domains={rows}
+          filters={filters}
           scopeLabel={
             batchFilter === NO_BATCH
               ? 'No batch'
